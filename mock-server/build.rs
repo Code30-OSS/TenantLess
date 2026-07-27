@@ -1,14 +1,14 @@
-//! Build script — the `/ui` embedded-SPA freshness guard (WEBUI-03, RESEARCH Pitfall 4).
+//! Build script — the `/ui` embedded-SPA freshness guard.
 //!
 //! `include_dir!("$CARGO_MANIFEST_DIR/../frontend/dist")` in [`crate::ui`] captures the
 //! built SPA bytes at COMPILE time. Cargo does not otherwise know the embedded `dist`
 //! changed, so a rebuilt frontend would be silently ignored and the *previous* UI shipped.
 //! This script closes two gaps:
 //!
-//!   * **Re-embed on change (Pitfall 4a):** emit `cargo:rerun-if-changed=../frontend/dist`
-//!     so cargo re-runs — and thus re-invokes the `include_dir!` embed — whenever the built
-//!     SPA changes. Without this, `cargo build` after `npm run build` ships the old bytes.
-//!   * **Fail loudly on a missing dist (Pitfall 4c):** hard-`panic!` (a build error) if
+//!   * **Re-embed on change:** emit `cargo:rerun-if-changed=../frontend/dist` so cargo
+//!     re-runs — and thus re-invokes the `include_dir!` embed — whenever the built SPA
+//!     changes. Without this, `cargo build` after `npm run build` ships the old bytes.
+//!   * **Fail loudly on a missing dist:** hard-`panic!` (a build error) if
 //!     `../frontend/dist/index.html` is absent, rather than embedding a stale/empty tree.
 //!     The message tells the developer to build the SPA first.
 //!
@@ -30,7 +30,7 @@ fn main() {
         panic!(
             "frontend/dist/index.html is missing — the /ui embed (src/ui.rs `include_dir!`) \
              requires a built SPA. Build it before the server: \
-             `cd frontend && npm ci && npm run build` (WEBUI-03, RESEARCH Pitfall 4)."
+             `cd frontend && npm ci && npm run build`."
         );
     }
 }

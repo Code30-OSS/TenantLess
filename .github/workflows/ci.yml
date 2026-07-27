@@ -116,16 +116,22 @@ jobs:
       - name: Build server
         run: cargo build --release -p tenantless-server --bin tenantless-server
 
-      - name: Integration suite
-        run: uv run pytest -q -m integration
-
-      # Guards against the skip-instead-of-run failure mode above: if the binary
-      # or Postgres were missing, the suite would report "2 skipped" and pass.
-      - name: Assert the integration tests actually ran
+      # The two integration tests TRUNCATE + rewrite the synthetic schema, so they self-skip
+      # unless explicitly allowed. This is a throwaway CI Postgres, so allow it — otherwise the
+      # job would "pass" having run nothing.
+      - name: Integration suite (must actually run, not skip)
+        env:
+          TENANTLESS_E2E_ALLOW_TRUNCATE: "1"
         run: |
           uv run pytest -q -m integration -rs 2>&1 | tee /tmp/e2e.log
-          if grep -qE "skipped" /tmp/e2e.log; then
-            echo "::error::integration tests SKIPPED — this job must run them, not skip them"
+          # Non-vacuity floor: the intended population is 2 integration tests. If the server
+          # binary or Postgres were missing they would skip and the suite would exit 0 having
+          # run nothing — assert that at least 2 actually PASSED. An optional-dependency skip
+          # (e.g. the azure SDK) does not lower this count.
+          passed=$(grep -oE '[0-9]+ passed' /tmp/e2e.log | tail -1 | grep -oE '[0-9]+')
+          passed=${passed:-0}
+          if [ "$passed" -lt 2 ]; then
+            echo "::error::integration suite ran only $passed of the 2 intended tests — the population did not actually run (server binary or Postgres missing?)"
             exit 1
           fi
 
@@ -177,6 +183,18 @@ jobs:
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # mock-server/build.rs panics if frontend/dist is absent (the server embeds the built
+      # SPA via include_dir!). `clippy --all-targets` compiles that build script, so the
+      # console must be built before fmt/clippy/test here too — not only in the e2e job.
+      - name: Build web console (required by the build.rs embed)
+        run: cd frontend && npm ci && npm run build
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -184,9 +202,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # testcontainers starts its own ephemeral Postgres; the ubuntu runner has a
-      # working Docker daemon, so no service container is needed here.
+      # working Docker daemon, so no service container is needed here. Cap concurrency so a
+      # burst of per-test containers doesn't overwhelm the daemon (StartupTimeout).
       - name: Test
-        run: cargo test -p tenantless-server
+        run: cargo test -p tenantless-server -- --test-threads=4
 
   frontend:
     name: Web console
