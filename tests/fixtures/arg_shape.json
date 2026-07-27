@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "id": "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-fake-payroll-secret/providers/Microsoft.Compute/virtualMachines/fake-vm-payroll-007",
+      "name": "fake-vm-payroll-007",
+      "type": "microsoft.compute/virtualmachines",
+      "location": "eastus2",
+      "resourceGroup": "rg-fake-payroll-secret",
+      "subscriptionId": "11111111-2222-3333-4444-555555555555",
+      "tags": {"Environment": "prod", "Owner": "fake-owner-jdoe-secret"},
+      "properties": {"vmSize": "Standard_D2s_v3", "osType": "Linux", "provisioningState": "Succeeded"},
+      "sku": {"name": "Standard_D2s_v3", "tier": "Standard"},
+      "kind": null
+    }
+  ],
+  "skipToken": null,
+  "resultTruncated": false,
+  "totalRecords": 1,
+  "count": 1
+}

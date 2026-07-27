@@ -1,0 +1,125 @@
+/*
+ * Topbar (+ ThemeToggle) — header chrome. Tokens only; no raw hex (D-01).
+ * Mirrors the mockup topbar: crumb + tenant meta on the left; theme toggle, running pill, mock URL
+ * on the right. Sharp corners (radius 0); 50% only for the status dot.
+ */
+
+.topbar {
+  height: 56px;
+  min-height: 56px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Horizontal padding matches the content gutter (28px) so the topbar meta and the panels below
+   * share one left edge — a consistent left margin down the page, and clear space off the menu. */
+  padding: 0 28px;
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.crumb {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  min-height: 16px;
+}
+
+.divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metaHi {
+  color: var(--gold-bright);
+}
+
+.metaVal {
+  color: var(--text);
+}
+
+.metaFaint {
+  color: var(--text-2);
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-7);
+  flex: 0 0 auto;
+}
+
+/* Theme toggle — two segments; the active side is highlighted. */
+.themeToggle {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  background: transparent;
+  padding: 0;
+}
+
+.themeSeg {
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--faint);
+}
+
+.themeSegActive {
+  padding: 5px 9px;
+  background: var(--panel-hi);
+  color: var(--gold);
+}
+
+/* Running status pill — blink-animated green dot (UI-SPEC Motion). */
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  background: var(--canvas);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: blink 2.4s infinite;
+}
+
+.running {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--green);
+}
+
+.mock {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.url {
+  color: var(--gold);
+}

@@ -1,0 +1,257 @@
+/*
+ * Tenants / snapshots manager + server-status + confirm-dialog styles (Phase 17, 17-UI-SPEC §4/§5/§6).
+ *
+ * Reuse-first: mirrors the FilterBar `.resRow` selectable-row idiom (gold `inset 2px 0 0` selected
+ * rule) and the ComingSoon centered-card layout. Tokens ONLY — never a raw hex (grep-gated, D-01) —
+ * sharp corners (border-radius: 0). Shared primitives (panel/h1/subtitle/buttons/pill) live in
+ * controls.module.css; this file adds only the net-new tenants/status/dialog surfaces.
+ */
+
+/* ---- Save-name row + action row ------------------------------------------ */
+
+.saveRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.saveRow > :first-child {
+  flex: 1 1 auto;
+}
+
+.actions {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+/* ---- Snapshot list (FilterBar .resRow idiom, gold selected rule) --------- */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--canvas);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.rowSelected {
+  background: var(--panel-hi);
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-right: auto;
+  min-width: 0;
+}
+
+.rowName {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.rowMeta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.rowActions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.rowBtn,
+.rowBtnDanger {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.rowBtn {
+  color: var(--text-2);
+}
+
+.rowBtn:hover:not(:disabled) {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.rowBtnDanger {
+  color: var(--text-2);
+}
+
+.rowBtnDanger:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.rowBtn:disabled,
+.rowBtnDanger:disabled {
+  color: var(--faint);
+  border-color: var(--border-soft);
+  cursor: not-allowed;
+}
+
+.skeleton {
+  height: 30px;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ---- Empty-state card ---------------------------------------------------- */
+
+.emptyCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-6);
+  border: 1px dashed var(--border);
+  background: var(--canvas);
+}
+
+.emptyTitle {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.emptyBody {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 0;
+}
+
+/* ---- Confirm dialog (plain, no typed confirmation — D-10) ---------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Token-only scrim (no raw color): the canvas at ~82% opacity darkens the backdrop in both themes. */
+  background: color-mix(in srgb, var(--canvas) 82%, transparent);
+  z-index: 100;
+  padding: var(--sp-7);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+  max-width: 440px;
+  padding: var(--sp-7);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.dialogTitle {
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.dialogBody {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+/* Destructive primary: red border + red text on transparent (NOT a filled red block). */
+.dialogPrimary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--red);
+  background: transparent;
+  border: 1px solid var(--red);
+  border-radius: 0;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.dialogPrimary:hover {
+  color: var(--red-deep);
+  border-color: var(--red-deep);
+}
+
+/* ---- Server-status view -------------------------------------------------- */
+
+.statusHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.pillRunning {
+  color: var(--green);
+}
+
+.pillIdle {
+  color: var(--faint);
+}
+
+.metaLine {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.kpiRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.mockUrl {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+  word-break: break-all;
+}

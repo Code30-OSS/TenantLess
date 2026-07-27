@@ -1,0 +1,86 @@
+/*
+ * Design tokens — extracted verbatim from the pixel-locked Code30 mockup
+ * (docs/vision/console-mockup/tenantless-console.mockup.html :root block), per D-01 and
+ * 15-UI-SPEC.md. Components reference var(--token) ONLY — never a raw hex.
+ *
+ * Dark is the default theme; [data-theme="light"] overrides the palette. Both are locked.
+ *
+ * The theme selectors are keyed on the BARE `[data-theme=…]` attribute (not `:root[data-theme=…]`)
+ * because AppShell stamps `data-theme` on a wrapper <div>, not on the <html> root — a
+ * `:root[data-theme="light"]` selector would never match the wrapper, so light mode would silently
+ * stay dark. The unconditional `:root` block below supplies the dark defaults on <html>; the wrapper's
+ * `[data-theme="light"]` override then wins for its own subtree.
+ */
+
+:root,
+[data-theme="dark"] {
+  /* Dominant (60%) */
+  --canvas: #16140f;
+  --canvas2: #1a1714;
+  /* Secondary (30%) */
+  --panel: #181511;
+  --panel-hi: #221c12;
+  /* Lines / structure */
+  --line: #1c1915;
+  --border: #2a2418;
+  --border-soft: #211d18;
+  --faintest: #3a3220;
+  /* Text */
+  --text: #ece6d8;
+  --text-2: #9a917f;
+  --faint: #5f5849;
+  --low: #8a8270;
+  /* Accent (10%) — reserved (see UI-SPEC accent list) */
+  --gold: #c9943a;
+  --gold-bright: #e8c074;
+  /* Semantic */
+  --green: #9bbf6e;
+  --amber: #d9a849;
+  --red: #e74c3c;
+  --red-deep: #c0392b;
+  --orange: #d97a55;
+  /* Graph/data (reserved for the deferred topology graph, D-02) */
+  --node-data: #3a6a8a;
+  --node-stroke: #5a5240;
+
+  /* Spacing scale (2px-step dense-console rhythm, UI-SPEC) */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 10px;
+  --sp-5: 12px;
+  --sp-6: 14px;
+  --sp-7: 16px;
+  --sp-8: 18px;
+  --sp-9: 20px;
+  --sp-10: 22px;
+  --sp-12: 26px;
+
+  /* Fonts */
+  --font-ui: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+[data-theme="light"] {
+  --canvas: #efe9db;
+  --canvas2: #f4efe3;
+  --panel: #faf6ec;
+  --panel-hi: #f6ead2;
+  --line: #e7ddc9;
+  --border: #d8cdb4;
+  --border-soft: #e6dcc8;
+  --faintest: #cabfa6;
+  --text: #241e13;
+  --text-2: #6b6150;
+  --faint: #9c917b;
+  --gold: #9a6a14;
+  --gold-bright: #7d5410;
+  --green: #5d7a30;
+  --amber: #9a6a14;
+  --red: #b5301f;
+  --red-deep: #9e2718;
+  --orange: #b14e22;
+  --low: #837a64;
+  --node-data: #2f5b78;
+  --node-stroke: #b6a988;
+}

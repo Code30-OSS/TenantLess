@@ -1,0 +1,14 @@
+# Force LF for the force-tracked planning roadmap. gsd-sdk roadmap writes were
+# landing CRLF in the committed blob (core.autocrlf=true did not prevent it),
+# producing whole-file line-ending churn on every 3-line logical update
+# (Phase 13 post-review remediation). eol=lf makes the stored blob LF regardless
+# of the writer or platform.
+.planning/ROADMAP.md text eol=lf
+
+# Vendored minified bundle — treat as binary so autocrlf never rewrites its line
+# endings and git shows no diff noise on the third-party file.
+docs/vision/chart.umd.min.js binary
+
+# Bundled design-reference artifact (Claude-designed console mockup, encoded blocks) —
+# treat as binary: it's a generated reference we don't diff, keep it byte-exact.
+docs/vision/console-mockup/tenantless-console.mockup.html binary

@@ -1,0 +1,171 @@
+/*
+ * CatalogView (S1 — DEMO-01) styles. Tokens ONLY — never a raw hex (grep-gated, D-01) — and sharp
+ * corners (border-radius: 0). Mirrors the ResourcesView head band + the controls.module.css panel/label
+ * roles; the only net-new bits are the method chip, the catalog row, and the group heading. Method chip:
+ * GET → var(--text-2), POST → var(--amber); mono 9px uppercase, bordered (18-UI-SPEC §S1).
+ */
+
+/* ---- Section shell ------------------------------------------------------- */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  padding: var(--sp-9);
+  max-width: 820px;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.subtitle {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-2);
+  margin: var(--sp-1) 0 0 0;
+  max-width: 62ch;
+}
+
+.microNote {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--faint);
+  margin: var(--sp-1) 0 0 0;
+}
+
+/* ---- Capability group ---------------------------------------------------- */
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.groupHeading {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* ---- Catalog row --------------------------------------------------------- */
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.routeLine {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.method {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid currentColor;
+}
+
+.method[data-method='GET'] {
+  color: var(--text-2);
+}
+
+.method[data-method='POST'] {
+  color: var(--amber);
+}
+
+.route {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.apiVersion {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--faint);
+  margin-left: auto;
+}
+
+.purpose {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ---- Sample disclosure --------------------------------------------------- */
+
+.disclosure {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+}
+
+.disclosure:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.caret {
+  color: var(--gold);
+}
+
+.sample {
+  border: 1px solid var(--border);
+  background: var(--canvas);
+  padding: var(--sp-4);
+}

@@ -1,0 +1,237 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege. GITHUB_TOKEN defaults to a broad, write-capable scope on some
+# repository settings; declaring it here means every job in this file gets
+# read-only access to contents and nothing else, regardless of that default.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Matches docker-compose.yml so local and CI runs use the same URL shape.
+  DATABASE_URL: postgres://tenantless:tenantless_dev@localhost:5433/tenantless
+
+jobs:
+  python:
+    name: Python (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tenantless
+          POSTGRES_PASSWORD: tenantless_dev
+          POSTGRES_DB: tenantless
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U tenantless"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Provision schema
+        run: uv run tenantless init-db
+
+      - name: Unit + contract suite
+        run: uv run pytest -q
+
+  e2e:
+    name: End-to-end (generate → serve → scan)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tenantless
+          POSTGRES_PASSWORD: tenantless_dev
+          POSTGRES_DB: tenantless
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U tenantless"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --dev
+
+      # The server embeds the built console, so the SPA has to exist before the
+      # Rust build. Without this the integration test skips instead of running,
+      # which would make this job a green no-op.
+      - name: Build web console
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build server
+        run: cargo build --release -p tenantless-server --bin tenantless-server
+
+      - name: Integration suite
+        run: uv run pytest -q -m integration
+
+      # Guards against the skip-instead-of-run failure mode above: if the binary
+      # or Postgres were missing, the suite would report "2 skipped" and pass.
+      - name: Assert the integration tests actually ran
+        run: |
+          uv run pytest -q -m integration -rs 2>&1 | tee /tmp/e2e.log
+          if grep -qE "skipped" /tmp/e2e.log; then
+            echo "::error::integration tests SKIPPED — this job must run them, not skip them"
+            exit 1
+          fi
+
+  privacy-gates:
+    name: Privacy gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # These are the gates that must never be allowed to rot. They are split into
+      # their own job so a failure here is unambiguous in the checks list, and so it
+      # runs even when the matrix above is still going.
+      #
+      # NOTE: the scrub gate runs here with the COMMITTED generic token set only --
+      # tests/.scrub-tokens.private.json is gitignored and absent on a public runner
+      # by design. Maintainers run the private supplement locally before a release.
+      - name: Scrub gate
+        run: uv run pytest tests/test_scrub_gate.py -q
+
+      - name: Data-boundary leak tests
+        run: uv run pytest tests/test_azure_leak.py tests/test_cost_leak.py -q
+
+      - name: Profile provenance gate
+        run: |
+          uv run pytest tests/test_profile_provenance.py -q
+          uv run python scripts/check_release_provenance.py --tree .
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # testcontainers starts its own ephemeral Postgres; the ubuntu runner has a
+      # working Docker daemon, so no service container is needed here.
+      - name: Test
+        run: cargo test -p tenantless-server
+
+  frontend:
+    name: Web console
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Build only -- nothing is pushed from CI.
+      - name: Build mock-server image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: mock-server/Dockerfile
+          push: false
+          load: true
+          tags: tenantless-mock-server:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        run: |
+          docker run --rm tenantless-mock-server:ci --help

@@ -1,0 +1,81 @@
+/*
+ * ConsoleFilters (CONS-04) — instant-apply status / route / window chip rows. Reuses the shipped
+ * FilterBar chip idiom (Space Mono uppercase micro-labels, sharp corners, gold = active); tokens only
+ * (D-01), no raw hex. Active status chips are colored inline via STATUS_TOKEN in the component.
+ */
+
+.bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  min-width: 48px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* Single-select active chip (route / window): gold outline, matching the .next / .resRow idiom. */
+.chipGold {
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+.clear {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.clear:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}

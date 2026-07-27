@@ -1,0 +1,120 @@
+/*
+ * CountBars (CONS-02) — two horizontal bar blocks (by route / by status). Sharp corners (D-01),
+ * token-only colors, Space-Mono labels + counts. The selected bar carries a gold left-accent; the
+ * `.clear` button reuses the ViolationChip retry-button idiom.
+ */
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: var(--sp-4);
+}
+
+.title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.sublabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(80px, 160px) 1fr auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 3px var(--sp-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.row:hover {
+  background: var(--panel-hi);
+}
+
+.row[data-selected] {
+  box-shadow: inset 2px 0 0 var(--gold);
+  background: var(--panel-hi);
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+.row[data-selected] .label {
+  color: var(--gold);
+}
+
+.bar {
+  display: block;
+  width: 100%;
+}
+
+.count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  text-align: right;
+}
+
+.more {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  padding: 3px var(--sp-2);
+}
+
+.emptyText {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.clear {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.clear:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}

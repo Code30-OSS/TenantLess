@@ -1,0 +1,51 @@
+/*
+ * LiveStatusPill (CONS-04) — the live/paused header control. Sharp corners (D-01); only the status dot
+ * is round (50%). The live dot blinks via the shared `blink` keyframe (global.css); tokens only, no hex.
+ * `prefers-reduced-motion` is honored globally (global.css disables all animation).
+ */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 3px var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.blink {
+  animation: blink 1.6s ease-in-out infinite;
+}
+
+.text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.toggle {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  cursor: pointer;
+  margin-left: var(--sp-2);
+}
+
+.toggle:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}

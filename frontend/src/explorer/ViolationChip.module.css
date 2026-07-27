@@ -1,0 +1,89 @@
+/*
+ * ViolationChip + violations block (EXPL-03). Sharp corners (D-01); the severity color is applied
+ * inline from SEVERITY_TOKEN. Space Mono micro-labels for the severity + code; tokens only.
+ */
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.blockTitle {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.severity {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.code {
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.emptyText {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.errorText {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--red);
+}
+
+.retry {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.chipSkeleton {
+  width: 96px;
+  height: 20px;
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}

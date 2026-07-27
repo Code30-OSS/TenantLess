@@ -1,0 +1,163 @@
+/*
+ * DependencyTable — EXPL-04 edge table (D-02). Space Mono / panel tokens, sharp corners, tokens
+ * only (D-01, no raw hex). Cross-subscription rows carry a gold left-accent applied inline in the
+ * component (var(--gold)); this module owns layout, headers, badges and the legend.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.th,
+.arrowHead {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-hi);
+}
+
+.arrowHead {
+  width: 24px;
+}
+
+.sortBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.sortBtn:hover {
+  color: var(--gold);
+}
+
+.sortBtn[data-active='true'] {
+  color: var(--gold);
+}
+
+.caret {
+  font-size: 8px;
+  color: var(--faint);
+}
+
+.sortBtn[data-active='true'] .caret {
+  color: var(--gold);
+}
+
+.row {
+  border-bottom: 1px solid var(--line);
+}
+
+.row:hover {
+  background: var(--panel-hi);
+}
+
+.endpoint {
+  padding: var(--sp-2) var(--sp-3);
+  overflow: hidden;
+}
+
+.endpointInner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resName {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subId {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arrow {
+  text-align: center;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.type {
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+.crossCell {
+  padding: var(--sp-2) var(--sp-3);
+  white-space: nowrap;
+}
+
+.crossBadge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  padding: 2px 6px;
+}
+
+.sameBadge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px solid var(--border-soft);
+  padding: 2px 6px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.legendCross {
+  color: var(--gold);
+}
+
+.legendTypes {
+  color: var(--text-2);
+}

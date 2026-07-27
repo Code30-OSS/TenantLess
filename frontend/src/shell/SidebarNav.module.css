@@ -1,0 +1,68 @@
+/*
+ * SidebarNav — grouped nav with a gold active state. Tokens only; no raw hex (D-01).
+ * Mirrors the mockup's nav markup: group eyebrow + item rows with a left-accent + dot + label.
+ */
+
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-4);
+}
+
+.group {
+  margin-bottom: var(--sp-8);
+}
+
+.groupTitle {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--faint);
+  text-transform: uppercase;
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+
+/* Item row — a NavLink (<a>). Idle: transparent accent + --text-2 label. */
+.item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px var(--sp-3);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  background: transparent;
+  margin-bottom: 1px;
+  text-decoration: none;
+  transition: background 0.12s;
+}
+
+.item:hover {
+  background: var(--panel-hi);
+}
+
+.dot {
+  width: 5px;
+  height: 5px;
+  background: var(--faint);
+  flex: 0 0 auto;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+/* Active item — gold left-accent + --text label + gold dot (the WEBUI-04 active signal). */
+.itemActive {
+  border-left-color: var(--gold);
+  background: var(--panel-hi);
+}
+
+.itemActive .dot {
+  background: var(--gold);
+}
+
+.itemActive .label {
+  color: var(--text);
+}

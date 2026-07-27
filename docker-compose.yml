@@ -1,0 +1,52 @@
+services:
+  # Synthetic data Postgres -- isolated on port 5433 to avoid host Postgres conflicts
+  postgres-sim:
+    image: postgres:16-alpine
+    container_name: tenantless-postgres
+    env_file: .env
+    ports:
+      - "5433:5432"
+    volumes:
+      - sim-pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenantless"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ARM mock server -- the real tenantless-server Rust binary (INFRA-01: port 8080).
+  mock-server:
+    build:
+      context: .
+      dockerfile: mock-server/Dockerfile
+    image: tenantless-mock-server
+    container_name: tenantless-mock-server
+    # Explicit env (NOT env_file: .env, whose DATABASE_URL points at localhost:5433 —
+    # wrong inside the compose network). Reach Postgres by service name on 5432.
+    environment:
+      DATABASE_URL: postgres://tenantless:tenantless_dev@postgres-sim:5432/tenantless
+      BASE_URL: http://localhost:8080
+      PORT: "8080"
+      # SEC-HIGH-3: the server defaults to a 127.0.0.1 bind, which is unreachable
+      # from outside the container. Inside the image it MUST bind 0.0.0.0 so the
+      # published port works; the host mapping below restricts exposure to loopback.
+      HOST: 0.0.0.0
+    ports:
+      # Publish on the host loopback only (SEC-HIGH-3): reachable from the dev box
+      # (and a localhost Path-A scan), not from the wider network.
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      # Any token is accepted; an empty synthetic DB still returns 200 {"value":[]}.
+      test: ["CMD", "curl", "-fsS", "-H", "Authorization: Bearer health", "http://localhost:8080/subscriptions"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      postgres-sim:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  sim-pgdata:

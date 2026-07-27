@@ -1,0 +1,63 @@
+# Environment variables — never commit; copy .env.example to .env locally
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+
+# Rust
+target/
+*.rs.bk
+
+# Docker
+sim-pgdata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# sqlx (offline query data -- will be committed later)
+.sqlx/
+
+# Node
+node_modules/
+
+# Codex/agent context file — local-only, mirrors CLAUDE.md (not shipped).
+AGENTS.md
+
+# GSD planning tree — internal planning history kept local-only (not shipped).
+# Files remain on disk so the GSD workflow keeps working; they just are not tracked.
+.planning/
+
+# Privacy denylist: contains REAL tenant identifiers derived from the source
+# scan (sub display names, UUIDs, resource names, raw tag values).
+# This file MUST NEVER be committed -- it is the source of truth the privacy
+# test scans against, and committing it would defeat the data-boundary guarantee.
+# The broadened glob covers .scan-denylist.json plus any source-named variant
+# (e.g. .<source>-denylist.json) so no real-identifier denylist is ever trackable.
+profiles/.*-denylist.json
+
+# Private scrub-token supplement: internal product names, code names and customer
+# names the scrub gate forbids. Committing it would publish exactly the word list
+# the gate exists to keep out of the tree. See tests/test_scrub_gate.py.
+tests/.scrub-tokens.private.json
+
+# Real-derived statistical profiles: any profile fitted from a real source scan
+# stays local-only -- it embeds real-tenant tag-value distributions and must
+# never cross the data boundary into the repo.
+profiles/*-real.json

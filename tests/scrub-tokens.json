@@ -1,0 +1,25 @@
+{
+  "$comment": [
+    "PUBLIC, COMMITTED scrub-token set. Read by tests/test_scrub_gate.py, which",
+    "fails if any token appears as a whole identifier anywhere in the shipped tree.",
+    "",
+    "These are generic 'this must never ship' markers -- deliberately not tied to",
+    "any organization, product, or customer. They are chosen so they cannot",
+    "false-positive on ordinary prose or Azure resource-type names.",
+    "",
+    "Maintainers and forks add their OWN private tokens (internal product names,",
+    "customer names, code names) in tests/.scrub-tokens.private.json, which is",
+    "gitignored. That file is optional: the gate always runs with the tokens",
+    "below, and additionally loads the private supplement when present. Publishing",
+    "the mechanism does not require publishing the private word list -- see",
+    "tests/test_scrub_gate.py for the rationale."
+  ],
+  "tokens": [
+    "do-not-ship",
+    "donotship",
+    "internal-only",
+    "not-for-distribution",
+    "customer-confidential",
+    "third-party-confidential"
+  ]
+}

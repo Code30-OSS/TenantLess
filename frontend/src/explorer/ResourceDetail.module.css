@@ -1,0 +1,158 @@
+/*
+ * ResourceDetail — right-column detail panel (EXPL-02). Panel/border tokens, sharp corners (D-01).
+ * Space Mono for the ARM id + eyebrow micro-labels; DM Sans for the resource name + meta values.
+ */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  padding: var(--sp-9) var(--sp-12);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.name {
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+  word-break: break-all;
+}
+
+.armId {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--text-2);
+  word-break: break-all;
+  border-left: 1px solid var(--faintest);
+  padding-left: var(--sp-4);
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.metaRow {
+  display: flex;
+  gap: var(--sp-4);
+}
+
+.metaKey {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  min-width: 12ch;
+}
+
+.metaValue {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.blockTitle {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.nestedList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.nestedItem {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-soft);
+}
+
+.nestedName {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.nestedType {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.emptyState {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+  margin: auto;
+}
+
+.errorState {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--red);
+  margin: 0;
+}
+
+.retry {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.skeleton {
+  height: 14px;
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}

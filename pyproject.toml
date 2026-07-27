@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tenantless"
+version = "1.0.0"
+description = "Azure Tenant Simulator - local ARM API mock server backed by synthetic data"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "polars>=1.40",
+    "connectorx>=0.4.5",
+    "psycopg[binary]>=3.3",
+    "scipy>=1.17",
+    "scikit-learn>=1.8",
+    "click>=8.4",
+    "orjson>=3.10",
+    "faker>=40.0",
+    "duckdb>=1.4",
+    "jsonschema>=4.21",
+    "rfc3339-validator>=0.1",
+]
+
+[project.optional-dependencies]
+# SCAN-01 (D-06): the `--source azure:` direct-tenant scan path lives behind this
+# optional extra. A bare core `uv sync` NEVER pulls these — only `uv sync
+# --extra azure` installs them. Both are Microsoft first-party (slopcheck [OK]),
+# pinned to the verified majors. azure-mgmt-resource is intentionally absent:
+# the A2 subscription-enumeration fallback uses ARG itself, keeping the extra to
+# two packages.
+azure = [
+    "azure-identity>=1.25,<2",
+    "azure-mgmt-resourcegraph>=8.0.1,<9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+tenantless = "tenantless.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# src-layout: the import package lives under src/tenantless.
+packages = ["src/tenantless"]
+# PLAT-04 / Pitfall 3: the bundled named profiles are data files, not Python
+# modules — hatchling would drop them from the wheel without an explicit glob.
+# This keeps `--profile enterprise|small` resolvable via importlib.resources
+# after a pip/uv install, not only from a repo checkout.
+artifacts = ["src/tenantless/profiles/*.json"]
+
+[tool.pytest.ini_options]
+# Integration tests (live-Postgres end-to-end parity) and the opt-in scale
+# benchmark are deselected from the default suite and run explicitly via
+# `-m integration` / `-m scale` at phase verification.
+addopts = "-m 'not integration and not scale'"
+markers = [
+    "integration: requires a live Postgres on :5433 (skips cleanly when absent)",
+    "scale: opt-in ~2000-sub / 500K-resource benchmark (deselected by default)",
+]

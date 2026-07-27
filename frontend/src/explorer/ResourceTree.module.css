@@ -1,0 +1,226 @@
+/*
+ * ResourceTree — the 3-level disclosure tree. Dense terminal rows (DM Sans names, Space Mono types /
+ * counts), sharp corners, tokens only (D-01). Nested levels indent under their parent; carets rotate
+ * on open. Loading uses the shared `pulse` keyframe; empty/error are muted inline rows.
+ */
+
+/*
+ * A Miller column frame: a fixed header label (`.colHead`) above the height-capped, internally
+ * scrolling list region (`.scroll`). The column fills its grid track (col1/col2 in ResourcesView);
+ * the header stays put while the list scrolls independently.
+ */
+.column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.colHead {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+
+/*
+ * The height-capped, internally-scrolling region wrapping the level list. Bounds the tree so
+ * the page never grows unbounded, however deep the tenant — each level shows ONE page at a time
+ * (Prev/Next replace), and the region scrolls internally rather than lengthening the page.
+ */
+.scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* The muted col2 prompt shown until a resource group is selected. */
+.prompt {
+  margin: 0;
+  padding: var(--sp-4);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The bounded Prev/Next pager row (replaces the old accumulate-on-"Load more" control). */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.pageReadout {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-right: auto;
+}
+
+.pageBtn {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.pageBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.item {
+  list-style: none;
+}
+
+.children {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--sp-6);
+  border-left: 1px solid var(--line);
+  margin-left: var(--sp-3);
+}
+
+.row,
+.resRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.row:hover,
+.resRow:hover {
+  background: var(--panel-hi);
+}
+
+.resRow[data-selected='true'],
+.row[data-selected='true'] {
+  background: var(--panel-hi);
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.caret {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  transition: transform 0.12s ease;
+}
+
+.caret[data-open='true'] {
+  transform: rotate(90deg);
+  color: var(--gold);
+}
+
+.name {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.archetype {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 1px 5px;
+}
+
+.resType {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.skeleton {
+  height: 12px;
+  margin: var(--sp-2) var(--sp-3);
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.emptyRow {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.errorText {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--red);
+}
+
+.retry {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}

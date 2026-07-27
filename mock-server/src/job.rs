@@ -1,0 +1,540 @@
+//! Control-plane job registry types + the `ControlPlane` bundle (Phase 17).
+//!
+//! **Types only in 17-01** — the tokio subprocess runner that drives `uv run
+//! tenantless generate|analyze` lands in 17-02, and the pg_dump/pg_restore snapshot
+//! orchestration in 17-04. This module defines the shared contracts every later
+//! Phase-17 plan builds on: the simple `JobStatus` state machine (D-15), the in-memory
+//! `Job` record with a bounded log tail (D-06), the serializable `JobSnapshot` the poll
+//! endpoint returns (D-07), and the `ControlPlane` bundle carried in `AppState.control`
+//! (`Some` ⇔ armed, D-02) — mirroring the in-memory `Metrics` Arc-registry precedent.
+//!
+//! The control token is NEVER stored in the clear: `arm_decision`/`arm` keep only the
+//! SHA-256 `token_digest`, compared in constant time by [`crate::control::control_token`].
+
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::OwnedSemaphorePermit;
+use uuid::Uuid;
+
+/// Bounded per-job log tail cap (D-06): keep only the last `LOG_CAP` captured lines so
+/// a 500K-resource generate cannot grow the in-memory log without bound.
+pub const LOG_CAP: usize = 200;
+
+/// Server-only secret env vars that must NEVER be inherited by a spawned child (WR-03/T-17-05).
+/// The control token arms the server via `TENANTLESS_CONTROL_TOKEN` (the recommended env path),
+/// which `tokio::process::Command` inherits by default — but no child (generate/analyze/pg_dump/
+/// pg_restore) needs it, so it is stripped from every child we spawn (keeps the secret off the
+/// child's `/proc/<pid>/environ`, closing the surface T-17-05 shrinks).
+pub const CHILD_SECRET_ENV: [&str; 1] = ["TENANTLESS_CONTROL_TOKEN"];
+
+/// Strip the server-only secrets ([`CHILD_SECRET_ENV`]) from a child command's inherited env
+/// (WR-03). Applied at EVERY child-spawn construction site (the pipeline generate/analyze command
+/// AND the pg_dump/pg_restore snapshot commands) so the control secret is never inherited.
+pub fn scrub_child_env(cmd: &mut Command) {
+    for key in CHILD_SECRET_ENV {
+        cmd.env_remove(key);
+    }
+}
+
+/// SHA-256 a string to a fixed 32-byte digest. The control token is hashed to this
+/// fixed width BEFORE the constant-time compare so the comparison never leaks length
+/// (RESEARCH "Don't Hand-Roll"). Also used to derive `token_digest` at arm time.
+pub fn digest(s: &str) -> [u8; 32] {
+    Sha256::digest(s.as_bytes()).into()
+}
+
+/// The simple job state machine (D-15): `queued → running → succeeded | failed`. No
+/// user cancel this phase. Serialized **lowercase** — the exact wire strings the
+/// frontend keys on (D-17); the serde default would emit `"Queued"` and break the match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+/// The kind of work a control job performs. Serialized lowercase for the same
+/// frontend-keying reason as [`JobStatus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobKind {
+    Generate,
+    Analyze,
+    Reset,
+    Snapshot,
+    Restore,
+}
+
+/// One tracked job in the in-memory registry (D-06). Cloned out under the registry
+/// mutex for polling; the runner (17-02) mutates it in place via lock-mutate-drop.
+#[derive(Debug, Clone)]
+pub struct Job {
+    /// Unguessable v4 id (mild enumeration resistance over a sequential counter).
+    pub id: Uuid,
+    /// What the job is doing.
+    pub kind: JobKind,
+    /// Current lifecycle state.
+    pub status: JobStatus,
+    /// Coarse phase label mapped from the child's stderr (D-08), e.g. `"generating tenant…"`.
+    pub phase: Option<String>,
+    /// Bounded captured log tail (last [`LOG_CAP`] lines).
+    pub log: VecDeque<String>,
+    /// Opportunistically parsed final result (tenant_id + counts), if any (D-08).
+    pub result: Option<serde_json::Value>,
+    /// When the job entered the registry — for the UI elapsed timer.
+    pub started_at: std::time::Instant,
+}
+
+impl Job {
+    /// A fresh `queued` job with an unguessable id and an empty log.
+    pub fn new(kind: JobKind) -> Job {
+        Job {
+            id: Uuid::new_v4(),
+            kind,
+            status: JobStatus::Queued,
+            phase: None,
+            log: VecDeque::new(),
+            result: None,
+            started_at: std::time::Instant::now(),
+        }
+    }
+
+    /// Push a captured line, evicting the oldest so the tail stays bounded to [`LOG_CAP`].
+    pub fn push_log(&mut self, line: String) {
+        if self.log.len() >= LOG_CAP {
+            self.log.pop_front();
+        }
+        self.log.push_back(line);
+    }
+
+    /// Project the mutable `Job` to the serializable wire shape the poll endpoint
+    /// returns (status + phase + last-N log lines + result) — never the `Instant`.
+    pub fn snapshot(&self) -> JobSnapshot {
+        JobSnapshot {
+            id: self.id,
+            kind: self.kind,
+            status: self.status,
+            phase: self.phase.clone(),
+            log: self.log.iter().cloned().collect(),
+            result: self.result.clone(),
+        }
+    }
+}
+
+/// The serializable projection of a [`Job`] returned by `GET /_control/jobs/{id}` (D-07).
+/// A plain owned snapshot so the registry mutex is released before serialization.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobSnapshot {
+    pub id: Uuid,
+    pub kind: JobKind,
+    pub status: JobStatus,
+    pub phase: Option<String>,
+    pub log: Vec<String>,
+    pub result: Option<serde_json::Value>,
+}
+
+/// Server-owned directories for control-plane artifacts (D-03/D-12/D-13). All names
+/// crossing into these dirs are safe-name guarded — no arbitrary paths, no upload.
+#[derive(Debug, Clone)]
+pub struct ControlDirs {
+    /// Derived profiles written by `analyze` (safe-name only) → the generate allowlist.
+    pub profiles: PathBuf,
+    /// Operator-populated DuckDB analyze sources (dropped in out-of-band).
+    pub sources: PathBuf,
+    /// `pg_dump` snapshot artifacts (safe-name only).
+    pub snapshots: PathBuf,
+}
+
+/// The armed control-plane bundle carried in `AppState.control` (`Some` ⇔ armed, D-02).
+///
+/// Mirrors the in-memory `Metrics` Arc-registry precedent. The `registry` is a
+/// `std::sync::Mutex` held only for lock-mutate-drop (never across an `.await`); the
+/// `write_gate` is a `Semaphore(1)` that serializes ALL destructive jobs (D-11). The
+/// `database_url` is threaded here because `AppState` today stores only the pool, not the
+/// URL string the child `uv run tenantless generate` needs via `DATABASE_URL` (Pitfall 2).
+#[derive(Clone)]
+pub struct ControlPlane {
+    /// SHA-256 of the configured control secret — the raw token is never stored (T-17-05).
+    pub token_digest: [u8; 32],
+    /// The server's Postgres DSN, passed to child jobs via env (Pitfall 2, T-07-02).
+    pub database_url: String,
+    /// The repo root the child `uv` runs from (`current_dir`).
+    pub repo_root: PathBuf,
+    /// Server-owned artifact directories (profiles / sources / snapshots).
+    pub dirs: ControlDirs,
+    /// In-memory ephemeral job registry (D-06) — reset on restart.
+    pub registry: Arc<Mutex<HashMap<Uuid, Job>>>,
+    /// Single-writer permit source: at most one destructive job in flight (D-11).
+    pub write_gate: Arc<tokio::sync::Semaphore>,
+    /// The pipeline argv prefix the runner invokes for generate/analyze jobs — production
+    /// arms this to [`DEFAULT_PIPELINE_CMD`] (`uv run tenantless`); the handlers append the
+    /// subcommand + validated flags. A per-instance seam so integration tests can substitute
+    /// a deterministic stub (RESEARCH Wave-0 runner seam) without a runnable Python CLI.
+    pub pipeline_cmd: Vec<String>,
+    /// The pool used for `TRUNCATE` on reset/restore (17-02/17-04).
+    pub pool: PgPool,
+}
+
+/// The fail-closed arming DECISION (D-02), factored out so the security-critical rule is
+/// unit-testable DB-free (no pool, no dir creation). Returns:
+///   * `Ok(None)` — the control plane is disabled (flag absent): stay read-only;
+///   * `Err(msg)` — enabled but the token is missing/empty/whitespace: **fail closed**,
+///     with a message naming BOTH `--control-token` and `TENANTLESS_CONTROL_TOKEN`;
+///   * `Ok(Some(digest))` — enabled with a non-empty token: the SHA-256 token digest.
+///
+/// [`ControlPlane::arm`] wraps this and, on `Some`, creates the three control-data
+/// subdirs and assembles the bundle.
+pub fn arm_decision(enable: bool, token: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    if !enable {
+        return Ok(None);
+    }
+    let token = token.map(str::trim).unwrap_or("");
+    if token.is_empty() {
+        return Err(
+            "control plane enabled (--enable-control-plane) but no control token configured \
+             — set --control-token or TENANTLESS_CONTROL_TOKEN to a non-empty secret \
+             (fail-closed, D-02)"
+                .to_string(),
+        );
+    }
+    Ok(Some(digest(token)))
+}
+
+impl ControlPlane {
+    /// Assemble the armed bundle from the CLI config + the server pool, implementing the
+    /// D-02 fail-closed rule via [`arm_decision`]: disabled → `Ok(None)`; enabled + empty
+    /// token → `Err`; enabled + non-empty → `Ok(Some(ControlPlane))` after creating the
+    /// three server-owned control-data subdirs (`profiles/`, `sources/`, `snapshots/`).
+    pub fn arm(cli: &crate::config::Cli, pool: PgPool) -> Result<Option<ControlPlane>, String> {
+        let token_digest =
+            match arm_decision(cli.enable_control_plane, cli.control_token.as_deref())? {
+                None => return Ok(None),
+                Some(d) => d,
+            };
+
+        let base = &cli.control_data_dir;
+        let dirs = ControlDirs {
+            profiles: base.join("profiles"),
+            sources: base.join("sources"),
+            snapshots: base.join("snapshots"),
+        };
+        for d in [&dirs.profiles, &dirs.sources, &dirs.snapshots] {
+            std::fs::create_dir_all(d)
+                .map_err(|e| format!("failed to create control-data dir {}: {e}", d.display()))?;
+        }
+
+        let repo_root = std::env::current_dir()
+            .map_err(|e| format!("failed to resolve repo root (cwd): {e}"))?;
+
+        Ok(Some(ControlPlane {
+            token_digest,
+            database_url: cli.database_url.clone(),
+            repo_root,
+            dirs,
+            registry: Arc::new(Mutex::new(HashMap::new())),
+            write_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            pipeline_cmd: DEFAULT_PIPELINE_CMD.iter().map(|s| s.to_string()).collect(),
+            pool,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Job runner (Plan 17-02, Task 1) — a tokio subprocess runner that drives the
+// Python `generate`/`analyze` CLI. RESEARCH Pattern 3 (concurrent drain) is the
+// blueprint: drain stdout AND stderr concurrently (Pitfall 1 — a full pipe on one
+// stream while blocking on the other deadlocks), map known stderr lines to coarse
+// phase labels (D-08), opportunistically parse the final stdout summary, and finalize
+// on the child's exit code (never a 500 on a bad child, D-08/D-15).
+// ---------------------------------------------------------------------------
+
+/// The full `synthetic.*` table set a reset TRUNCATEs and a snapshot must cover (D-14) —
+/// a verbatim port of `writer.py::_SYNTHETIC_TABLES` in FK order (`role_assignments`
+/// before `principals`, `drift_records` before `drift_batches`). This is a STATIC code
+/// literal, NEVER user/profile input, so joining it into a `TRUNCATE`/`--table` fragment
+/// introduces no injection surface (mirrors the `writer.truncate_synthetic` comment; the
+/// project SQL bar binds user VALUES as `$N`, but relation names come from this allowlist).
+pub const SYNTHETIC_TABLES: [&str; 11] = [
+    "synthetic.tenant",
+    "synthetic.subscriptions",
+    "synthetic.resource_groups",
+    "synthetic.resources",
+    "synthetic.dependencies",
+    "synthetic.violations",
+    "synthetic.cost_records",
+    "synthetic.role_assignments",
+    "synthetic.principals",
+    "synthetic.drift_records",
+    "synthetic.drift_batches",
+];
+
+/// The production pipeline argv prefix: `uv run tenantless <subcommand> …`. Held in
+/// [`ControlPlane::pipeline_cmd`] as a per-instance seam so integration tests can
+/// substitute a deterministic stub instead of a runnable Python CLI (RESEARCH Wave-0
+/// "runner seam"). The subcommand + validated flags are appended by the handlers (17-02).
+pub const DEFAULT_PIPELINE_CMD: [&str; 3] = ["uv", "run", "tenantless"];
+
+/// Wall-clock fail-safe (D-15): a job exceeding this is `start_kill`ed and marked `Failed`
+/// with the same reset/regenerate recovery guidance. One hour leaves ample headroom over a
+/// 500K-resource generate at the throughput the committed benchmark records for the bundled
+/// synthetic profile (see `docs/benchmarks/`), which is reproducible on any machine.
+pub const JOB_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// Map a raw child **stderr** line to a coarse phase label (D-08). Returns `Some(label)`
+/// for the exact generator progress lines and `None` otherwise (an unknown line changes no
+/// phase). Pure — the runner locks the registry only to APPLY the returned label.
+pub fn phase_label(line: &str) -> Option<&'static str> {
+    match line.trim() {
+        "fitting distributions..." => Some("fitting distributions…"),
+        "generating tenant..." => Some("generating tenant…"),
+        "computing tag entropy..." => Some("computing tag entropy…"),
+        "writing to database..." => Some("writing to database…"),
+        _ => None,
+    }
+}
+
+/// Opportunistically parse the final `generate` **stdout** summary line into the job result
+/// (D-08). The canonical line is:
+/// `Generated tenant {uuid}: {n} subscriptions, {n} resource groups, {n} resources, {n}
+/// violations, …`. Returns a JSON object with `tenant_id` + the four headline counts, or
+/// `None` if the line is not a well-formed summary (parse-failure keeps the job `Succeeded`).
+pub fn parse_generate_summary(line: &str) -> Option<serde_json::Value> {
+    let rest = line.trim().strip_prefix("Generated tenant ")?;
+    let (tenant_id, counts) = rest.split_once(": ")?;
+    let tenant_id = tenant_id.trim();
+    if tenant_id.is_empty() {
+        return None;
+    }
+
+    let (mut subscriptions, mut resource_groups, mut resources, mut violations) =
+        (None, None, None, None);
+    // Each comma-separated segment is `<n> <label words>`; match the four headline labels
+    // and ignore the rest (dependencies / principals / role assignments / parenthetical tail).
+    for part in counts.split(',') {
+        let part = part.trim();
+        let Some((num, label)) = part.split_once(' ') else {
+            continue;
+        };
+        let Ok(n) = num.parse::<i64>() else {
+            continue;
+        };
+        match label.trim() {
+            "subscriptions" => subscriptions = Some(n),
+            "resource groups" => resource_groups = Some(n),
+            "resources" => resources = Some(n),
+            "violations" => violations = Some(n),
+            _ => {}
+        }
+    }
+
+    Some(serde_json::json!({
+        "tenant_id": tenant_id,
+        "subscriptions": subscriptions?,
+        "resource_groups": resource_groups?,
+        "resources": resources?,
+        "violations": violations?,
+    }))
+}
+
+/// Lock the registry, apply `f` to the job if present, and drop the lock immediately —
+/// the std `Mutex` is NEVER held across an `.await` (RESEARCH invariant / Pattern 4).
+/// `pub(crate)` so the reset/snapshot runners (control.rs / snapshot.rs) mutate a job
+/// through the SAME lock-mutate-drop seam as the subprocess runner.
+pub(crate) fn with_job(cp: &ControlPlane, job_id: Uuid, f: impl FnOnce(&mut Job)) {
+    if let Ok(mut reg) = cp.registry.lock()
+        && let Some(job) = reg.get_mut(&job_id)
+    {
+        f(job);
+    }
+}
+
+/// Spawn `cmd` as a tracked control job and drive it to a terminal state, updating the
+/// in-memory registry as it runs. The caller (17-02 handlers) builds `cmd` (program, args,
+/// the `DATABASE_URL` env, and `current_dir`) and holds the single-writer `_permit`, which
+/// drops at the end here, releasing the write gate on success, failure, timeout, OR panic
+/// (D-11).
+///
+/// Contract (D-08/D-15): stdio is forced (`stdin` null, `stdout`/`stderr` piped,
+/// `kill_on_drop`); a spawn error (missing binary) marks the job `Failed` with a clear log
+/// (never a panic); both child streams are drained CONCURRENTLY (Pitfall 1 — no pipe-buffer
+/// deadlock); each line is pushed into the bounded log and a known stderr line updates the
+/// phase label; a wall-clock timeout `start_kill`s the child and marks `Failed`; and exit 0
+/// yields `Succeeded` (with an opportunistic summary parse into `result`), else `Failed`.
+pub async fn run_command(
+    cp: ControlPlane,
+    job_id: Uuid,
+    cmd: Command,
+    _permit: OwnedSemaphorePermit,
+) {
+    // Production always uses the wall-clock [`JOB_TIMEOUT`]; the injectable variant below
+    // exists ONLY so integration tests can drive a SHORT timeout (the default is an hour).
+    run_command_with_timeout(cp, job_id, cmd, _permit, JOB_TIMEOUT).await;
+}
+
+/// As [`run_command`], but with an injectable wall-clock `timeout` — a test-only seam so the
+/// timeout/permit-release path is drivable without waiting the production hour. Production code
+/// always calls [`run_command`] (which passes [`JOB_TIMEOUT`]); nothing else changes.
+pub async fn run_command_with_timeout(
+    cp: ControlPlane,
+    job_id: Uuid,
+    mut cmd: Command,
+    _permit: OwnedSemaphorePermit,
+    timeout: Duration,
+) {
+    with_job(&cp, job_id, |j| j.status = JobStatus::Running);
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // Missing binary / not executable: a first-class `Failed`, never a crash (D-08).
+            with_job(&cp, job_id, |j| {
+                j.push_log(format!("failed to spawn subprocess: {e}"));
+                j.status = JobStatus::Failed;
+            });
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    // Drain BOTH streams concurrently. stdout returns the LAST line for the summary parse.
+    let out_task = {
+        let cp = cp.clone();
+        tokio::spawn(async move {
+            let mut last = String::new();
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                with_job(&cp, job_id, |j| j.push_log(line.clone()));
+                last = line;
+            }
+            last
+        })
+    };
+    let err_task = {
+        let cp = cp.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let label = phase_label(&line);
+                with_job(&cp, job_id, |j| {
+                    if let Some(lbl) = label {
+                        j.phase = Some(lbl.to_string());
+                    }
+                    j.push_log(line);
+                });
+            }
+        })
+    };
+
+    // Wait with a wall-clock fail-safe. On a TIMEOUT the child may still be alive holding its
+    // stdout/stderr pipes open, so we MUST kill (and reap) it BEFORE joining the drain tasks —
+    // otherwise the drains never see EOF, `join!` blocks forever, the job never finalizes, and
+    // the single-writer `_permit` is held permanently (the P1-B deadlock). Kill-before-join
+    // guarantees the pipes close so both drains complete and the permit drops.
+    let waited = tokio::time::timeout(timeout, child.wait()).await;
+    if waited.is_err() {
+        let _ = child.start_kill();
+        let _ = child.wait().await; // reap → the pipes close so the drains below can finish
+    }
+    let (out_join, _err_join) = tokio::join!(out_task, err_task);
+    let last_stdout = out_join.unwrap_or_default();
+
+    let succeeded = match waited {
+        Ok(Ok(status)) => status.success(),
+        Ok(Err(e)) => {
+            with_job(&cp, job_id, |j| {
+                j.push_log(format!("failed to await child: {e}"))
+            });
+            false
+        }
+        Err(_) => {
+            // The child was already killed + reaped above; just log the timeout and fail the job.
+            with_job(&cp, job_id, |j| {
+                j.push_log(format!(
+                    "job timed out after {}s — killed (tenant may be dirty; reset or regenerate)",
+                    timeout.as_secs()
+                ));
+            });
+            false
+        }
+    };
+
+    with_job(&cp, job_id, |j| {
+        if succeeded {
+            j.status = JobStatus::Succeeded;
+            if let Some(result) = parse_generate_summary(&last_stdout) {
+                j.result = Some(result);
+            }
+        } else {
+            j.status = JobStatus::Failed;
+        }
+    });
+    // `_permit` drops here → the single-writer gate is released.
+}
+
+/// The reset runner (Plan 17-04, CTRL-03/D-09): `TRUNCATE` every `synthetic.*` table under
+/// the held single-writer permit, wiping the active tenant to a blank simulator. Unlike
+/// [`run_command`] this is a pure SQL mutation (no subprocess) — but it uses the SAME
+/// registry seam ([`with_job`]) and the SAME permit lifecycle (the `_permit` moves in and
+/// drops here, releasing the write gate on success OR failure, D-11).
+///
+/// `TRUNCATE … RESTART IDENTITY CASCADE` over the FK-ordered [`SYNTHETIC_TABLES`] wipes all
+/// rows in one atomic statement (CASCADE also clears any FK-referencing rows, matching
+/// `writer.truncate_synthetic`). The relation list is a STATIC allowlist, never user input.
+/// The migration-managed schema itself is preserved, so the ARM read path immediately serves
+/// an empty tenant (list 200-empty / detail 404 / summary zeros) and a fresh boot tolerates
+/// the empty schema (17-01 D-09). On SQL error the job ends `Failed` with a logged cause —
+/// never a panic; the tenant may be left dirty (recover via reset/regenerate, D-15).
+pub async fn run_reset(cp: ControlPlane, job_id: Uuid, _permit: OwnedSemaphorePermit) {
+    with_job(&cp, job_id, |j| j.status = JobStatus::Running);
+    match truncate_synthetic(&cp.pool).await {
+        Ok(_) => with_job(&cp, job_id, |j| j.status = JobStatus::Succeeded),
+        Err(e) => with_job(&cp, job_id, |j| {
+            j.push_log(format!("reset TRUNCATE failed: {e}"));
+            j.status = JobStatus::Failed;
+        }),
+    }
+    // `_permit` drops here → the single-writer gate is released.
+}
+
+/// `TRUNCATE` every EXISTING `synthetic.*` table (`RESTART IDENTITY CASCADE`, FK-safe) —
+/// the Rust twin of `writer.truncate_synthetic`, shared by the reset runner and the
+/// snapshot restore path (17-04). Only tables that CURRENTLY exist are truncated: a
+/// synthetic table may be introduced by a later migration than the one applied to the
+/// target schema (e.g. the test fixture applies a subset), so `to_regclass` returns NULL
+/// for an absent table and it is skipped rather than aborting the whole TRUNCATE. The
+/// table-name list is the STATIC [`SYNTHETIC_TABLES`] allowlist, never user input, so the
+/// generated statement carries no injection surface. A no-op (all absent) succeeds.
+pub(crate) async fn truncate_synthetic(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let names: Vec<String> = SYNTHETIC_TABLES.iter().map(|s| s.to_string()).collect();
+    // Filter to the tables that actually exist (bind the allowlist as a $1 text[]).
+    let existing: Vec<String> = sqlx::query_scalar(
+        "SELECT t FROM unnest($1::text[]) AS t WHERE to_regclass(t) IS NOT NULL",
+    )
+    .bind(&names)
+    .fetch_all(pool)
+    .await?;
+    if existing.is_empty() {
+        return Ok(());
+    }
+    let sql = format!("TRUNCATE {} RESTART IDENTITY CASCADE", existing.join(", "));
+    sqlx::query(&sql).execute(pool).await?;
+    Ok(())
+}

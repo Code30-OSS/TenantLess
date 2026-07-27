@@ -1,0 +1,143 @@
+/*
+ * FeedTable (CONS-04) — live request feed. DependencyTable layout idiom: sticky --panel-hi header,
+ * --line row dividers, hover --panel-hi. Sharp corners (D-01), token-only colors (no raw hex), Space
+ * Mono data cells. The selected-row gold accent is applied inline in the component (var(--gold)); this
+ * module owns layout, the state copy, the 9px scroll region, and the one-shot new-row `pulse`.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.reconnecting {
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border-bottom: 1px solid var(--line);
+}
+
+.empty {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+  padding: var(--sp-9) var(--sp-4);
+  margin: 0;
+}
+
+.scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--faintest);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.row {
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--panel-hi);
+}
+
+/* One-shot gold left-accent as a fresh row prepends, then settles (UI-SPEC Motion). */
+.rowNew {
+  animation: pulse 0.7s ease-in-out 1;
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.method,
+.path,
+.route,
+.status,
+.ms,
+.ts {
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.method {
+  color: var(--text);
+  width: 56px;
+}
+
+.path {
+  color: var(--text);
+}
+
+.route {
+  color: var(--text-2);
+}
+
+.status {
+  text-align: right;
+  width: 52px;
+}
+
+.ms {
+  color: var(--text-2);
+  text-align: right;
+  width: 52px;
+}
+
+.ts {
+  color: var(--faint);
+  text-align: right;
+  width: 60px;
+}
+
+.skeleton {
+  height: 14px;
+  margin: var(--sp-2) var(--sp-3);
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rowNew,
+  .skeleton {
+    animation: none;
+  }
+}

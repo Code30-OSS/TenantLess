@@ -1,0 +1,100 @@
+/*
+ * ResourcesView — EXPL-GAP-02 layout: KPI header band + breadcrumb + search/filter slots + a 3-pane
+ * MILLER-COLUMN body (col1 subscriptions/RGs | col2 the selected RG's resources | col3 detail). Tokens
+ * only (D-01), sharp corners. The three columns are a fixed-ish col1/col2 and a flexible col3; each of
+ * col1/col2 is a bordered panel that scrolls INDEPENDENTLY. Below 900px the columns stack vertically.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.kpis {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-6);
+  margin-top: var(--sp-2);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.crumb {
+  color: var(--text-2);
+}
+
+.crumbActive {
+  color: var(--gold);
+}
+
+.crumbMuted {
+  color: var(--faint);
+}
+
+.sep {
+  color: var(--faint);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(260px, 360px) 1fr;
+  gap: var(--sp-6);
+  align-items: start;
+}
+
+/*
+ * col1 (subscriptions/RGs) and col2 (the selected RG's resources) are bordered panels that each
+ * scroll INDEPENDENTLY — capped so however large the tenant, the page itself never grows unbounded
+ * (T-15G-06); the inner `.scroll` region (ResourceTree.module.css) does the actual scrolling.
+ */
+.col1,
+.col2 {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  max-height: 72vh;
+  overflow-y: auto;
+}
+
+.detailCol {
+  min-width: 0;
+}
+
+/* Below the narrow breakpoint the three Miller columns collapse to a single stacked column. */
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+}

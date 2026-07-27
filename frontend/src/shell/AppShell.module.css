@@ -1,0 +1,91 @@
+/*
+ * AppShell layout — two-pane sidebar + main column, mirroring the pixel-locked mockup.
+ * Tokens only (var(--token)); no raw hex (D-01). Sharp corners (radius 0); 50% only for dots.
+ */
+
+.shell {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  color: var(--text);
+  background: var(--canvas);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+/* Sidebar (<aside>) — fixed 236px, panel background, right hairline. */
+.sidebar {
+  width: 236px;
+  min-width: 236px;
+  height: 100%;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  padding: var(--sp-9) var(--sp-8) var(--sp-7);
+  border-bottom: 1px solid var(--border);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.brandMark {
+  color: var(--gold);
+  font-size: 13px;
+}
+
+.brandName {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.brandSub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  margin-top: 7px;
+  text-transform: uppercase;
+}
+
+.footer {
+  padding: 13px var(--sp-8);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--faint);
+  line-height: 1.6;
+}
+
+/* Main column — topbar + scrolling content. */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  background: linear-gradient(180deg, var(--canvas), var(--canvas2));
+  /*
+   * Content gutter: the routed views' panels are already bordered, but with no gutter they sat flush
+   * against the topbar, the sidebar hairline, and the viewport edges — which read as "overflowing /
+   * uncontained." A generous inset drops the content away from the topbar (top) and delimits it from
+   * the window edges so each bordered panel is clearly framed. Panels themselves supply the rest.
+   */
+  padding: var(--sp-9) 28px 32px;
+}

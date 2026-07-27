@@ -1,0 +1,82 @@
+{
+  "busiest_subscription": "c3dad8c0-4460-4d78-a7fc-f836646d487c",
+  "dataset": {
+    "dependencies": 2202,
+    "elapsed_ms": 70820,
+    "profile": "enterprise",
+    "resource_groups": 4742,
+    "resources": 145101,
+    "seed": 7,
+    "subscriptions": 300,
+    "violations": 38131
+  },
+  "endpoints": [
+    {
+      "body_bytes": 90478,
+      "label": "list_subscriptions",
+      "path": "/subscriptions?api-version=2022-12-01",
+      "percentiles": {
+        "max": 15.584900043904781,
+        "mean": 2.1693675010465086,
+        "min": 1.598200062289834,
+        "p50": 2.0667000208050013,
+        "p95": 2.5919600506313145,
+        "p99": 2.733688027365133
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 12685,
+      "label": "list_resource_groups",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resourceGroups?api-version=2022-12-01",
+      "percentiles": {
+        "max": 2.22700007725507,
+        "mean": 1.3218695000978187,
+        "min": 1.0381999891251326,
+        "p50": 1.2684499961324036,
+        "p95": 1.6969849879387766,
+        "p99": 1.8612460815347731
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 50259,
+      "label": "list_resources",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resources?api-version=2022-12-01",
+      "percentiles": {
+        "max": 40.103200008161366,
+        "mean": 4.757368499995209,
+        "min": 3.306600032374263,
+        "p50": 3.88919998658821,
+        "p95": 4.6028099954128265,
+        "p99": 37.920361009892076
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 34598,
+      "label": "filter_resource_type",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resources?api-version=2022-12-01&$filter=resourceType%20eq%20%27Microsoft.Storage%2FstorageAccounts%27",
+      "percentiles": {
+        "max": 6.134300027042627,
+        "mean": 4.534554501879029,
+        "min": 3.2401999924331903,
+        "p50": 4.410299996379763,
+        "p95": 5.589230061741546,
+        "p99": 5.932228992460296
+      },
+      "status": 200
+    }
+  ],
+  "generation": {
+    "resources_per_sec": 1967.1216655955209,
+    "wall_s": 73.76310400001239
+  },
+  "measurement": {
+    "api_version": "2022-12-01",
+    "samples": 200,
+    "warmup": 10
+  },
+  "present_type": "Microsoft.Storage/storageAccounts",
+  "timestamp": "2026-07-26T17:05:34Z"
+}

@@ -1,0 +1,18 @@
+# Keep the build context small. NOTE: `sql/` is NOT ignored — the release build
+# include_str!'s sql/005-007 at compile time (lib.rs), so it must reach the builder stage.
+target/
+.git/
+.planning/
+.remember/
+profiles/
+src/
+tests/
+docs/
+*.md
+.env
+.venv/
+__pycache__/
+*.duckdb
+# The SPA is built in-image (npm ci && npm run build); never ship stale local artifacts.
+frontend/node_modules/
+frontend/dist/

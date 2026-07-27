@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tenantless.local/profile-schema/v1.2",
+  "title": "Tenantless Statistical Profile",
+  "description": "Statistical profile extracted from a real Azure tenant or hardcoded for development. Contains only aggregated distributions, never real identifiers. v1.2 is an ADDITIVE bump: every v1.0/v1.1 profile still validates (version enum [1.0,1.1,1.2]; all new sections optional). v1.2 adds the optional cost_distributions section (COST-01).",
+  "type": "object",
+  "required": [
+    "version",
+    "extracted_at",
+    "source_stats",
+    "subscription_archetypes",
+    "resource_group_templates",
+    "resource_type_distributions",
+    "tag_distributions",
+    "cross_subscription_dependencies",
+    "governance_violations"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["1.0", "1.1", "1.2"],
+      "description": "Profile schema version (1.0, 1.1, or 1.2; each adds optional sections additively)"
+    },
+    "extracted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this profile was created"
+    },
+    "source_stats": {
+      "type": "object",
+      "required": ["total_subscriptions", "total_resource_groups", "total_resources"],
+      "properties": {
+        "total_subscriptions": { "type": "integer", "minimum": 1 },
+        "total_resource_groups": { "type": "integer", "minimum": 1 },
+        "total_resources": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "subscription_archetypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "weight", "resource_group_count", "resource_count", "location_distribution", "tag_density"],
+        "properties": {
+          "id": { "type": "string" },
+          "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+          "resource_group_count": { "$ref": "#/$defs/distribution_stats" },
+          "resource_count": { "$ref": "#/$defs/distribution_stats" },
+          "location_distribution": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "tag_density": { "$ref": "#/$defs/distribution_stats_no_minmax" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "resource_group_templates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "weight", "type_set", "resource_count"],
+        "properties": {
+          "id": { "type": "string" },
+          "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+          "type_set": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "resource_count": { "$ref": "#/$defs/distribution_stats" },
+          "type_weights": {
+            "type": "object",
+            "description": "OPTIONAL (misc enrichment): resource-type -> normalized weight (0..1, summing ~1) for a privacy-folded template (e.g. __misc__) whose type_set is only a sentinel. The generator samples this template's RG resource types from this histogram instead of the sentinel type_set, so a privacy bucket still carries the real resource-type MASS needed to reproduce the estate shape. Aggregated over many folded RGs (min-aggregation safe); public resource-type strings only, never identifiers.",
+            "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "empty_share": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "OPTIONAL (misc enrichment): fraction (0..1) of this template's RGs that are TRULY empty in the source (zero resources). The generator reproduces genuinely-empty RGs at this rate rather than emitting every folded RG empty."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "resource_type_distributions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["frequency", "property_distributions"],
+        "properties": {
+          "frequency": { "type": "number", "minimum": 0, "maximum": 1 },
+          "property_distributions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "number" }
+            }
+          },
+          "sku_distributions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "number" }
+            }
+          },
+          "kind_distributions": {
+            "type": "object",
+            "description": "v1.1 (ANLZ-05): per-type normalized `kind` value frequencies from properties->>'kind'. Optional.",
+            "additionalProperties": { "type": "number" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tag_distributions": {
+      "type": "object",
+      "required": ["key_frequencies", "value_distributions"],
+      "properties": {
+        "key_frequencies": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "value_distributions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "number" }
+          }
+        },
+        "key_cooccurrence": {
+          "type": "object",
+          "description": "v1.1 (ANLZ-07): keyA -> {keyB: co-occurrence probability 0..1}. Optional.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "value_cardinality": {
+          "type": "object",
+          "description": "v1.1 (ANLZ-07): per tag key, distinct value count (bucketed). Optional.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "untagged_rate_by_type": {
+          "type": "object",
+          "description": "v1.1 (ANLZ-07): per canonical resource type, share of resources with NO tags (0..1). Optional.",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "cross_subscription_dependencies": {
+      "type": "object",
+      "required": ["hub_spoke", "shared_keyvault", "centralized_logging", "shared_acr", "private_endpoints"],
+      "properties": {
+        "hub_spoke": {
+          "type": "object",
+          "required": ["probability", "hub_count"],
+          "properties": {
+            "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+            "hub_count": { "$ref": "#/$defs/distribution_stats_no_minmax" }
+          },
+          "additionalProperties": false
+        },
+        "shared_keyvault": {
+          "type": "object",
+          "required": ["probability"],
+          "properties": {
+            "probability": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "centralized_logging": {
+          "type": "object",
+          "required": ["probability"],
+          "properties": {
+            "probability": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "shared_acr": {
+          "type": "object",
+          "required": ["probability"],
+          "properties": {
+            "probability": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "private_endpoints": {
+          "type": "object",
+          "required": ["probability", "per_spoke_count"],
+          "properties": {
+            "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+            "per_spoke_count": { "$ref": "#/$defs/distribution_stats_no_minmax" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "governance_violations": {
+      "type": "object",
+      "required": ["type_frequencies"],
+      "properties": {
+        "type_frequencies": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "resource_type_cooccurrence": {
+      "type": "object",
+      "description": "v1.1 (ANLZ-04, OPTIONAL): typeA -> {typeB: co-occurrence probability 0..1} within a resource group. Absent when coverage is below --min-bucket-size.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "naming_conventions": {
+      "type": "object",
+      "description": "v1.1 (ANLZ-08, OPTIONAL): privacy-first tokenized naming structure. NEVER a verbatim name -- only structural-pattern frequencies and positional token-class distributions. Absent when coverage is below --min-bucket-size.",
+      "properties": {
+        "pattern_frequencies": {
+          "type": "object",
+          "description": "Tokenized structural pattern (e.g. '<word>-<env>-<int>') -> normalized frequency 0..1.",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "position_token_classes": {
+          "type": "object",
+          "description": "Positional index (as string) -> {token-class: normalized frequency 0..1}.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "description": "v1.1 (ANLZ-11, OPTIONAL): derivation provenance + per-field coverage disposition. The slot lands with the v1.1 bump; Plan 04 populates it (here it is purely optional).",
+      "properties": {
+        "reviewed": { "type": "boolean" },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["derived", "insufficient_coverage", "no_source"]
+          }
+        },
+        "source": { "type": "string" },
+        "extracted_by": { "type": "string" },
+        "synthetic": {
+          "type": "boolean",
+          "description": "TRUE when every input this profile was fitted from was itself generated by Tenantless from a hand-authored bootstrap profile -- i.e. the profile has no real-tenant ancestor anywhere in its derivation chain. A bundled/published profile MUST set this true; absence means unknown, not false."
+        },
+        "derived_from_real_tenant": {
+          "type": "boolean",
+          "description": "TRUE when any ancestor in the derivation chain was a scan of a real Azure tenant. Such a profile carries that estate's statistical shape and MUST NOT be published without clearance from the data owner, even though it contains no identifiers."
+        },
+        "derivation": {
+          "type": "object",
+          "description": "Machine-readable reproduction recipe. Present when `synthetic` is true so the chain can be re-run and the result compared.",
+          "properties": {
+            "bootstrap_profile": { "type": "string" },
+            "bootstrap_profile_sha256": { "type": "string" },
+            "generator_seed": { "type": "integer" },
+            "cost_as_of": { "type": "string" },
+            "estate": {
+              "type": "object",
+              "properties": {
+                "subscriptions": { "type": "integer", "minimum": 0 },
+                "resource_groups": { "type": "integer", "minimum": 0 },
+                "resources": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "steps": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "cost_distributions": {
+      "type": "object",
+      "description": "v1.2 (COST-01, OPTIONAL): per canonical resource type -> fitted monthly-cost distribution. Absent when the source carries no usable cost data (min-bucket gated). Only aggregated per-type numeric params cross the data boundary -- never a real identifier, meter, or $ amount tied to a real resource.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["distribution"],
+        "properties": {
+          "distribution": { "type": "string", "enum": ["lognormal", "gamma"] },
+          "mu": { "type": "number" },
+          "sigma": { "type": "number", "minimum": 0 },
+          "shape": { "type": "number" },
+          "scale": { "type": "number" },
+          "loc": { "type": "number" },
+          "sample_count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "distribution_stats": {
+      "type": "object",
+      "required": ["mean", "std", "min", "max"],
+      "properties": {
+        "mean": { "type": "number" },
+        "std": { "type": "number", "minimum": 0 },
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "distribution_stats_no_minmax": {
+      "type": "object",
+      "required": ["mean", "std"],
+      "properties": {
+        "mean": { "type": "number" },
+        "std": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,117 @@
+/*
+ * JsonTree — Space Mono 11.5px / line-height 1.85 (UI-SPEC "Mono / code / JSON tree" role), tokens
+ * only, sharp corners (D-01). Copy affordances are muted uppercase micro-buttons revealed on hover.
+ */
+
+.tree {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--text);
+}
+
+.node {
+  display: block;
+}
+
+.branchRow,
+.leafRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.leafRow {
+  padding-left: 14px;
+}
+
+.children {
+  display: block;
+}
+
+.toggle {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  width: 12px;
+  text-align: center;
+}
+
+.toggle:hover {
+  color: var(--gold);
+}
+
+.key {
+  color: var(--text-2);
+}
+
+.colon {
+  color: var(--faint);
+}
+
+.brace {
+  color: var(--faint);
+}
+
+.note {
+  color: var(--faint);
+  font-style: italic;
+  margin-left: var(--sp-2);
+}
+
+.value {
+  color: var(--text);
+}
+
+.value[data-type='string'] {
+  color: var(--green);
+}
+
+.value[data-type='number'] {
+  color: var(--amber);
+}
+
+.value[data-type='boolean'] {
+  color: var(--orange);
+}
+
+.value[data-type='null'],
+.value[data-type='undefined'] {
+  color: var(--faint);
+}
+
+.copies {
+  display: inline-flex;
+  gap: var(--sp-2);
+  margin-left: var(--sp-3);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.branchRow:hover .copies,
+.leafRow:hover .copies,
+.copies:focus-within {
+  opacity: 1;
+}
+
+.copyBtn {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.copyBtn:hover {
+  color: var(--gold);
+  border-color: var(--faintest);
+}

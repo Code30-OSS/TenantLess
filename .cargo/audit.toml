@@ -1,0 +1,37 @@
+# cargo-audit configuration.
+#
+# Every entry in `ignore` below is a deliberate, narrowly scoped exception with a
+# written rationale. An advisory is ignored only when no patched release exists AND
+# the vulnerable operation is one this codebase provably does not perform. An
+# advisory that merely looks inconvenient does not qualify — if a fix is published,
+# take the fix.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack: potential key recovery through timing
+    # sidechannels" in `rsa` 0.9.x.
+    #
+    # No patched release exists. The RustSec entry itself reports
+    # "No fixed upgrade is available!"; the fix is expected in the 0.10 line, which
+    # is not yet published. `rsa` reaches this build two ways, both via JWT signing:
+    # directly, and through `jsonwebtoken`.
+    #
+    # Why this is not exploitable here, stated in terms of the absent operation:
+    # Marvin is a decryption-oracle attack. It recovers a private key by measuring
+    # how long RSA *decryption* (specifically PKCS#1 v1.5 unpadding) takes across many
+    # attacker-chosen ciphertexts. Tenantless performs no RSA decryption at all. The
+    # mock server generates an ephemeral RSA keypair at startup, signs its own JWTs
+    # with it, and verifies those signatures. Signing and verification are the only
+    # RSA operations in the binary; there is no endpoint that accepts a ciphertext,
+    # decrypts it, and reveals success or failure — which is the input the attack
+    # requires. The key is also ephemeral and per-process: it exists only for the
+    # lifetime of one `tenantless serve`, is never persisted, and protects nothing
+    # beyond that process's own mock tokens.
+    #
+    # Explicitly NOT part of this rationale: network exposure. The container image
+    # binds 0.0.0.0, so the server is not loopback-only and must not be assumed to be.
+    # The exception rests on the absent decryption path, not on unreachability.
+    #
+    # Revisit when `rsa` 0.10 ships, or if any RSA decryption is ever introduced.
+    "RUSTSEC-2023-0071",
+]

@@ -1,0 +1,591 @@
+{
+  "version": "1.0",
+  "extracted_at": "2026-05-28T00:00:00Z",
+  "source_stats": {
+    "total_subscriptions": 50,
+    "total_resource_groups": 600,
+    "total_resources": 5000
+  },
+  "subscription_archetypes": [
+    {
+      "id": "large-production",
+      "weight": 0.15,
+      "resource_group_count": { "mean": 20, "std": 5, "min": 12, "max": 35 },
+      "resource_count": { "mean": 180, "std": 40, "min": 100, "max": 300 },
+      "location_distribution": {
+        "eastus": 0.35,
+        "westus2": 0.25,
+        "westeurope": 0.15,
+        "northeurope": 0.10,
+        "centralus": 0.08,
+        "eastus2": 0.07
+      },
+      "tag_density": { "mean": 6.2, "std": 1.8 }
+    },
+    {
+      "id": "medium-production",
+      "weight": 0.30,
+      "resource_group_count": { "mean": 14, "std": 4, "min": 8, "max": 22 },
+      "resource_count": { "mean": 110, "std": 30, "min": 60, "max": 180 },
+      "location_distribution": {
+        "eastus": 0.30,
+        "westus2": 0.20,
+        "westeurope": 0.18,
+        "northeurope": 0.12,
+        "centralus": 0.10,
+        "eastus2": 0.10
+      },
+      "tag_density": { "mean": 4.8, "std": 2.0 }
+    },
+    {
+      "id": "development",
+      "weight": 0.35,
+      "resource_group_count": { "mean": 10, "std": 3, "min": 4, "max": 18 },
+      "resource_count": { "mean": 70, "std": 25, "min": 30, "max": 130 },
+      "location_distribution": {
+        "eastus": 0.50,
+        "westus2": 0.20,
+        "westeurope": 0.15,
+        "centralus": 0.10,
+        "eastus2": 0.05
+      },
+      "tag_density": { "mean": 3.5, "std": 1.5 }
+    },
+    {
+      "id": "sandbox",
+      "weight": 0.20,
+      "resource_group_count": { "mean": 5, "std": 2, "min": 2, "max": 10 },
+      "resource_count": { "mean": 25, "std": 10, "min": 8, "max": 50 },
+      "location_distribution": {
+        "eastus": 0.70,
+        "westus2": 0.20,
+        "centralus": 0.10
+      },
+      "tag_density": { "mean": 2.0, "std": 1.2 }
+    }
+  ],
+  "resource_group_templates": [
+    {
+      "id": "vm-deployment",
+      "weight": 0.25,
+      "type_set": [
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.Network/networkInterfaces",
+        "Microsoft.Network/publicIPAddresses",
+        "Microsoft.Compute/disks"
+      ],
+      "resource_count": { "mean": 8, "std": 3, "min": 3, "max": 15 }
+    },
+    {
+      "id": "storage-setup",
+      "weight": 0.15,
+      "type_set": [
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "resource_count": { "mean": 3, "std": 1, "min": 1, "max": 6 }
+    },
+    {
+      "id": "networking",
+      "weight": 0.15,
+      "type_set": [
+        "Microsoft.Network/virtualNetworks",
+        "Microsoft.Network/networkSecurityGroups",
+        "Microsoft.Network/routeTables"
+      ],
+      "resource_count": { "mean": 5, "std": 2, "min": 2, "max": 10 }
+    },
+    {
+      "id": "web-app",
+      "weight": 0.15,
+      "type_set": [
+        "Microsoft.Web/serverfarms",
+        "Microsoft.Web/sites"
+      ],
+      "resource_count": { "mean": 4, "std": 2, "min": 2, "max": 8 }
+    },
+    {
+      "id": "data-platform",
+      "weight": 0.10,
+      "type_set": [
+        "Microsoft.Sql/servers",
+        "Microsoft.Sql/servers/databases",
+        "Microsoft.KeyVault/vaults"
+      ],
+      "resource_count": { "mean": 6, "std": 2, "min": 3, "max": 10 }
+    },
+    {
+      "id": "kubernetes",
+      "weight": 0.10,
+      "type_set": [
+        "Microsoft.ContainerService/managedClusters",
+        "Microsoft.ContainerRegistry/registries"
+      ],
+      "resource_count": { "mean": 3, "std": 1, "min": 2, "max": 5 }
+    },
+    {
+      "id": "monitoring",
+      "weight": 0.10,
+      "type_set": [
+        "Microsoft.OperationalInsights/workspaces",
+        "Microsoft.ManagedIdentity/userAssignedIdentities"
+      ],
+      "resource_count": { "mean": 2, "std": 1, "min": 1, "max": 4 }
+    }
+  ],
+  "resource_type_distributions": {
+    "Microsoft.Compute/virtualMachines": {
+      "frequency": 0.12,
+      "property_distributions": {
+        "vmSize": {
+          "Standard_D2s_v3": 0.30,
+          "Standard_B2ms": 0.20,
+          "Standard_D4s_v3": 0.18,
+          "Standard_E2s_v3": 0.12,
+          "Standard_F4s_v2": 0.10,
+          "Standard_B1ms": 0.10
+        },
+        "osType": {
+          "Linux": 0.65,
+          "Windows": 0.35
+        },
+        "provisioningState": {
+          "Succeeded": 0.92,
+          "Failed": 0.05,
+          "Creating": 0.03
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "Standard_D2s_v3": 0.30,
+          "Standard_B2ms": 0.20,
+          "Standard_D4s_v3": 0.18,
+          "Standard_E2s_v3": 0.12,
+          "Standard_F4s_v2": 0.10,
+          "Standard_B1ms": 0.10
+        }
+      }
+    },
+    "Microsoft.Network/networkInterfaces": {
+      "frequency": 0.11,
+      "property_distributions": {
+        "enableAcceleratedNetworking": {
+          "true": 0.45,
+          "false": 0.55
+        },
+        "enableIPForwarding": {
+          "true": 0.08,
+          "false": 0.92
+        },
+        "nicType": {
+          "Standard": 0.90,
+          "Elastic": 0.10
+        }
+      }
+    },
+    "Microsoft.Compute/disks": {
+      "frequency": 0.10,
+      "property_distributions": {
+        "diskSizeGB": {
+          "32": 0.15,
+          "64": 0.20,
+          "128": 0.30,
+          "256": 0.20,
+          "512": 0.10,
+          "1024": 0.05
+        },
+        "osType": {
+          "Linux": 0.50,
+          "Windows": 0.30,
+          "null": 0.20
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "Premium_LRS": 0.40,
+          "StandardSSD_LRS": 0.35,
+          "Standard_LRS": 0.20,
+          "Premium_ZRS": 0.05
+        },
+        "tier": {
+          "Premium": 0.45,
+          "Standard": 0.55
+        }
+      }
+    },
+    "Microsoft.Network/publicIPAddresses": {
+      "frequency": 0.06,
+      "property_distributions": {
+        "publicIPAllocationMethod": {
+          "Static": 0.60,
+          "Dynamic": 0.40
+        },
+        "publicIPAddressVersion": {
+          "IPv4": 0.92,
+          "IPv6": 0.08
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "Standard": 0.65,
+          "Basic": 0.35
+        }
+      }
+    },
+    "Microsoft.Network/networkSecurityGroups": {
+      "frequency": 0.06,
+      "property_distributions": {
+        "securityRuleCount": {
+          "3": 0.20,
+          "5": 0.30,
+          "8": 0.25,
+          "12": 0.15,
+          "20": 0.10
+        },
+        "defaultSecurityRulesOnly": {
+          "true": 0.15,
+          "false": 0.85
+        }
+      }
+    },
+    "Microsoft.Storage/storageAccounts": {
+      "frequency": 0.08,
+      "property_distributions": {
+        "accessTier": {
+          "Hot": 0.65,
+          "Cool": 0.30,
+          "Archive": 0.05
+        },
+        "supportsHttpsTrafficOnly": {
+          "true": 0.92,
+          "false": 0.08
+        },
+        "minimumTlsVersion": {
+          "TLS1_2": 0.85,
+          "TLS1_0": 0.10,
+          "TLS1_1": 0.05
+        },
+        "allowBlobPublicAccess": {
+          "true": 0.12,
+          "false": 0.88
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "Standard_LRS": 0.35,
+          "Standard_GRS": 0.25,
+          "Standard_RAGRS": 0.20,
+          "Premium_LRS": 0.10,
+          "Standard_ZRS": 0.10
+        },
+        "tier": {
+          "Standard": 0.90,
+          "Premium": 0.10
+        }
+      }
+    },
+    "Microsoft.Network/virtualNetworks": {
+      "frequency": 0.05,
+      "property_distributions": {
+        "addressSpacePrefixCount": {
+          "1": 0.70,
+          "2": 0.20,
+          "3": 0.10
+        },
+        "subnetCount": {
+          "1": 0.15,
+          "2": 0.25,
+          "3": 0.30,
+          "4": 0.15,
+          "5": 0.10,
+          "8": 0.05
+        },
+        "enableDdosProtection": {
+          "true": 0.10,
+          "false": 0.90
+        }
+      }
+    },
+    "Microsoft.Web/sites": {
+      "frequency": 0.06,
+      "property_distributions": {
+        "kind": {
+          "app": 0.50,
+          "functionapp": 0.30,
+          "app,linux": 0.15,
+          "functionapp,linux": 0.05
+        },
+        "state": {
+          "Running": 0.85,
+          "Stopped": 0.15
+        },
+        "httpsOnly": {
+          "true": 0.88,
+          "false": 0.12
+        }
+      }
+    },
+    "Microsoft.Web/serverfarms": {
+      "frequency": 0.05,
+      "property_distributions": {
+        "kind": {
+          "app": 0.55,
+          "functionapp": 0.25,
+          "linux": 0.15,
+          "elastic": 0.05
+        },
+        "reserved": {
+          "true": 0.20,
+          "false": 0.80
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "S1": 0.30,
+          "P1v2": 0.25,
+          "B1": 0.20,
+          "P1v3": 0.15,
+          "F1": 0.10
+        },
+        "tier": {
+          "Standard": 0.30,
+          "PremiumV2": 0.25,
+          "Basic": 0.20,
+          "PremiumV3": 0.15,
+          "Free": 0.10
+        }
+      }
+    },
+    "Microsoft.Sql/servers": {
+      "frequency": 0.03,
+      "property_distributions": {
+        "version": {
+          "12.0": 0.95,
+          "2.0": 0.05
+        },
+        "publicNetworkAccess": {
+          "Enabled": 0.60,
+          "Disabled": 0.40
+        },
+        "minimalTlsVersion": {
+          "1.2": 0.80,
+          "1.0": 0.15,
+          "1.1": 0.05
+        }
+      }
+    },
+    "Microsoft.Sql/servers/databases": {
+      "frequency": 0.04,
+      "property_distributions": {
+        "status": {
+          "Online": 0.92,
+          "Paused": 0.05,
+          "Restoring": 0.03
+        },
+        "collation": {
+          "SQL_Latin1_General_CP1_CI_AS": 0.85,
+          "Latin1_General_CI_AS": 0.10,
+          "Latin1_General_100_CI_AS_SC": 0.05
+        },
+        "transparentDataEncryption": {
+          "Enabled": 0.88,
+          "Disabled": 0.12
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "GP_S_Gen5_2": 0.30,
+          "GP_Gen5_2": 0.25,
+          "S0": 0.20,
+          "BC_Gen5_2": 0.15,
+          "Basic": 0.10
+        },
+        "tier": {
+          "GeneralPurpose": 0.55,
+          "Standard": 0.20,
+          "BusinessCritical": 0.15,
+          "Basic": 0.10
+        }
+      }
+    },
+    "Microsoft.KeyVault/vaults": {
+      "frequency": 0.04,
+      "property_distributions": {
+        "enableSoftDelete": {
+          "true": 0.88,
+          "false": 0.12
+        },
+        "enablePurgeProtection": {
+          "true": 0.78,
+          "false": 0.22
+        },
+        "enableRbacAuthorization": {
+          "true": 0.45,
+          "false": 0.55
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "standard": 0.80,
+          "premium": 0.20
+        },
+        "family": {
+          "A": 1.0
+        }
+      }
+    },
+    "Microsoft.ContainerService/managedClusters": {
+      "frequency": 0.03,
+      "property_distributions": {
+        "kubernetesVersion": {
+          "1.29": 0.35,
+          "1.28": 0.30,
+          "1.27": 0.20,
+          "1.30": 0.15
+        },
+        "enableRBAC": {
+          "true": 0.88,
+          "false": 0.12
+        },
+        "networkPlugin": {
+          "azure": 0.55,
+          "kubenet": 0.35,
+          "none": 0.10
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "Base": 0.60,
+          "Standard": 0.30,
+          "Premium": 0.10
+        },
+        "tier": {
+          "Free": 0.40,
+          "Standard": 0.45,
+          "Premium": 0.15
+        }
+      }
+    },
+    "Microsoft.OperationalInsights/workspaces": {
+      "frequency": 0.03,
+      "property_distributions": {
+        "retentionInDays": {
+          "30": 0.40,
+          "60": 0.25,
+          "90": 0.20,
+          "180": 0.10,
+          "365": 0.05
+        },
+        "publicNetworkAccessForIngestion": {
+          "Enabled": 0.75,
+          "Disabled": 0.25
+        }
+      },
+      "sku_distributions": {
+        "name": {
+          "PerGB2018": 0.80,
+          "Standalone": 0.10,
+          "CapacityReservation": 0.10
+        }
+      }
+    },
+    "Microsoft.ManagedIdentity/userAssignedIdentities": {
+      "frequency": 0.04,
+      "property_distributions": {
+        "usagePattern": {
+          "aks-workload": 0.35,
+          "app-service": 0.25,
+          "vm-managed": 0.20,
+          "key-vault-access": 0.15,
+          "storage-access": 0.05
+        }
+      }
+    }
+  },
+  "tag_distributions": {
+    "key_frequencies": {
+      "environment": 0.82,
+      "costCenter": 0.58,
+      "owner": 0.45,
+      "team": 0.35,
+      "project": 0.30,
+      "createdBy": 0.25
+    },
+    "value_distributions": {
+      "environment": {
+        "production": 0.35,
+        "staging": 0.20,
+        "development": 0.30,
+        "sandbox": 0.15
+      },
+      "costCenter": {
+        "CC-1001": 0.20,
+        "CC-2001": 0.18,
+        "CC-3001": 0.15,
+        "CC-4001": 0.12,
+        "CC-5001": 0.10,
+        "CC-6001": 0.08,
+        "CC-7001": 0.07,
+        "CC-8001": 0.05,
+        "CC-9001": 0.05
+      },
+      "owner": {
+        "platform-team": 0.25,
+        "app-team-1": 0.20,
+        "app-team-2": 0.15,
+        "data-team": 0.15,
+        "devops": 0.10,
+        "security": 0.08,
+        "infra": 0.07
+      },
+      "team": {
+        "engineering": 0.35,
+        "platform": 0.25,
+        "data": 0.15,
+        "security": 0.10,
+        "devops": 0.10,
+        "management": 0.05
+      }
+    }
+  },
+  "cross_subscription_dependencies": {
+    "hub_spoke": {
+      "probability": 0.70,
+      "hub_count": { "mean": 2, "std": 1 }
+    },
+    "shared_keyvault": {
+      "probability": 0.50
+    },
+    "centralized_logging": {
+      "probability": 0.60
+    },
+    "shared_acr": {
+      "probability": 0.30
+    },
+    "private_endpoints": {
+      "probability": 0.40,
+      "per_spoke_count": { "mean": 3, "std": 2 }
+    }
+  },
+  "governance_violations": {
+    "type_frequencies": {
+      "STORAGE_NO_ENCRYPTION": 0.08,
+      "STORAGE_PUBLIC_ACCESS": 0.05,
+      "STORAGE_HTTP_ALLOWED": 0.03,
+      "STORAGE_OLD_TLS": 0.04,
+      "NSG_OPEN_SSH": 0.06,
+      "NSG_OPEN_RDP": 0.04,
+      "NSG_OPEN_ALL": 0.02,
+      "KV_NO_SOFT_DELETE": 0.07,
+      "KV_NO_PURGE_PROTECT": 0.10,
+      "VM_NO_BACKUP": 0.15,
+      "VM_PUBLIC_IP": 0.08,
+      "TAG_MISSING_ENV": 0.12,
+      "TAG_MISSING_OWNER": 0.18,
+      "TAG_MISSING_COSTCENTER": 0.15,
+      "SQL_NO_AUDIT": 0.10,
+      "SQL_NO_TDE": 0.05,
+      "AKS_RBAC_DISABLED": 0.08,
+      "DISK_UNENCRYPTED": 0.06
+    }
+  }
+}

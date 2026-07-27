@@ -1,0 +1,101 @@
+/*
+ * OverviewView (S0 — landing front door) styles. Tokens ONLY — never a raw hex (grep-gated, D-01) —
+ * and sharp corners (border-radius: 0). Mirrors the ResourcesView/CatalogView head band + the
+ * tenantless-landing `.uses` card-grid idiom; the `--gold` left-rule accent (landing ref parity) is
+ * a token, not a raw value.
+ */
+
+/* ---- Section shell ------------------------------------------------------- */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-9);
+  padding: var(--sp-9);
+  max-width: 820px;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.subtitle {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-2);
+  margin: var(--sp-1) 0 0 0;
+  max-width: 62ch;
+}
+
+/* ---- Orientation cards --------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-5);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  border-radius: 0;
+  background: var(--panel);
+  text-decoration: none;
+  transition: border-color 0.15s;
+}
+
+.card:hover {
+  border-color: var(--gold);
+  border-left-color: var(--gold);
+}
+
+.mark {
+  color: var(--gold);
+  font-size: 14px;
+}
+
+.cardLead {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cardDescription {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+@media (max-width: 720px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}

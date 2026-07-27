@@ -1,0 +1,230 @@
+/*
+ * ResourceSearch — the tenant-wide search box + flat, bounded paginated result list. Tokens only
+ * (D-01), sharp corners (radius 0), desktop-only. The result list lives in a height-capped scroll
+ * region so the panel never grows unbounded; the pager mirrors the tree's Prev/Next controls.
+ */
+
+.search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: var(--sp-4);
+}
+
+.controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 1;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.input {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+
+.apply {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+}
+
+.apply:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.hint {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+}
+
+/* Subscription-name matches (EXPL-GAP-01): a small labelled block above the resource results.
+   Capped + internally scrolling so a broad term (dozens of sub matches) stays a compact peek and
+   never pushes the Miller columns below the fold. */
+.subsSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 172px;
+  overflow-y: auto;
+}
+
+.sectionLabel {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.resultsHead {
+  display: flex;
+  align-items: center;
+}
+
+.count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* A compact, FIXED-height paged panel (not vh — that scaled with monitor height and, on a tall
+   display, let the results band fill the screen and shove the Miller columns below the fold). ~11
+   rows; page through the rest with Prev/Next. */
+.scroll {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.resRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.resRow:hover {
+  background: var(--panel-hi);
+}
+
+.resRow[data-selected='true'] {
+  background: var(--panel-hi);
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.name {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.resType {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.scope {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.skeleton {
+  height: 12px;
+  margin: var(--sp-2) var(--sp-3);
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.errorRow {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.errorText {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--red);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+
+.pageReadout {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-right: auto;
+}
+
+.pageBtn {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.pageBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

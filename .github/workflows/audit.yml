@@ -1,0 +1,54 @@
+name: Dependency audit
+
+# Runs on a schedule rather than per-PR: a new advisory against an unchanged
+# dependency is not something a contributor's pull request introduced, and
+# failing their build for it is noise. Weekly, plus on demand.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# Least privilege. GITHUB_TOKEN defaults to a broad, write-capable scope on some
+# repository settings; declaring it here means every job in this file gets
+# read-only access to contents and nothing else, regardless of that default.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Python — outdated packages (report only)
+        run: |
+          uv sync --dev
+          uv pip list --outdated || true
+
+      - name: Rust — cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      - name: Web console — npm audit
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high

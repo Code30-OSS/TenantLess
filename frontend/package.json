@@ -1,0 +1,33 @@
+{
+  "name": "tenantless-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tenantless ARM mock console — React + Vite + TypeScript SPA (embedded under /ui).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "vitest run",
+    "audit": "npm audit --audit-level=high"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.101.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router": "8.3.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.9"
+  }
+}

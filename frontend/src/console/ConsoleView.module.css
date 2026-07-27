@@ -1,0 +1,178 @@
+/*
+ * ConsoleView (CONS-01..04) — the console page layout: header band + KPI row + filter bar + full-width
+ * latency chart + 2-col counts + 2-col feed|inspector. Reuses the ResourcesView header-band + two-pane
+ * grid idiom. Tokens only (D-01), sharp corners; desktop-only (the mobile drawer was reverted in 15-13).
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+}
+
+.headBand {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.eyebrowRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.kpis {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.chartHead {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.modeToggle {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+.modeBtn,
+.modeActive {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  cursor: pointer;
+  color: var(--text-2);
+}
+
+.modeBtn:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.modeActive {
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+.modeBtn:disabled {
+  color: var(--faint);
+  border-color: var(--border-soft);
+  cursor: default;
+}
+
+.countsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-7);
+  align-items: start;
+}
+
+.feedRow {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(280px, 380px);
+  gap: var(--sp-7);
+  align-items: start;
+}
+
+.feedCol,
+.inspectorCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.blockTitle {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.skeleton {
+  height: 220px;
+  background: var(--panel-hi);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--red);
+}
+
+.errorText {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--red);
+}
+
+.retry {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+@media (max-width: 900px) {
+  .countsRow,
+  .feedRow {
+    grid-template-columns: 1fr;
+  }
+}

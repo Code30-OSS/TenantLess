@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARM mock-server latency benchmark</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-secondary: #f8f7f5; --text: #0a0a0a; --text-muted: #57534e;
+    --gold: #c9943a; --gold-dark: #a67a2d; --gold-light: #e8d4a8;
+    --border: #e5e3df; --border-strong: #d0cdc6;
+    --term-bg: #16140f; --term-text: #e8e4da; --term-gold: #d9a849; --term-green: #9bbf6e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 56px 32px 80px; }
+  .label {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--gold-dark); font-weight: 700;
+  }
+  .label::before { content: "\25C6 "; color: var(--gold); }
+  h1 {
+    font-size: clamp(1.9rem, 4vw, 2.8rem); line-height: 1.08;
+    letter-spacing: -0.02em; margin: 14px 0 10px;
+  }
+  .subline {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: 0.82rem; color: var(--text-muted);
+  }
+  section { margin-top: 44px; }
+  section > .label { display: block; margin-bottom: 16px; }
+  .hero {
+    background: var(--term-bg); color: var(--term-text);
+    border-radius: 6px; padding: 36px 32px; margin-top: 40px;
+  }
+  .hero .hero-num {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: clamp(2.6rem, 7vw, 4.2rem); font-weight: 700;
+    color: var(--term-gold); line-height: 1; letter-spacing: -0.02em;
+  }
+  .hero .hero-unit { color: var(--term-text); font-size: 1.05rem; margin-left: 8px; }
+  .hero .hero-sub { color: var(--term-green); margin-top: 12px; font-size: 0.95rem;
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace; }
+  .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+  @media (max-width: 720px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card {
+    border: 1px solid var(--border); border-radius: 5px; padding: 18px 16px;
+    background: var(--bg-secondary);
+  }
+  .card-num {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em;
+  }
+  .card-label {
+    font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin-top: 4px;
+  }
+  .chart-wrap {
+    border: 1px solid var(--border); border-radius: 6px; padding: 20px;
+    overflow-x: auto;
+  }
+  svg.chart { display: block; max-width: 100%; height: auto; }
+  svg.chart .grid { stroke: var(--border); stroke-width: 1; }
+  svg.chart .tick, svg.chart .axis-title, svg.chart .legend {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    fill: var(--text-muted); font-size: 11px;
+  }
+  svg.chart .axis-title { fill: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; }
+  svg.chart .ep-label {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    fill: var(--text); font-size: 12px; font-weight: 700;
+  }
+  svg.chart .bar-val {
+    font-family: 'Space Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+    fill: var(--text-muted); font-size: 10px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+  th, td { text-align: right; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 0.74rem;
+    text-transform: uppercase; letter-spacing: 0.05em; }
+  th:first-child, td:first-child { text-align: left; }
+  tbody tr:hover { background: var(--bg-secondary); }
+  .num { font-variant-numeric: tabular-nums; }
+  .footer {
+    margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 0.85rem;
+  }
+  .footer .takeaway { color: var(--gold-dark); font-weight: 600; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<span class="label">benchmark</span>
+<h1>ARM mock-server latency</h1>
+<div class="subline">2026-07-26T17:05:34Z · profile enterprise · seed 7 · api-version 2022-12-01</div>
+<div class="hero">
+<div><span class="hero-num">1,967</span><span class="hero-unit">resources/sec</span></div>
+<div class="hero-sub">145,101 resources generated in 73.8s</div>
+</div>
+<section>
+<span class="label">dataset</span>
+<div class="cards"><div class="card"><div class="card-num">300</div><div class="card-label">subscriptions</div></div><div class="card"><div class="card-num">4,742</div><div class="card-label">resource groups</div></div><div class="card"><div class="card-num">145,101</div><div class="card-label">resources</div></div><div class="card"><div class="card-num">38,131</div><div class="card-label">violations</div></div><div class="card"><div class="card-num">2,202</div><div class="card-label">dependencies</div></div></div>
+</section>
+<section>
+<span class="label">endpoint latency</span>
+<div class="chart-wrap"><svg class="chart" viewBox="0 0 824 328" width="824" height="328" role="img" aria-label="Per-endpoint latency percentiles in milliseconds"><line class="grid" x1="184.0" y1="32" x2="184.0" y2="288" /><text class="tick" x="184.0" y="306" text-anchor="middle">0.00</text><line class="grid" x1="296.0" y1="32" x2="296.0" y2="288" /><text class="tick" x="296.0" y="306" text-anchor="middle">10.00</text><line class="grid" x1="408.0" y1="32" x2="408.0" y2="288" /><text class="tick" x="408.0" y="306" text-anchor="middle">20.00</text><line class="grid" x1="520.0" y1="32" x2="520.0" y2="288" /><text class="tick" x="520.0" y="306" text-anchor="middle">30.00</text><line class="grid" x1="632.0" y1="32" x2="632.0" y2="288" /><text class="tick" x="632.0" y="306" text-anchor="middle">40.00</text><line class="grid" x1="744.0" y1="32" x2="744.0" y2="288" /><text class="tick" x="744.0" y="306" text-anchor="middle">50.00</text><text class="axis-title" x="464.0" y="322" text-anchor="middle">milliseconds</text><text class="ep-label" x="16" y="68.0">list_subscriptions</text><rect class="bar" x="184" y="39.0" width="23.1" height="14" fill="var(--gold-light)" rx="1.5" /><text class="bar-val" x="213.1" y="51.0">p50 2.07</text><rect class="bar" x="184" y="57.0" width="29.0" height="14" fill="var(--gold)" rx="1.5" /><text class="bar-val" x="219.0" y="69.0">p95 2.59</text><rect class="bar" x="184" y="75.0" width="30.6" height="14" fill="var(--gold-dark)" rx="1.5" /><text class="bar-val" x="220.6" y="87.0">p99 2.73</text><text class="ep-label" x="16" y="132.0">list_resource_groups</text><rect class="bar" x="184" y="103.0" width="14.2" height="14" fill="var(--gold-light)" rx="1.5" /><text class="bar-val" x="204.2" y="115.0">p50 1.27</text><rect class="bar" x="184" y="121.0" width="19.0" height="14" fill="var(--gold)" rx="1.5" /><text class="bar-val" x="209.0" y="133.0">p95 1.70</text><rect class="bar" x="184" y="139.0" width="20.8" height="14" fill="var(--gold-dark)" rx="1.5" /><text class="bar-val" x="210.8" y="151.0">p99 1.86</text><text class="ep-label" x="16" y="196.0">list_resources</text><rect class="bar" x="184" y="167.0" width="43.6" height="14" fill="var(--gold-light)" rx="1.5" /><text class="bar-val" x="233.6" y="179.0">p50 3.89</text><rect class="bar" x="184" y="185.0" width="51.6" height="14" fill="var(--gold)" rx="1.5" /><text class="bar-val" x="241.6" y="197.0">p95 4.60</text><rect class="bar" x="184" y="203.0" width="424.7" height="14" fill="var(--gold-dark)" rx="1.5" /><text class="bar-val" x="614.7" y="215.0">p99 37.92</text><text class="ep-label" x="16" y="260.0">filter_resource_type</text><rect class="bar" x="184" y="231.0" width="49.4" height="14" fill="var(--gold-light)" rx="1.5" /><text class="bar-val" x="239.4" y="243.0">p50 4.41</text><rect class="bar" x="184" y="249.0" width="62.6" height="14" fill="var(--gold)" rx="1.5" /><text class="bar-val" x="252.6" y="261.0">p95 5.59</text><rect class="bar" x="184" y="267.0" width="66.4" height="14" fill="var(--gold-dark)" rx="1.5" /><text class="bar-val" x="256.4" y="279.0">p99 5.93</text><rect class="swatch" x="184" y="7" width="11" height="11" fill="var(--gold-light)" rx="1.5" /><text class="legend" x="200" y="16">p50</text><rect class="swatch" x="248" y="7" width="11" height="11" fill="var(--gold)" rx="1.5" /><text class="legend" x="264" y="16">p95</text><rect class="swatch" x="312" y="7" width="11" height="11" fill="var(--gold-dark)" rx="1.5" /><text class="legend" x="328" y="16">p99</text></svg></div>
+</section>
+<section>
+<span class="label">latency table (ms)</span>
+<table><thead><tr><th>endpoint</th><th>status</th><th>body bytes</th><th>p50</th><th>p95</th><th>p99</th><th>min</th><th>max</th><th>mean</th></tr></thead><tbody><tr><td class="mono">list_subscriptions</td><td class="mono num">200</td><td class="mono num">90,478</td><td class="mono num">2.07</td><td class="mono num">2.59</td><td class="mono num">2.73</td><td class="mono num">1.60</td><td class="mono num">15.58</td><td class="mono num">2.17</td></tr><tr><td class="mono">list_resource_groups</td><td class="mono num">200</td><td class="mono num">12,685</td><td class="mono num">1.27</td><td class="mono num">1.70</td><td class="mono num">1.86</td><td class="mono num">1.04</td><td class="mono num">2.23</td><td class="mono num">1.32</td></tr><tr><td class="mono">list_resources</td><td class="mono num">200</td><td class="mono num">50,259</td><td class="mono num">3.89</td><td class="mono num">4.60</td><td class="mono num">37.92</td><td class="mono num">3.31</td><td class="mono num">40.10</td><td class="mono num">4.76</td></tr><tr><td class="mono">filter_resource_type</td><td class="mono num">200</td><td class="mono num">34,598</td><td class="mono num">4.41</td><td class="mono num">5.59</td><td class="mono num">5.93</td><td class="mono num">3.24</td><td class="mono num">6.13</td><td class="mono num">4.53</td></tr></tbody></table>
+</section>
+<div class="footer">keep-alive (one reused connection) · 200 samples + 10 warmup per endpoint · api-version 2022-12-01<div class="takeaway">all endpoints p95 &lt; 6 ms on the 145,101-resource tenant</div></div>
+<script type="application/json" id="report-data">{
+  "busiest_subscription": "c3dad8c0-4460-4d78-a7fc-f836646d487c",
+  "dataset": {
+    "dependencies": 2202,
+    "elapsed_ms": 70820,
+    "profile": "enterprise",
+    "resource_groups": 4742,
+    "resources": 145101,
+    "seed": 7,
+    "subscriptions": 300,
+    "violations": 38131
+  },
+  "endpoints": [
+    {
+      "body_bytes": 90478,
+      "label": "list_subscriptions",
+      "path": "/subscriptions?api-version=2022-12-01",
+      "percentiles": {
+        "max": 15.584900043904781,
+        "mean": 2.1693675010465086,
+        "min": 1.598200062289834,
+        "p50": 2.0667000208050013,
+        "p95": 2.5919600506313145,
+        "p99": 2.733688027365133
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 12685,
+      "label": "list_resource_groups",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resourceGroups?api-version=2022-12-01",
+      "percentiles": {
+        "max": 2.22700007725507,
+        "mean": 1.3218695000978187,
+        "min": 1.0381999891251326,
+        "p50": 1.2684499961324036,
+        "p95": 1.6969849879387766,
+        "p99": 1.8612460815347731
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 50259,
+      "label": "list_resources",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resources?api-version=2022-12-01",
+      "percentiles": {
+        "max": 40.103200008161366,
+        "mean": 4.757368499995209,
+        "min": 3.306600032374263,
+        "p50": 3.88919998658821,
+        "p95": 4.6028099954128265,
+        "p99": 37.920361009892076
+      },
+      "status": 200
+    },
+    {
+      "body_bytes": 34598,
+      "label": "filter_resource_type",
+      "path": "/subscriptions/c3dad8c0-4460-4d78-a7fc-f836646d487c/resources?api-version=2022-12-01&$filter=resourceType%20eq%20%27Microsoft.Storage%2FstorageAccounts%27",
+      "percentiles": {
+        "max": 6.134300027042627,
+        "mean": 4.534554501879029,
+        "min": 3.2401999924331903,
+        "p50": 4.410299996379763,
+        "p95": 5.589230061741546,
+        "p99": 5.932228992460296
+      },
+      "status": 200
+    }
+  ],
+  "generation": {
+    "resources_per_sec": 1967.1216655955209,
+    "wall_s": 73.76310400001239
+  },
+  "measurement": {
+    "api_version": "2022-12-01",
+    "samples": 200,
+    "warmup": 10
+  },
+  "present_type": "Microsoft.Storage/storageAccounts",
+  "timestamp": "2026-07-26T17:05:34Z"
+}</script>
+</div>
+</body>
+</html>
