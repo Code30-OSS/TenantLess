@@ -321,6 +321,18 @@ before any manual UI or scanner session.
 Contribution guidelines are in [`CONTRIBUTING.md`](CONTRIBUTING.md); security reporting is in
 [`SECURITY.md`](SECURITY.md).
 
+### Ways to contribute
+
+- **Bug reports** — open an issue with a minimal reproduction. Generation is deterministic
+  from `(profile, seed, --cost-as-of)`, so a repro is usually just the command and its seed.
+- **Feature requests** — open an issue describing the Azure ARM behavior, resource type, or
+  endpoint you need.
+- **Pull requests** — bug fixes, new ARM resource-type or endpoint coverage, or improvements.
+- **Compatibility tests** — add ARM contract cases to the server suite
+  ([`mock-server/tests/`](mock-server/tests/)) or response-shape cases to
+  [`tests/test_type_shapes.py`](tests/test_type_shapes.py); the compatibility matrix is in
+  [`docs/compatibility.md`](docs/compatibility.md).
+
 ### Contributing an archetype
 
 Resource-group names are generated from a static archetype catalog, and a name is a claim about
