@@ -1,5 +1,13 @@
 # Tenantless
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/tag/Code30-OSS/TenantLess?label=release)](https://github.com/Code30-OSS/TenantLess/releases)
+[![Security Audit](https://github.com/Code30-OSS/TenantLess/actions/workflows/audit.yml/badge.svg)](https://github.com/Code30-OSS/TenantLess/actions/workflows/audit.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
+[![Rust](https://img.shields.io/badge/rust-2024%20edition-CE422B.svg)](mock-server/Cargo.toml)
+[![Azure](https://img.shields.io/badge/Azure-ARM%20API%20mock-0078D4.svg)](docs/compatibility.md)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](docker-compose.yml)
+
 **Tenantless simulates statistically realistic Azure estates for scanner, governance,
 FinOps, drift and cross-subscription risk testing.**
 
