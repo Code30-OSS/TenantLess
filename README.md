@@ -1,4 +1,9 @@
-# Tenantless
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tenantless-logo-dark.svg">
+    <img src="docs/assets/tenantless-logo.svg" alt="TenantLess" width="400">
+  </picture>
+</p>
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/tag/Code30-OSS/TenantLess?label=release)](https://github.com/Code30-OSS/TenantLess/releases)
