@@ -36,7 +36,7 @@ base64 = "0.22"
 # this in the same pure-Rust crypto family as the `rsa` keygen and avoids the
 # aws-lc-rs/cmake build chain + the second-provider concern (Phase-8 D-16). v10
 # requires exactly one provider feature or it panics at JWK use.
-jsonwebtoken = { version = "10", features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["use_pem", "rust_crypto"] }
 rsa = "0.9"
 rand = "0.8"
 # TLS (PLAT-05, D-15/D-16): one rustls stack pinned to the `ring` provider so it
@@ -70,7 +70,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # the integration-test crate so it can independently decode a minted token against the
 # served JWKS (token_decodable_via_jwks) and craft expired/wrong-aud/wrong-iss/HS256
 # tokens for the enforce_auth_roundtrip round-trip (Plan 10-04).
-jsonwebtoken = { version = "10", features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["use_pem", "rust_crypto"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio-test = "0.4"
