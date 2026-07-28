@@ -8,7 +8,7 @@ license = "Apache-2.0"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace", "request-id"] }
+tower-http = { version = "0.7", features = ["cors", "compression-gzip", "trace", "request-id"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-base64 = "0.22"
+base64 = "0.23"
 # RS256 JWT mint/decode + JWKS export (IAM-04, D-08). jsonwebtoken 10.4 chosen for
 # `Jwk::from_encoding_key` (JWKS straight from the signing key) + `use_pem`
 # (EncodingKey/DecodingKey::from_rsa_pem). The ephemeral RSA-2048 keypair is
@@ -36,9 +36,9 @@ base64 = "0.22"
 # this in the same pure-Rust crypto family as the `rsa` keygen and avoids the
 # aws-lc-rs/cmake build chain + the second-provider concern (Phase-8 D-16). v10
 # requires exactly one provider feature or it panics at JWK use.
-jsonwebtoken = { version = "10", features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["use_pem", "rust_crypto"] }
 rsa = "0.9"
-rand = "0.8"
+rand = "0.10"
 # TLS (PLAT-05, D-15/D-16): one rustls stack pinned to the `ring` provider so it
 # matches sqlx's `runtime-tokio-rustls` (also `ring`) — avoids a second crypto
 # provider (aws-lc-rs) and its cmake/aws-lc-sys build chain, and avoids the
@@ -62,7 +62,7 @@ mime_guess = "2.0.5"
 # the two SHA-256 token digests without a length/early-exit timing leak; `sha2` produces
 # the fixed 32-byte digest the compare runs over. Never hand-roll the compare.
 subtle = "2.6"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -70,7 +70,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # the integration-test crate so it can independently decode a minted token against the
 # served JWKS (token_decodable_via_jwks) and craft expired/wrong-aud/wrong-iss/HS256
 # tokens for the enforce_auth_roundtrip round-trip (Plan 10-04).
-jsonwebtoken = { version = "10", features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["use_pem", "rust_crypto"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio-test = "0.4"
