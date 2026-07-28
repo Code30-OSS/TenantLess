@@ -5,13 +5,16 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
-    # rsa 0.9 is pinned to rand_core 0.6, which the OsRng used for RS256 key
-    # generation in mock-server/src/jwt.rs depends on. rand 0.10 uses rand_core 0.9
-    # and drops rand::rngs::OsRng, so it cannot satisfy rsa 0.9's keygen bound. Hold
-    # the rand *major* until rsa 0.10 ships (it is currently only a release
-    # candidate — see the note in jwt.rs). Minor/patch rand updates still flow.
+    # Major bumps are intentionally NOT auto-proposed for cargo: the dep-digest
+    # workflow (.github/workflows/dep-digest.yml) surfaces them monthly and they are
+    # taken by hand. For 0.x crates Dependabot classifies a minor bump (e.g. 0.6 -> 0.7)
+    # as semver-major, so 0.x breaking bumps are held too. rand's major in particular
+    # must stay held until rsa 0.10 ships: rsa 0.9 pins rand_core 0.6 (the OsRng used for
+    # RS256 keygen in mock-server/src/jwt.rs) and rand 0.10 drops rand::rngs::OsRng.
+    # Security fixes still flow via Dependabot security updates, which are enabled and
+    # are not governed by this rule. Minor/patch updates still arrive grouped below.
     ignore:
-      - dependency-name: "rand"
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
     groups:
       # Group only minor + patch bumps into one PR; major bumps come as their own
@@ -25,6 +28,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    # Majors are surfaced monthly by the dep-digest workflow and taken by hand;
+    # security fixes still flow via Dependabot security updates.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       frontend-minor-patch:
         patterns: ["*"]
