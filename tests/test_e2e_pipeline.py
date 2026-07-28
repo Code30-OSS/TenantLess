@@ -184,6 +184,10 @@ def test_e2e_generate_serve_http_scan(generator_profile, pg_conn):
         "BASE_URL": base_url,
         "PORT": str(port),
     }
+    # The SELECT opened a transaction and holds ACCESS SHARE until it ends.
+    # Release it before server startup, whose schema preflight needs an exclusive lock.
+    pg_conn.rollback()
+
     # argv LIST, never shell=True (T-07-05). Bind to a chosen free port.
     proc = subprocess.Popen(cmd, env=env)  # noqa: S603 - argv list, trusted discovery
     try:
