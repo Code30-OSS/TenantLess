@@ -5,7 +5,11 @@ services:
     container_name: tenantless-postgres
     env_file: .env
     ports:
-      - "5433:5432"
+      # D-12 hardening: bind the host mapping to loopback only (was `5433:5432`,
+      # i.e. all interfaces). Reachable from the dev box (and a 127.0.0.1 Path-A
+      # scan / host `generate`), NOT from the wider network. Container<->container
+      # traffic is unaffected — it stays on the `postgres-sim` service name at :5432.
+      - "127.0.0.1:5433:5432"
     volumes:
       - sim-pgdata:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d
@@ -46,7 +50,36 @@ services:
     depends_on:
       postgres-sim:
         condition: service_healthy
+      # D-04: with `--profile demo` the one-shot generator seeds the estate first;
+      # mock-server waits for it to COMPLETE SUCCESSFULLY. `required: false` means
+      # plain `docker compose up` (no --profile demo, generator absent) is UNCHANGED —
+      # mock-server does not demand the generator and still serves an empty tenant.
+      generator:
+        condition: service_completed_successfully
+        required: false
     restart: unless-stopped
+
+  # One-shot synthetic-data generator (D-04/D-06). Only present under the `demo`
+  # compose profile; seeds the estate then exits. The D-05 non-empty guard in the
+  # entrypoint SKIPS generation on a populated volume, so it never clobbers data.
+  generator:
+    build:
+      context: .
+      dockerfile: generator.Dockerfile
+    image: tenantless-generator
+    container_name: tenantless-generator
+    # Compose profile `demo` (D-04) — distinct namespace from the generation
+    # `--profile demo` alias the entrypoint passes to `tenantless generate`.
+    profiles: ["demo"]
+    environment:
+      # Reach Postgres by SERVICE NAME on 5432 (container<->container), never the
+      # host localhost:5433 mapping.
+      DATABASE_URL: postgres://tenantless:tenantless_dev@postgres-sim:5432/tenantless
+    depends_on:
+      postgres-sim:
+        condition: service_healthy
+    # One-shot: run once to completion, do not restart.
+    restart: "no"
 
 volumes:
   sim-pgdata:

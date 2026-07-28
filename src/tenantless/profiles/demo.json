@@ -1,0 +1,1499 @@
+{
+  "cost_distributions": {
+    "Microsoft.ApiManagement/service": {
+      "distribution": "lognormal",
+      "mu": 5.650915012764346,
+      "sample_count": 108,
+      "sigma": 0.8476537991877318
+    },
+    "Microsoft.Compute/disks": {
+      "distribution": "lognormal",
+      "mu": 2.4981636238886837,
+      "sample_count": 7236,
+      "sigma": 1.041004521873063
+    },
+    "Microsoft.Compute/virtualMachines": {
+      "distribution": "lognormal",
+      "mu": 4.609266326427017,
+      "sample_count": 5388,
+      "sigma": 1.2950623149803275
+    },
+    "Microsoft.ContainerRegistry/registries": {
+      "distribution": "lognormal",
+      "mu": 2.9752148671254974,
+      "sample_count": 1032,
+      "sigma": 0.7996238942092905
+    },
+    "Microsoft.ContainerService/managedClusters": {
+      "distribution": "lognormal",
+      "mu": 5.4342180562347195,
+      "sample_count": 1056,
+      "sigma": 1.009179193013731
+    },
+    "Microsoft.DataFactory/factories": {
+      "distribution": "lognormal",
+      "mu": 3.78011530101014,
+      "sample_count": 288,
+      "sigma": 1.3075365691845673
+    },
+    "Microsoft.Databricks/workspaces": {
+      "distribution": "lognormal",
+      "mu": 6.168829073248137,
+      "sample_count": 180,
+      "sigma": 1.3296138619314617
+    },
+    "Microsoft.EventHub/namespaces": {
+      "distribution": "lognormal",
+      "mu": 3.4701425881230117,
+      "sample_count": 204,
+      "sigma": 1.0551349782198414
+    },
+    "Microsoft.Insights/components": {
+      "distribution": "lognormal",
+      "mu": 2.5316280160498446,
+      "sample_count": 1968,
+      "sigma": 1.4171819594436017
+    },
+    "Microsoft.KeyVault/vaults": {
+      "distribution": "lognormal",
+      "mu": 0.9081595902364865,
+      "sample_count": 4824,
+      "sigma": 0.8573343804146761
+    },
+    "Microsoft.Network/azureFirewalls": {
+      "distribution": "lognormal",
+      "mu": 6.470987922673122,
+      "sample_count": 312,
+      "sigma": 0.5491874453327353
+    },
+    "Microsoft.Network/privateEndpoints": {
+      "distribution": "lognormal",
+      "mu": 2.167355626831162,
+      "sample_count": 144,
+      "sigma": 0.3618211975093981
+    },
+    "Microsoft.Network/publicIPAddresses": {
+      "distribution": "lognormal",
+      "mu": 1.292707526708367,
+      "sample_count": 4296,
+      "sigma": 0.4534853574873968
+    },
+    "Microsoft.OperationalInsights/workspaces": {
+      "distribution": "lognormal",
+      "mu": 3.8113358819648675,
+      "sample_count": 336,
+      "sigma": 1.4678278326556309
+    },
+    "Microsoft.RecoveryServices/vaults": {
+      "distribution": "lognormal",
+      "mu": 3.515312732795992,
+      "sample_count": 192,
+      "sigma": 1.2574569934721946
+    },
+    "Microsoft.ServiceBus/namespaces": {
+      "distribution": "lognormal",
+      "mu": 3.1877056340720533,
+      "sample_count": 252,
+      "sigma": 1.0190816572014716
+    },
+    "Microsoft.Sql/servers/databases": {
+      "distribution": "lognormal",
+      "mu": 5.101880520930475,
+      "sample_count": 588,
+      "sigma": 1.2196385586253677
+    },
+    "Microsoft.Storage/storageAccounts": {
+      "distribution": "lognormal",
+      "mu": 2.938099164063739,
+      "sample_count": 8676,
+      "sigma": 1.4425488778760258
+    },
+    "Microsoft.Web/serverfarms": {
+      "distribution": "lognormal",
+      "mu": 4.296146409963595,
+      "sample_count": 1548,
+      "sigma": 1.1462357991039567
+    }
+  },
+  "cross_subscription_dependencies": {
+    "centralized_logging": {
+      "probability": 0.6
+    },
+    "hub_spoke": {
+      "hub_count": {
+        "mean": 2.0,
+        "std": 1.0
+      },
+      "probability": 0.7
+    },
+    "private_endpoints": {
+      "per_spoke_count": {
+        "mean": 3.0,
+        "std": 2.0
+      },
+      "probability": 0.4
+    },
+    "shared_acr": {
+      "probability": 0.3
+    },
+    "shared_keyvault": {
+      "probability": 0.5
+    }
+  },
+  "extracted_at": "2026-01-01T00:00:00Z",
+  "governance_violations": {
+    "type_frequencies": {
+      "DISK_UNENCRYPTED": 0.006335189095795738,
+      "KV_NO_PURGE_PROTECT": 0.00710309080437704,
+      "KV_NO_SOFT_DELETE": 0.00460741025148781,
+      "NSG_OPEN_ALL": 0.000959877135726627,
+      "NSG_OPEN_RDP": 0.002303705125743905,
+      "NSG_OPEN_SSH": 0.004031483970051834,
+      "SQL_NO_AUDIT": 0.0011518525628719525,
+      "STORAGE_HTTP_ALLOWED": 0.004415434824342484,
+      "STORAGE_NO_ENCRYPTION": 0.010558648492992897,
+      "STORAGE_OLD_TLS": 0.005183336532923786,
+      "STORAGE_PUBLIC_ACCESS": 0.006911115377231714,
+      "TAG_MISSING_COSTCENTER": 0.08178153196390862,
+      "TAG_MISSING_ENV": 0.08811672105970436,
+      "TAG_MISSING_OWNER": 0.0800537531196007,
+      "VM_NO_BACKUP": 0.013630255327318104,
+      "VM_PUBLIC_IP": 0.006335189095795738
+    }
+  },
+  "naming_conventions": {
+    "pattern_frequencies": {
+      "<word>": 0.13879823382607026,
+      "<word>-<int>": 0.1005951238241505,
+      "<word>-<word>-<int>": 0.7606066423497793
+    },
+    "position_token_classes": {
+      "0": {
+        "word": 1.0
+      },
+      "1": {
+        "int": 0.11680784663397235,
+        "word": 0.8831921533660276
+      },
+      "2": {
+        "int": 1.0
+      }
+    }
+  },
+  "provenance": {
+    "coverage": {
+      "api_version": "no_source",
+      "cost_distributions": "derived",
+      "naming_conventions": "derived",
+      "resource_type_cooccurrence": "derived",
+      "tag_key_cooccurrence": "derived",
+      "tag_value_cardinality": "derived",
+      "untagged_rate_by_type": "derived"
+    },
+    "derivation": {
+      "bootstrap_profile": "profiles/oss-bootstrap.json",
+      "bootstrap_profile_sha256": "458fb3f70c3478e3c91e5c667fe69c503e6c99110022ef62385e91590dd9df2c",
+      "cost_as_of": "2026-01-01",
+      "estate": {
+        "resource_groups": 952,
+        "resources": 5209,
+        "subscriptions": 50
+      },
+      "generator_seed": 424242,
+      "steps": [
+        "uv run python scripts/build_demo_profile.py",
+        "  (1) tenantless init-db",
+        "  (2) tenantless generate --profile profiles/oss-bootstrap.json --subscriptions 50 --resources 5000 --seed 424242 --cost-as-of 2026-01-01 --jobs 1 --force",
+        "  (3) python scripts/export_estate_duckdb.py --out build/demo-estate.duckdb --force",
+        "  (4) tenantless analyze --source duckdb:build/demo-estate.duckdb --out build/demo.json --allow-no-denylist --non-interactive --k 5",
+        "  (5) python scripts/stamp_synthetic_provenance.py --profile build/demo.json --bootstrap profiles/oss-bootstrap.json --seed 424242 --cost-as-of 2026-01-01"
+      ]
+    },
+    "derived_from_real_tenant": false,
+    "extracted_by": "tenantless/0.1.0",
+    "reviewed": true,
+    "source": "duckdb",
+    "synthetic": true
+  },
+  "resource_group_templates": [
+    {
+      "id": "template-0",
+      "resource_count": {
+        "max": 6.0,
+        "mean": 2.933333333333333,
+        "min": 1.0,
+        "std": 1.5405626677721793
+      },
+      "type_set": [
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "weight": 0.04726890756302521
+    },
+    {
+      "id": "template-1",
+      "resource_count": {
+        "max": 22.0,
+        "mean": 13.878048780487806,
+        "min": 6.0,
+        "std": 3.762427355760714
+      },
+      "type_set": [
+        "Microsoft.Compute/availabilitySets",
+        "Microsoft.Compute/disks",
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.Network/networkInterfaces",
+        "Microsoft.Network/publicIPAddresses"
+      ],
+      "weight": 0.0430672268907563
+    },
+    {
+      "id": "template-2",
+      "resource_count": {
+        "max": 5.0,
+        "mean": 2.3714285714285714,
+        "min": 1.0,
+        "std": 1.4359807855004643
+      },
+      "type_set": [
+        "Microsoft.KeyVault/vaults"
+      ],
+      "weight": 0.03676470588235294
+    },
+    {
+      "id": "template-3",
+      "resource_count": {
+        "max": 21.0,
+        "mean": 11.117647058823529,
+        "min": 4.0,
+        "std": 3.6036313864697895
+      },
+      "type_set": [
+        "Microsoft.Compute/disks",
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.Network/networkInterfaces",
+        "Microsoft.Network/publicIPAddresses"
+      ],
+      "weight": 0.03571428571428571
+    },
+    {
+      "id": "template-4",
+      "resource_count": {
+        "max": 13.0,
+        "mean": 7.225806451612903,
+        "min": 3.0,
+        "std": 2.6115089868398833
+      },
+      "type_set": [
+        "Microsoft.Insights/components",
+        "Microsoft.Storage/storageAccounts",
+        "Microsoft.Web/serverfarms"
+      ],
+      "weight": 0.032563025210084036
+    },
+    {
+      "id": "template-5",
+      "resource_count": {
+        "max": 7.0,
+        "mean": 3.3225806451612905,
+        "min": 1.0,
+        "std": 1.7850110106137966
+      },
+      "type_set": [
+        "Microsoft.ManagedIdentity/userAssignedIdentities"
+      ],
+      "weight": 0.032563025210084036
+    },
+    {
+      "id": "template-6",
+      "resource_count": {
+        "max": 36.0,
+        "mean": 13.933333333333334,
+        "min": 4.0,
+        "std": 6.8309752028698085
+      },
+      "type_set": [
+        "Microsoft.Network/networkSecurityGroups",
+        "Microsoft.Network/publicIPAddresses",
+        "Microsoft.Network/virtualNetworks",
+        "Microsoft.Network/virtualNetworks/subnets"
+      ],
+      "weight": 0.031512605042016806
+    },
+    {
+      "id": "template-7",
+      "resource_count": {
+        "max": 17.0,
+        "mean": 10.869565217391305,
+        "min": 5.0,
+        "std": 3.2477998951274953
+      },
+      "type_set": [
+        "Microsoft.Compute/availabilitySets",
+        "Microsoft.Compute/disks",
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.Network/networkInterfaces"
+      ],
+      "weight": 0.02415966386554622
+    },
+    {
+      "id": "template-8",
+      "resource_count": {
+        "max": 9.0,
+        "mean": 4.15,
+        "min": 2.0,
+        "std": 2.2197972880423116
+      },
+      "type_set": [
+        "Microsoft.Insights/components",
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "weight": 0.02100840336134454
+    },
+    {
+      "id": "template-9",
+      "resource_count": {
+        "max": 15.0,
+        "mean": 9.15,
+        "min": 4.0,
+        "std": 2.937260628544903
+      },
+      "type_set": [
+        "Microsoft.Insights/components",
+        "Microsoft.Storage/storageAccounts",
+        "Microsoft.Web/serverfarms",
+        "Microsoft.Web/sites"
+      ],
+      "weight": 0.02100840336134454
+    },
+    {
+      "id": "template-10",
+      "resource_count": {
+        "max": 14.0,
+        "mean": 7.25,
+        "min": 5.0,
+        "std": 2.2332711434127295
+      },
+      "type_set": [
+        "Microsoft.KeyVault/vaults",
+        "Microsoft.Sql/servers",
+        "Microsoft.Sql/servers/databases"
+      ],
+      "weight": 0.02100840336134454
+    },
+    {
+      "id": "template-11",
+      "resource_count": {
+        "max": 5.0,
+        "mean": 2.9444444444444446,
+        "min": 2.0,
+        "std": 1.0786937688304221
+      },
+      "type_set": [
+        "Microsoft.ContainerRegistry/registries",
+        "Microsoft.ContainerService/managedClusters"
+      ],
+      "weight": 0.018907563025210083
+    },
+    {
+      "id": "template-12",
+      "resource_count": {
+        "max": 7.0,
+        "mean": 4.722222222222222,
+        "min": 3.0,
+        "std": 1.282599597846133
+      },
+      "type_set": [
+        "Microsoft.ContainerRegistry/registries",
+        "Microsoft.ContainerService/managedClusters",
+        "Microsoft.ManagedIdentity/userAssignedIdentities"
+      ],
+      "weight": 0.018907563025210083
+    },
+    {
+      "id": "template-13",
+      "resource_count": {
+        "max": 11.0,
+        "mean": 6.333333333333333,
+        "min": 2.0,
+        "std": 2.98142396999972
+      },
+      "type_set": [
+        "Microsoft.KeyVault/vaults",
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "weight": 0.018907563025210083
+    },
+    {
+      "id": "template-14",
+      "resource_count": {
+        "max": 12.0,
+        "mean": 8.0,
+        "min": 5.0,
+        "std": 2.0330600909302543
+      },
+      "type_set": [
+        "Microsoft.Compute/disks",
+        "Microsoft.Compute/virtualMachines",
+        "Microsoft.Network/networkInterfaces"
+      ],
+      "weight": 0.015756302521008403
+    },
+    {
+      "id": "template-15",
+      "resource_count": {
+        "max": 6.0,
+        "mean": 3.466666666666667,
+        "min": 2.0,
+        "std": 1.0873004286866728
+      },
+      "type_set": [
+        "Microsoft.ContainerService/managedClusters",
+        "Microsoft.ManagedIdentity/userAssignedIdentities"
+      ],
+      "weight": 0.015756302521008403
+    },
+    {
+      "id": "template-16",
+      "resource_count": {
+        "max": 2.0,
+        "mean": 1.1428571428571428,
+        "min": 1.0,
+        "std": 0.3499271061118826
+      },
+      "type_set": [
+        "Microsoft.Compute/disks"
+      ],
+      "weight": 0.014705882352941176
+    },
+    {
+      "id": "template-17",
+      "resource_count": {
+        "max": 8.0,
+        "mean": 3.857142857142857,
+        "min": 2.0,
+        "std": 1.5050933932646768
+      },
+      "type_set": [
+        "Microsoft.KeyVault/vaults",
+        "Microsoft.Sql/servers"
+      ],
+      "weight": 0.014705882352941176
+    },
+    {
+      "id": "template-18",
+      "resource_count": {
+        "max": 41.0,
+        "mean": 21.615384615384617,
+        "min": 10.0,
+        "std": 9.611999404097915
+      },
+      "type_set": [
+        "Microsoft.Network/azureFirewalls",
+        "Microsoft.Network/networkSecurityGroups",
+        "Microsoft.Network/publicIPAddresses",
+        "Microsoft.Network/virtualNetworks",
+        "Microsoft.Network/virtualNetworks/subnets"
+      ],
+      "weight": 0.01365546218487395
+    },
+    {
+      "id": "template-19",
+      "resource_count": {
+        "max": 10.0,
+        "mean": 7.5,
+        "min": 5.0,
+        "std": 1.5
+      },
+      "type_set": [
+        "Microsoft.DataFactory/factories",
+        "Microsoft.KeyVault/vaults",
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "weight": 0.012605042016806723
+    },
+    {
+      "id": "template-20",
+      "resource_count": {
+        "max": 4.0,
+        "mean": 2.1818181818181817,
+        "min": 1.0,
+        "std": 0.8331955809010617
+      },
+      "type_set": [
+        "Microsoft.ContainerRegistry/registries"
+      ],
+      "weight": 0.011554621848739496
+    },
+    {
+      "id": "template-21",
+      "resource_count": {
+        "max": 5.0,
+        "mean": 3.090909090909091,
+        "min": 2.0,
+        "std": 0.9958591954639383
+      },
+      "type_set": [
+        "Microsoft.ServiceBus/namespaces",
+        "Microsoft.Storage/storageAccounts"
+      ],
+      "weight": 0.011554621848739496
+    },
+    {
+      "id": "template-22",
+      "resource_count": {
+        "max": 5.0,
+        "mean": 2.0,
+        "min": 1.0,
+        "std": 1.1832159566199232
+      },
+      "type_set": [
+        "Microsoft.Insights/actionGroups"
+      ],
+      "weight": 0.01050420168067227
+    },
+    {
+      "id": "template-23",
+      "resource_count": {
+        "max": 7.0,
+        "mean": 4.4,
+        "min": 2.0,
+        "std": 1.8
+      },
+      "type_set": [
+        "Microsoft.Storage/storageAccounts",
+        "Microsoft.Web/serverfarms"
+      ],
+      "weight": 0.01050420168067227
+    },
+    {
+      "id": "template-24",
+      "resource_count": {
+        "max": 8.0,
+        "mean": 4.5,
+        "min": 3.0,
+        "std": 1.8027756377319946
+      },
+      "type_set": [
+        "Microsoft.Compute/disks",
+        "Microsoft.Network/networkInterfaces",
+        "Microsoft.Network/publicIPAddresses"
+      ],
+      "weight": 0.008403361344537815
+    },
+    {
+      "id": "template-25",
+      "resource_count": {
+        "max": 9.0,
+        "mean": 7.125,
+        "min": 6.0,
+        "std": 0.9270248108869579
+      },
+      "type_set": [
+        "Microsoft.Insights/actionGroups",
+        "Microsoft.Insights/activityLogAlerts",
+        "Microsoft.Insights/scheduledQueryRules",
+        "Microsoft.OperationalInsights/workspaces"
+      ],
+      "weight": 0.008403361344537815
+    },
+    {
+      "id": "template-26",
+      "resource_count": {
+        "max": 1.0,
+        "mean": 1.0,
+        "min": 1.0,
+        "std": 0.0
+      },
+      "type_set": [
+        "Microsoft.Network/publicIPAddresses"
+      ],
+      "weight": 0.008403361344537815
+    },
+    {
+      "id": "template-27",
+      "resource_count": {
+        "max": 12.0,
+        "mean": 7.5,
+        "min": 3.0,
+        "std": 2.345207879911715
+      },
+      "type_set": [
+        "Microsoft.Storage/storageAccounts",
+        "Microsoft.Web/serverfarms",
+        "Microsoft.Web/sites"
+      ],
+      "weight": 0.008403361344537815
+    },
+    {
+      "id": "template-28",
+      "resource_count": {
+        "max": 9.0,
+        "mean": 5.714285714285714,
+        "min": 4.0,
+        "std": 1.6659862556700855
+      },
+      "type_set": [
+        "Microsoft.Insights/actionGroups",
+        "Microsoft.Insights/activityLogAlerts",
+        "Microsoft.Insights/scheduledQueryRules"
+      ],
+      "weight": 0.007352941176470588
+    },
+    {
+      "empty_share": 0.36386138613861385,
+      "id": "__misc__",
+      "resource_count": {
+        "max": 28.0,
+        "mean": 5.653696498054475,
+        "min": 1.0,
+        "std": 4.833483646079071
+      },
+      "type_set": [
+        "__misc__"
+      ],
+      "type_weights": {
+        "Microsoft.ApiManagement/service": 0.0073124569855471415,
+        "Microsoft.Automation/automationAccounts": 0.012316062006357945,
+        "Microsoft.Compute/availabilitySets": 0.03272047979549699,
+        "Microsoft.Compute/disks": 0.08079343230754105,
+        "Microsoft.Compute/virtualMachines": 0.06184986726968833,
+        "Microsoft.ContainerRegistry/registries": 0.007685248910300526,
+        "Microsoft.ContainerService/managedClusters": 0.0013764624913971092,
+        "Microsoft.DataFactory/factories": 0.014567561367286073,
+        "Microsoft.Databricks/workspaces": 0.021105758201422343,
+        "Microsoft.DevCenter/devcenters": 0.008258774948382655,
+        "Microsoft.DevCenter/projects": 0.005849965588437714,
+        "Microsoft.EventGrid/topics": 0.00992200045882083,
+        "Microsoft.EventHub/namespaces": 0.016230786877724248,
+        "Microsoft.Insights/actionGroups": 0.02167928423950447,
+        "Microsoft.Insights/activityLogAlerts": 0.016288139481532456,
+        "Microsoft.Insights/components": 0.03543325795562546,
+        "Microsoft.Insights/scheduledQueryRules": 0.02030282174810736,
+        "Microsoft.KeyVault/vaults": 0.07129010585652017,
+        "Microsoft.Logic/workflows": 0.007025693966506078,
+        "Microsoft.Maintenance/maintenanceConfigurations": 0.004244092681807753,
+        "Microsoft.ManagedIdentity/userAssignedIdentities": 0.01593664995247927,
+        "Microsoft.Network/azureFirewalls": 0.014223445744436796,
+        "Microsoft.Network/networkInterfaces": 0.04885376724674728,
+        "Microsoft.Network/networkSecurityGroups": 0.06167780945826369,
+        "Microsoft.Network/privateDnsZones": 0.003844263100973355,
+        "Microsoft.Network/privateEndpoints": 0.011454134303411658,
+        "Microsoft.Network/publicIPAddresses": 0.09061875266279948,
+        "Microsoft.Network/routeTables": 0.013397568249598531,
+        "Microsoft.Network/virtualNetworks": 0.07454199849244583,
+        "Microsoft.Network/virtualNetworks/subnets": 0.07316553600104872,
+        "Microsoft.OperationalInsights/workspaces": 0.009864647855012615,
+        "Microsoft.RecoveryServices/vaults": 0.013879330121587518,
+        "Microsoft.ServiceBus/namespaces": 0.008889653590272998,
+        "Microsoft.Sql/servers": 0.0027529249827942183,
+        "Microsoft.Sql/servers/databases": 0.014452856159669647,
+        "Microsoft.Storage/storageAccounts": 0.06715334447612492,
+        "Microsoft.Web/serverfarms": 0.005161734342739159,
+        "Microsoft.Web/sites": 0.013879330121587518
+      },
+      "weight": 0.42436974789915966
+    }
+  ],
+  "resource_type_cooccurrence": {
+    "Microsoft.ApiManagement/service": {
+      "Microsoft.Compute/virtualMachines": 0.46153846153846156,
+      "Microsoft.Insights/components": 0.5384615384615384
+    },
+    "Microsoft.Automation/automationAccounts": {
+      "Microsoft.Compute/disks": 0.2222222222222222,
+      "Microsoft.Insights/components": 0.16666666666666666,
+      "Microsoft.KeyVault/vaults": 0.25,
+      "Microsoft.Network/networkSecurityGroups": 0.2222222222222222,
+      "Microsoft.Network/publicIPAddresses": 0.1388888888888889
+    },
+    "Microsoft.Compute/availabilitySets": {
+      "Microsoft.Compute/disks": 0.27184466019417475,
+      "Microsoft.Compute/virtualMachines": 0.255663430420712,
+      "Microsoft.Network/networkInterfaces": 0.23948220064724918,
+      "Microsoft.Network/publicIPAddresses": 0.18122977346278318,
+      "Microsoft.Network/virtualNetworks": 0.025889967637540454,
+      "Microsoft.Network/virtualNetworks/subnets": 0.025889967637540454
+    },
+    "Microsoft.Compute/disks": {
+      "Microsoft.Automation/automationAccounts": 0.013888888888888888,
+      "Microsoft.Compute/availabilitySets": 0.14583333333333334,
+      "Microsoft.Compute/virtualMachines": 0.2534722222222222,
+      "Microsoft.Insights/components": 0.017361111111111112,
+      "Microsoft.KeyVault/vaults": 0.020833333333333332,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.008680555555555556,
+      "Microsoft.Network/networkInterfaces": 0.2517361111111111,
+      "Microsoft.Network/networkSecurityGroups": 0.017361111111111112,
+      "Microsoft.Network/privateEndpoints": 0.008680555555555556,
+      "Microsoft.Network/publicIPAddresses": 0.2048611111111111,
+      "Microsoft.Network/virtualNetworks": 0.024305555555555556,
+      "Microsoft.Network/virtualNetworks/subnets": 0.024305555555555556,
+      "Microsoft.Storage/storageAccounts": 0.008680555555555556
+    },
+    "Microsoft.Compute/virtualMachines": {
+      "Microsoft.ApiManagement/service": 0.012024048096192385,
+      "Microsoft.Compute/availabilitySets": 0.15831663326653306,
+      "Microsoft.Compute/disks": 0.2925851703406814,
+      "Microsoft.Insights/components": 0.018036072144288578,
+      "Microsoft.KeyVault/vaults": 0.014028056112224449,
+      "Microsoft.Network/networkInterfaces": 0.25851703406813625,
+      "Microsoft.Network/publicIPAddresses": 0.19839679358717435,
+      "Microsoft.Network/virtualNetworks": 0.02404809619238477,
+      "Microsoft.Network/virtualNetworks/subnets": 0.02404809619238477
+    },
+    "Microsoft.ContainerRegistry/registries": {
+      "Microsoft.ContainerService/managedClusters": 0.6,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.4
+    },
+    "Microsoft.ContainerService/managedClusters": {
+      "Microsoft.ContainerRegistry/registries": 0.5217391304347826,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.4782608695652174
+    },
+    "Microsoft.DataFactory/factories": {
+      "Microsoft.Databricks/workspaces": 0.14285714285714285,
+      "Microsoft.KeyVault/vaults": 0.5,
+      "Microsoft.Storage/storageAccounts": 0.35714285714285715
+    },
+    "Microsoft.Databricks/workspaces": {
+      "Microsoft.DataFactory/factories": 0.2222222222222222,
+      "Microsoft.KeyVault/vaults": 0.4444444444444444,
+      "Microsoft.Storage/storageAccounts": 0.3333333333333333
+    },
+    "Microsoft.DevCenter/devcenters": {
+      "Microsoft.KeyVault/vaults": 1.0
+    },
+    "Microsoft.EventGrid/topics": {
+      "Microsoft.EventHub/namespaces": 0.38461538461538464,
+      "Microsoft.Storage/storageAccounts": 0.6153846153846154
+    },
+    "Microsoft.EventHub/namespaces": {
+      "Microsoft.EventGrid/topics": 0.20833333333333334,
+      "Microsoft.ServiceBus/namespaces": 0.2916666666666667,
+      "Microsoft.Storage/storageAccounts": 0.5
+    },
+    "Microsoft.Insights/actionGroups": {
+      "Microsoft.Insights/activityLogAlerts": 0.3793103448275862,
+      "Microsoft.Insights/scheduledQueryRules": 0.39655172413793105,
+      "Microsoft.OperationalInsights/workspaces": 0.22413793103448276
+    },
+    "Microsoft.Insights/activityLogAlerts": {
+      "Microsoft.Insights/actionGroups": 0.39285714285714285,
+      "Microsoft.Insights/scheduledQueryRules": 0.35714285714285715,
+      "Microsoft.OperationalInsights/workspaces": 0.25
+    },
+    "Microsoft.Insights/components": {
+      "Microsoft.ApiManagement/service": 0.029535864978902954,
+      "Microsoft.Automation/automationAccounts": 0.02531645569620253,
+      "Microsoft.Compute/disks": 0.04219409282700422,
+      "Microsoft.Compute/virtualMachines": 0.0379746835443038,
+      "Microsoft.KeyVault/vaults": 0.05907172995780591,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.02531645569620253,
+      "Microsoft.Network/networkInterfaces": 0.02109704641350211,
+      "Microsoft.Network/networkSecurityGroups": 0.04219409282700422,
+      "Microsoft.Network/publicIPAddresses": 0.029535864978902954,
+      "Microsoft.Storage/storageAccounts": 0.3459915611814346,
+      "Microsoft.Web/serverfarms": 0.22784810126582278,
+      "Microsoft.Web/sites": 0.11392405063291139
+    },
+    "Microsoft.Insights/scheduledQueryRules": {
+      "Microsoft.Insights/actionGroups": 0.40350877192982454,
+      "Microsoft.Insights/activityLogAlerts": 0.3508771929824561,
+      "Microsoft.OperationalInsights/workspaces": 0.24561403508771928
+    },
+    "Microsoft.KeyVault/vaults": {
+      "Microsoft.Automation/automationAccounts": 0.04,
+      "Microsoft.Compute/disks": 0.05333333333333334,
+      "Microsoft.Compute/virtualMachines": 0.03111111111111111,
+      "Microsoft.DataFactory/factories": 0.09333333333333334,
+      "Microsoft.Databricks/workspaces": 0.05333333333333334,
+      "Microsoft.DevCenter/devcenters": 0.022222222222222223,
+      "Microsoft.Insights/components": 0.06222222222222222,
+      "Microsoft.Logic/workflows": 0.022222222222222223,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.03111111111111111,
+      "Microsoft.Network/networkSecurityGroups": 0.05333333333333334,
+      "Microsoft.Network/privateEndpoints": 0.03111111111111111,
+      "Microsoft.Network/publicIPAddresses": 0.035555555555555556,
+      "Microsoft.Sql/servers": 0.1511111111111111,
+      "Microsoft.Sql/servers/databases": 0.11555555555555555,
+      "Microsoft.Storage/storageAccounts": 0.20444444444444446
+    },
+    "Microsoft.Logic/workflows": {
+      "Microsoft.KeyVault/vaults": 1.0
+    },
+    "Microsoft.ManagedIdentity/userAssignedIdentities": {
+      "Microsoft.Compute/disks": 0.058823529411764705,
+      "Microsoft.ContainerRegistry/registries": 0.2823529411764706,
+      "Microsoft.ContainerService/managedClusters": 0.38823529411764707,
+      "Microsoft.Insights/components": 0.07058823529411765,
+      "Microsoft.KeyVault/vaults": 0.08235294117647059,
+      "Microsoft.Network/networkInterfaces": 0.058823529411764705,
+      "Microsoft.Network/networkSecurityGroups": 0.058823529411764705
+    },
+    "Microsoft.Network/azureFirewalls": {
+      "Microsoft.Network/networkSecurityGroups": 0.28169014084507044,
+      "Microsoft.Network/publicIPAddresses": 0.2112676056338028,
+      "Microsoft.Network/virtualNetworks": 0.2535211267605634,
+      "Microsoft.Network/virtualNetworks/subnets": 0.2535211267605634
+    },
+    "Microsoft.Network/networkInterfaces": {
+      "Microsoft.Compute/availabilitySets": 0.15195071868583163,
+      "Microsoft.Compute/disks": 0.29774127310061604,
+      "Microsoft.Compute/virtualMachines": 0.2648870636550308,
+      "Microsoft.Insights/components": 0.01026694045174538,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.01026694045174538,
+      "Microsoft.Network/networkSecurityGroups": 0.012320328542094456,
+      "Microsoft.Network/publicIPAddresses": 0.2032854209445585,
+      "Microsoft.Network/virtualNetworks": 0.024640657084188913,
+      "Microsoft.Network/virtualNetworks/subnets": 0.024640657084188913
+    },
+    "Microsoft.Network/networkSecurityGroups": {
+      "Microsoft.Automation/automationAccounts": 0.03137254901960784,
+      "Microsoft.Compute/disks": 0.0392156862745098,
+      "Microsoft.Insights/components": 0.0392156862745098,
+      "Microsoft.KeyVault/vaults": 0.047058823529411764,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.0196078431372549,
+      "Microsoft.Network/azureFirewalls": 0.0784313725490196,
+      "Microsoft.Network/networkInterfaces": 0.023529411764705882,
+      "Microsoft.Network/privateEndpoints": 0.0196078431372549,
+      "Microsoft.Network/publicIPAddresses": 0.22745098039215686,
+      "Microsoft.Network/routeTables": 0.027450980392156862,
+      "Microsoft.Network/virtualNetworks": 0.21176470588235294,
+      "Microsoft.Network/virtualNetworks/subnets": 0.21176470588235294,
+      "Microsoft.Storage/storageAccounts": 0.023529411764705882
+    },
+    "Microsoft.Network/privateEndpoints": {
+      "Microsoft.Compute/disks": 0.29411764705882354,
+      "Microsoft.KeyVault/vaults": 0.4117647058823529,
+      "Microsoft.Network/networkSecurityGroups": 0.29411764705882354
+    },
+    "Microsoft.Network/publicIPAddresses": {
+      "Microsoft.Automation/automationAccounts": 0.008417508417508417,
+      "Microsoft.Compute/availabilitySets": 0.09427609427609428,
+      "Microsoft.Compute/disks": 0.19865319865319866,
+      "Microsoft.Compute/virtualMachines": 0.16666666666666666,
+      "Microsoft.Insights/components": 0.011784511784511785,
+      "Microsoft.KeyVault/vaults": 0.013468013468013467,
+      "Microsoft.Network/azureFirewalls": 0.025252525252525252,
+      "Microsoft.Network/networkInterfaces": 0.16666666666666666,
+      "Microsoft.Network/networkSecurityGroups": 0.09764309764309764,
+      "Microsoft.Network/routeTables": 0.008417508417508417,
+      "Microsoft.Network/virtualNetworks": 0.10437710437710437,
+      "Microsoft.Network/virtualNetworks/subnets": 0.10437710437710437
+    },
+    "Microsoft.Network/routeTables": {
+      "Microsoft.Network/networkSecurityGroups": 0.5833333333333334,
+      "Microsoft.Network/publicIPAddresses": 0.4166666666666667
+    },
+    "Microsoft.Network/virtualNetworks": {
+      "Microsoft.Compute/availabilitySets": 0.031007751937984496,
+      "Microsoft.Compute/disks": 0.05426356589147287,
+      "Microsoft.Compute/virtualMachines": 0.046511627906976744,
+      "Microsoft.Network/azureFirewalls": 0.06976744186046512,
+      "Microsoft.Network/networkInterfaces": 0.046511627906976744,
+      "Microsoft.Network/networkSecurityGroups": 0.20930232558139536,
+      "Microsoft.Network/publicIPAddresses": 0.24031007751937986,
+      "Microsoft.Network/virtualNetworks/subnets": 0.3023255813953488
+    },
+    "Microsoft.Network/virtualNetworks/subnets": {
+      "Microsoft.Compute/availabilitySets": 0.031007751937984496,
+      "Microsoft.Compute/disks": 0.05426356589147287,
+      "Microsoft.Compute/virtualMachines": 0.046511627906976744,
+      "Microsoft.Network/azureFirewalls": 0.06976744186046512,
+      "Microsoft.Network/networkInterfaces": 0.046511627906976744,
+      "Microsoft.Network/networkSecurityGroups": 0.20930232558139536,
+      "Microsoft.Network/publicIPAddresses": 0.24031007751937986,
+      "Microsoft.Network/virtualNetworks": 0.3023255813953488
+    },
+    "Microsoft.OperationalInsights/workspaces": {
+      "Microsoft.Insights/actionGroups": 0.3170731707317073,
+      "Microsoft.Insights/activityLogAlerts": 0.34146341463414637,
+      "Microsoft.Insights/scheduledQueryRules": 0.34146341463414637
+    },
+    "Microsoft.RecoveryServices/vaults": {
+      "Microsoft.Storage/storageAccounts": 1.0
+    },
+    "Microsoft.ServiceBus/namespaces": {
+      "Microsoft.EventHub/namespaces": 0.28,
+      "Microsoft.Storage/storageAccounts": 0.72
+    },
+    "Microsoft.Sql/servers": {
+      "Microsoft.KeyVault/vaults": 0.6181818181818182,
+      "Microsoft.Sql/servers/databases": 0.38181818181818183
+    },
+    "Microsoft.Sql/servers/databases": {
+      "Microsoft.KeyVault/vaults": 0.5531914893617021,
+      "Microsoft.Sql/servers": 0.44680851063829785
+    },
+    "Microsoft.Storage/storageAccounts": {
+      "Microsoft.Compute/disks": 0.015873015873015872,
+      "Microsoft.DataFactory/factories": 0.047619047619047616,
+      "Microsoft.Databricks/workspaces": 0.02857142857142857,
+      "Microsoft.EventGrid/topics": 0.025396825396825397,
+      "Microsoft.EventHub/namespaces": 0.0380952380952381,
+      "Microsoft.Insights/components": 0.26031746031746034,
+      "Microsoft.KeyVault/vaults": 0.14603174603174604,
+      "Microsoft.Network/networkSecurityGroups": 0.01904761904761905,
+      "Microsoft.RecoveryServices/vaults": 0.02857142857142857,
+      "Microsoft.ServiceBus/namespaces": 0.05714285714285714,
+      "Microsoft.Web/serverfarms": 0.21904761904761905,
+      "Microsoft.Web/sites": 0.11428571428571428
+    },
+    "Microsoft.Web/serverfarms": {
+      "Microsoft.Insights/components": 0.3576158940397351,
+      "Microsoft.Storage/storageAccounts": 0.45695364238410596,
+      "Microsoft.Web/sites": 0.18543046357615894
+    },
+    "Microsoft.Web/sites": {
+      "Microsoft.Insights/components": 0.2967032967032967,
+      "Microsoft.Storage/storageAccounts": 0.3956043956043956,
+      "Microsoft.Web/serverfarms": 0.3076923076923077
+    }
+  },
+  "resource_type_distributions": {
+    "Microsoft.ApiManagement/service": {
+      "frequency": 0.001729106628242075,
+      "property_distributions": {}
+    },
+    "Microsoft.Automation/automationAccounts": {
+      "frequency": 0.003073967339097022,
+      "property_distributions": {}
+    },
+    "Microsoft.Compute/availabilitySets": {
+      "frequency": 0.022478386167146973,
+      "property_distributions": {}
+    },
+    "Microsoft.Compute/disks": {
+      "frequency": 0.11585014409221903,
+      "property_distributions": {}
+    },
+    "Microsoft.Compute/virtualMachines": {
+      "frequency": 0.08626320845341018,
+      "property_distributions": {}
+    },
+    "Microsoft.ContainerRegistry/registries": {
+      "frequency": 0.016522574447646494,
+      "property_distributions": {}
+    },
+    "Microsoft.ContainerService/managedClusters": {
+      "frequency": 0.01690682036503362,
+      "property_distributions": {}
+    },
+    "Microsoft.DataFactory/factories": {
+      "frequency": 0.004610951008645533,
+      "property_distributions": {}
+    },
+    "Microsoft.Databricks/workspaces": {
+      "frequency": 0.002881844380403458,
+      "property_distributions": {}
+    },
+    "Microsoft.DevCenter/devcenters": {
+      "frequency": 0.0011527377521613833,
+      "property_distributions": {}
+    },
+    "Microsoft.DevCenter/projects": {
+      "frequency": 0.0013448607108549472,
+      "property_distributions": {}
+    },
+    "Microsoft.EventGrid/topics": {
+      "frequency": 0.0019212295869356388,
+      "property_distributions": {}
+    },
+    "Microsoft.EventHub/namespaces": {
+      "frequency": 0.003266090297790586,
+      "property_distributions": {}
+    },
+    "Microsoft.Insights/actionGroups": {
+      "frequency": 0.01729106628242075,
+      "property_distributions": {}
+    },
+    "Microsoft.Insights/activityLogAlerts": {
+      "frequency": 0.007877041306436119,
+      "property_distributions": {}
+    },
+    "Microsoft.Insights/components": {
+      "frequency": 0.031508165225744476,
+      "property_distributions": {}
+    },
+    "Microsoft.Insights/scheduledQueryRules": {
+      "frequency": 0.01095100864553314,
+      "property_distributions": {}
+    },
+    "Microsoft.KeyVault/vaults": {
+      "frequency": 0.07723342939481267,
+      "property_distributions": {}
+    },
+    "Microsoft.Logic/workflows": {
+      "frequency": 0.001729106628242075,
+      "property_distributions": {}
+    },
+    "Microsoft.Maintenance/maintenanceConfigurations": {
+      "frequency": 0.0009606147934678194,
+      "property_distributions": {}
+    },
+    "Microsoft.ManagedIdentity/userAssignedIdentities": {
+      "frequency": 0.0345821325648415,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/azureFirewalls": {
+      "frequency": 0.004995196926032661,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/networkInterfaces": {
+      "frequency": 0.08126801152737752,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/networkSecurityGroups": {
+      "frequency": 0.043227665706051875,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/privateEndpoints": {
+      "frequency": 0.0023054755043227667,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/publicIPAddresses": {
+      "frequency": 0.06878001921229587,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/routeTables": {
+      "frequency": 0.0013448607108549472,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/virtualNetworks": {
+      "frequency": 0.029010566762728146,
+      "property_distributions": {}
+    },
+    "Microsoft.Network/virtualNetworks/subnets": {
+      "frequency": 0.10067243035542747,
+      "property_distributions": {}
+    },
+    "Microsoft.OperationalInsights/workspaces": {
+      "frequency": 0.005379442843419789,
+      "property_distributions": {}
+    },
+    "Microsoft.RecoveryServices/vaults": {
+      "frequency": 0.003073967339097022,
+      "property_distributions": {}
+    },
+    "Microsoft.ServiceBus/namespaces": {
+      "frequency": 0.004034582132564841,
+      "property_distributions": {}
+    },
+    "Microsoft.Sql/servers": {
+      "frequency": 0.01095100864553314,
+      "property_distributions": {}
+    },
+    "Microsoft.Sql/servers/databases": {
+      "frequency": 0.00941402497598463,
+      "property_distributions": {}
+    },
+    "Microsoft.Storage/storageAccounts": {
+      "frequency": 0.13890489913544668,
+      "property_distributions": {}
+    },
+    "Microsoft.Web/serverfarms": {
+      "frequency": 0.02478386167146974,
+      "property_distributions": {}
+    },
+    "Microsoft.Web/sites": {
+      "frequency": 0.011719500480307397,
+      "property_distributions": {}
+    }
+  },
+  "source_stats": {
+    "total_resource_groups": 952,
+    "total_resources": 5209,
+    "total_subscriptions": 50
+  },
+  "subscription_archetypes": [
+    {
+      "id": "archetype-0",
+      "location_distribution": {
+        "eastus": 0.013262599469496022,
+        "francecentral": 0.19230769230769232,
+        "northeurope": 0.13660477453580902,
+        "uksouth": 0.1830238726790451,
+        "westeurope": 0.47480106100795755
+      },
+      "resource_count": {
+        "max": 94.0,
+        "mean": 50.266666666666666,
+        "min": 9.0,
+        "std": 23.549852559104387
+      },
+      "resource_group_count": {
+        "max": 13.0,
+        "mean": 7.333333333333333,
+        "min": 3.0,
+        "std": 3.091206165165234
+      },
+      "tag_density": {
+        "mean": 2.321630821263562,
+        "std": 0.6393854014658777
+      },
+      "weight": 0.3
+    },
+    {
+      "id": "archetype-1",
+      "location_distribution": {
+        "eastus": 0.10677083333333333,
+        "eastus2": 0.08940972222222222,
+        "francecentral": 0.1423611111111111,
+        "northeurope": 0.21875,
+        "southeastasia": 0.017361111111111112,
+        "uksouth": 0.11284722222222222,
+        "westeurope": 0.3125
+      },
+      "resource_count": {
+        "max": 280.0,
+        "mean": 230.4,
+        "min": 197.0,
+        "std": 28.639832401744254
+      },
+      "resource_group_count": {
+        "max": 46.0,
+        "mean": 36.0,
+        "min": 28.0,
+        "std": 6.603029607687671
+      },
+      "tag_density": {
+        "mean": 3.6867750060594786,
+        "std": 0.08860542319166136
+      },
+      "weight": 0.1
+    },
+    {
+      "id": "archetype-2",
+      "location_distribution": {
+        "eastus": 0.11070110701107011,
+        "eastus2": 0.08487084870848709,
+        "francecentral": 0.0996309963099631,
+        "northeurope": 0.19557195571955718,
+        "southeastasia": 0.11808118081180811,
+        "uksouth": 0.13284132841328414,
+        "westeurope": 0.25830258302583026
+      },
+      "resource_count": {
+        "max": 142.0,
+        "mean": 108.4,
+        "min": 81.0,
+        "std": 22.419634252146043
+      },
+      "resource_group_count": {
+        "max": 23.0,
+        "mean": 17.6,
+        "min": 14.0,
+        "std": 3.1368774282716245
+      },
+      "tag_density": {
+        "mean": 3.7072903945030853,
+        "std": 0.12539278813035173
+      },
+      "weight": 0.1
+    },
+    {
+      "id": "archetype-3",
+      "location_distribution": {
+        "eastus": 0.036671368124118475,
+        "eastus2": 0.00846262341325811,
+        "francecentral": 0.06488011283497884,
+        "northeurope": 0.27221438645980256,
+        "southeastasia": 0.015514809590973202,
+        "uksouth": 0.05923836389280677,
+        "westeurope": 0.5430183356840621
+      },
+      "resource_count": {
+        "max": 187.0,
+        "mean": 177.25,
+        "min": 166.0,
+        "std": 7.595228765481656
+      },
+      "resource_group_count": {
+        "max": 25.0,
+        "mean": 23.0,
+        "min": 20.0,
+        "std": 2.1213203435596424
+      },
+      "tag_density": {
+        "mean": 3.424763492472564,
+        "std": 0.3652204925843186
+      },
+      "weight": 0.08
+    },
+    {
+      "id": "archetype-4",
+      "location_distribution": {
+        "eastus": 0.06920077972709551,
+        "eastus2": 0.03508771929824561,
+        "francecentral": 0.08333333333333333,
+        "northeurope": 0.24074074074074073,
+        "southeastasia": 0.003898635477582846,
+        "uksouth": 0.15692007797270954,
+        "westeurope": 0.4108187134502924
+      },
+      "resource_count": {
+        "max": 154.0,
+        "mean": 97.71428571428571,
+        "min": 64.0,
+        "std": 23.003401109075895
+      },
+      "resource_group_count": {
+        "max": 25.0,
+        "mean": 15.952380952380953,
+        "min": 8.0,
+        "std": 4.111264322695119
+      },
+      "tag_density": {
+        "mean": 3.402155906278656,
+        "std": 0.26304725694727715
+      },
+      "weight": 0.42
+    }
+  ],
+  "tag_distributions": {
+    "key_cooccurrence": {
+      "application": {
+        "businessUnit": 0.07791201982651796,
+        "costCenter": 0.1575278810408922,
+        "createdBy": 0.041356877323420076,
+        "dataClassification": 0.05065055762081784,
+        "environment": 0.22738537794299876,
+        "expiresOn": 0.01688351920693928,
+        "managedBy": 0.07357496902106568,
+        "owner": 0.13847583643122677,
+        "project": 0.0969640644361834,
+        "team": 0.11926889714993805
+      },
+      "businessUnit": {
+        "application": 0.13635131471943615,
+        "costCenter": 0.1431282190295473,
+        "createdBy": 0.03984819734345351,
+        "dataClassification": 0.04852263486039577,
+        "environment": 0.21523448088912986,
+        "expiresOn": 0.018433179723502304,
+        "managedBy": 0.0658715098942803,
+        "owner": 0.1257793439956628,
+        "project": 0.09108159392789374,
+        "team": 0.1157495256166983
+      },
+      "costCenter": {
+        "application": 0.14964685108887582,
+        "businessUnit": 0.07769276044732196,
+        "createdBy": 0.04399646851088876,
+        "dataClassification": 0.05326662742789876,
+        "environment": 0.2233666862860506,
+        "expiresOn": 0.020158917010005887,
+        "managedBy": 0.07430841671571513,
+        "owner": 0.13846380223660978,
+        "project": 0.09932313125367863,
+        "team": 0.11977633902295468
+      },
+      "createdBy": {
+        "application": 0.12618147448015124,
+        "businessUnit": 0.06947069943289225,
+        "costCenter": 0.14130434782608695,
+        "dataClassification": 0.04773156899810964,
+        "environment": 0.22022684310018903,
+        "expiresOn": 0.013705103969754254,
+        "managedBy": 0.054820415879017016,
+        "owner": 0.12948960302457466,
+        "project": 0.0888468809073724,
+        "team": 0.10822306238185256
+      },
+      "dataClassification": {
+        "application": 0.13137806347930897,
+        "businessUnit": 0.07191643230212937,
+        "costCenter": 0.1454399357171555,
+        "createdBy": 0.04057854560064283,
+        "environment": 0.2012856568903174,
+        "expiresOn": 0.015267175572519083,
+        "managedBy": 0.06347930895942146,
+        "owner": 0.13177983125753315,
+        "project": 0.08638007231820008,
+        "team": 0.1124949779027722
+      },
+      "environment": {
+        "application": 0.1593227696982852,
+        "businessUnit": 0.0861732146733232,
+        "costCenter": 0.16474929455176904,
+        "createdBy": 0.050575211634469285,
+        "dataClassification": 0.054373779031907966,
+        "expiresOn": 0.020186672454959843,
+        "managedBy": 0.07814195789016713,
+        "owner": 0.14695029303234208,
+        "project": 0.10625135663121336,
+        "team": 0.13327545040156283
+      },
+      "expiresOn": {
+        "application": 0.1187363834422658,
+        "businessUnit": 0.07407407407407407,
+        "costCenter": 0.14923747276688454,
+        "createdBy": 0.03159041394335512,
+        "dataClassification": 0.04139433551198257,
+        "environment": 0.20261437908496732,
+        "managedBy": 0.06753812636165578,
+        "owner": 0.11764705882352941,
+        "project": 0.08387799564270153,
+        "team": 0.11328976034858387
+      },
+      "managedBy": {
+        "application": 0.14170644391408116,
+        "businessUnit": 0.07249403341288783,
+        "costCenter": 0.1506563245823389,
+        "createdBy": 0.034606205250596656,
+        "dataClassification": 0.04713603818615752,
+        "environment": 0.21479713603818615,
+        "expiresOn": 0.018496420047732696,
+        "owner": 0.12022673031026253,
+        "project": 0.09158711217183771,
+        "team": 0.10829355608591885
+      },
+      "owner": {
+        "application": 0.14735454095928796,
+        "businessUnit": 0.07647931432338882,
+        "costCenter": 0.1551013680567002,
+        "createdBy": 0.045162353716828744,
+        "dataClassification": 0.05406296357343003,
+        "environment": 0.22317455084885446,
+        "expiresOn": 0.01780121971320257,
+        "managedBy": 0.06642492170759848,
+        "project": 0.09658809955496951,
+        "team": 0.11785066754573925
+      },
+      "project": {
+        "application": 0.13871039220031023,
+        "businessUnit": 0.07445158431198759,
+        "costCenter": 0.14956791491247506,
+        "createdBy": 0.04165743407932639,
+        "dataClassification": 0.047640150675825395,
+        "environment": 0.21692887214713052,
+        "expiresOn": 0.01706182140483049,
+        "managedBy": 0.06802570352315533,
+        "owner": 0.12984710835364502,
+        "team": 0.11610901839131398
+      },
+      "team": {
+        "application": 0.14118078474514117,
+        "businessUnit": 0.07829116244957829,
+        "costCenter": 0.14924825815914924,
+        "createdBy": 0.04198753208654199,
+        "dataClassification": 0.05133846718005134,
+        "environment": 0.22515584891822515,
+        "expiresOn": 0.01906857352401907,
+        "managedBy": 0.06655665566556655,
+        "owner": 0.1310964429776311,
+        "project": 0.09607627429409607
+      }
+    },
+    "key_frequencies": {
+      "application": 0.42580149740833173,
+      "businessUnit": 0.23248224227298905,
+      "costCenter": 0.450758302937224,
+      "createdBy": 0.1345747744288731,
+      "dataClassification": 0.15550009598771358,
+      "environment": 0.653100403148397,
+      "expiresOn": 0.056056824726435014,
+      "managedBy": 0.210021117296986,
+      "owner": 0.3929736993664811,
+      "project": 0.28757918986369746,
+      "team": 0.35630639278172394
+    },
+    "untagged_rate_by_type": {
+      "Microsoft.ApiManagement/service": 0.0,
+      "Microsoft.Automation/automationAccounts": 0.0,
+      "Microsoft.Compute/availabilitySets": 0.02564102564102564,
+      "Microsoft.Compute/disks": 0.01824212271973466,
+      "Microsoft.Compute/virtualMachines": 0.024498886414253896,
+      "Microsoft.ContainerRegistry/registries": 0.03488372093023256,
+      "Microsoft.ContainerService/managedClusters": 0.011363636363636364,
+      "Microsoft.DataFactory/factories": 0.0,
+      "Microsoft.Databricks/workspaces": 0.0,
+      "Microsoft.DevCenter/devcenters": 0.0,
+      "Microsoft.DevCenter/projects": 0.14285714285714285,
+      "Microsoft.EventGrid/topics": 0.0,
+      "Microsoft.EventHub/namespaces": 0.058823529411764705,
+      "Microsoft.Insights/actionGroups": 0.011111111111111112,
+      "Microsoft.Insights/activityLogAlerts": 0.024390243902439025,
+      "Microsoft.Insights/components": 0.0,
+      "Microsoft.Insights/scheduledQueryRules": 0.0,
+      "Microsoft.KeyVault/vaults": 0.014925373134328358,
+      "Microsoft.Logic/workflows": 0.0,
+      "Microsoft.Maintenance/maintenanceConfigurations": 0.2,
+      "Microsoft.ManagedIdentity/userAssignedIdentities": 0.022222222222222223,
+      "Microsoft.Network/azureFirewalls": 0.038461538461538464,
+      "Microsoft.Network/networkInterfaces": 0.0070921985815602835,
+      "Microsoft.Network/networkSecurityGroups": 0.022222222222222223,
+      "Microsoft.Network/privateDnsZones": 0.25,
+      "Microsoft.Network/privateEndpoints": 0.25,
+      "Microsoft.Network/publicIPAddresses": 0.0223463687150838,
+      "Microsoft.Network/routeTables": 0.0,
+      "Microsoft.Network/virtualNetworks": 0.026490066225165563,
+      "Microsoft.Network/virtualNetworks/subnets": 0.015267175572519083,
+      "Microsoft.OperationalInsights/workspaces": 0.03571428571428571,
+      "Microsoft.RecoveryServices/vaults": 0.0625,
+      "Microsoft.ServiceBus/namespaces": 0.0,
+      "Microsoft.Sql/servers": 0.017543859649122806,
+      "Microsoft.Sql/servers/databases": 0.02040816326530612,
+      "Microsoft.Storage/storageAccounts": 0.017980636237897647,
+      "Microsoft.Web/serverfarms": 0.046511627906976744,
+      "Microsoft.Web/sites": 0.0
+    },
+    "value_cardinality": {
+      "application": 16,
+      "businessUnit": 8,
+      "costCenter": 12,
+      "createdBy": 10,
+      "dataClassification": 4,
+      "environment": 5,
+      "expiresOn": 5,
+      "managedBy": 4,
+      "owner": 10,
+      "project": 14,
+      "team": 12
+    },
+    "value_distributions": {
+      "businessUnit": {
+        "bu-1": 0.1222130470685384,
+        "bu-2": 0.1255161023947151,
+        "bu-3": 0.12386457473162675,
+        "bu-4": 0.12881915772089184,
+        "bu-5": 0.13625103220478943,
+        "bu-6": 0.12386457473162675,
+        "bu-7": 0.11973575557390587,
+        "bu-8": 0.11973575557390587
+      },
+      "costCenter": {
+        "cc-0001": 0.08858603066439523,
+        "cc-0002": 0.07325383304940375,
+        "cc-0003": 0.07836456558773425,
+        "cc-0004": 0.09284497444633731,
+        "cc-0005": 0.07836456558773425,
+        "cc-0006": 0.08603066439522998,
+        "cc-0007": 0.08134582623509369,
+        "cc-0008": 0.0706984667802385,
+        "cc-0009": 0.08432708688245315,
+        "cc-0010": 0.0821976149914821,
+        "cc-0011": 0.08645655877342419,
+        "cc-0012": 0.0975298126064736
+      },
+      "dataClassification": {
+        "confidential": 0.2975308641975309,
+        "internal": 0.4777777777777778,
+        "public": 0.12839506172839507,
+        "restricted": 0.0962962962962963
+      },
+      "environment": {
+        "development": 0.26161081716637274,
+        "production": 0.3506760728982951,
+        "sandbox": 0.1011169900058789,
+        "staging": 0.11699000587889477,
+        "test": 0.1696061140505585
+      },
+      "managedBy": {
+        "arm-template": 0.11243144424131626,
+        "bicep": 0.2230347349177331,
+        "portal": 0.19926873857404023,
+        "terraform": 0.46526508226691043
+      }
+    }
+  },
+  "version": "1.2"
+}

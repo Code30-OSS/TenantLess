@@ -4,6 +4,50 @@ A ten-minute walkthrough: build an estate, scan it like a real tenant, break it,
 break, and put it back. Every command is reproducible — the same
 `(profile, seed, cost-as-of)` gives the same estate.
 
+## One command (Docker Compose)
+
+If you just want a populated tenant to look at, one command does everything — no host Python,
+Node, or Rust:
+
+```bash
+cp .env.example .env
+docker compose --profile demo up
+```
+
+This orchestrates three steps in order:
+
+1. **PostgreSQL** starts and becomes healthy.
+2. A one-shot **generator** service seeds the bundled synthetic `demo` estate — profile
+   `demo`, seed `42`, cost-as-of `2026-01-01` (≈50 subscriptions / ≈5,000 resources, with
+   non-vacuous cost, RBAC, drift, topology, and governance planes).
+3. The **mock server** starts on the seeded estate and serves ARM-compatible HTTP on `:8080`,
+   with the web console at <http://localhost:8080/ui>.
+
+**First start** takes about **10–15 seconds** end-to-end (measured: ~12 s from `up` to the
+first ARM `200` on a pre-built image; add the one-time image build on the very first run).
+
+**Repeat start (populated volume).** Run `docker compose --profile demo up` again and the
+generator detects the existing estate and **skips** generation — it prints
+`estate present -- skipping generate; existing volume preserved` and exits, and the mock
+server comes straight up on your existing data. `generate` is destructive, so this guard is
+what guarantees a restart never truncates or overwrites an estate you already have.
+
+**Clean reset.** To wipe the volume and regenerate the identical estate from scratch:
+
+```bash
+docker compose --profile demo down -v && docker compose --profile demo up
+```
+
+Because the fixture is byte-reproducible, the reset estate is identical to the first —
+the same subscriptions, resources, costs, and violations, down to the resource IDs.
+
+**Plain `docker compose up`** (no `--profile demo`) is unchanged: PostgreSQL and the mock
+server start on an **empty** tenant with no generator. Populate it with the host-side
+`uv run tenantless generate …` step below, or via the control-plane generate action.
+
+The rest of this page uses the source-development path (host `uv` + a locally built server),
+which gives you the full CLI (`generate`, `apply-drift`, `revert-drift`) for the deeper tour.
+
 Requires [uv](https://docs.astral.sh/uv/), **Node 20+** and **Rust 1.95+** (to build the
 server from source), and a **PostgreSQL 16** (Docker is the easy way to run PostgreSQL). If
 you would rather not install Node and Rust, serve the estate with Docker instead — see

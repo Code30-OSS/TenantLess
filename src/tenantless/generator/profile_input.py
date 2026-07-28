@@ -21,7 +21,7 @@ from tenantless.analyzer.schema_validate import validate_profile
 # PLAT-04: bundled named profiles live in this package. The package argument is
 # updated to ``tenantless.profiles`` in Plan 05 when the whole src/ tree moves.
 _BUNDLED_PACKAGE = "tenantless.profiles"
-_BUNDLED_NAMES = ("enterprise", "small")
+_BUNDLED_NAMES = ("enterprise", "small", "demo")
 
 
 def _is_bare_stem(value: str) -> bool:

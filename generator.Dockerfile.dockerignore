@@ -1,0 +1,33 @@
+# BuildKit uses THIS file in place of the root .dockerignore when building with
+# `-f generator.Dockerfile` (per-Dockerfile ignore, docker/buildx). The root
+# .dockerignore is tuned for the Rust mock-server build and excludes `src/` and
+# `*.md` — which the Python generator image REQUIRES (the tenantless package lives
+# under src/, and hatchling needs LICENSE). This list keeps the small set of build
+# inputs the generator needs and drops everything heavy/irrelevant.
+**/.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv/
+target/
+mock-server/target/
+frontend/
+build/
+.planning/
+.remember/
+.codegraph/
+.playwright-mcp/
+.pytest_cache/
+control-data/
+scratchpad/
+docs/
+tests/
+# Keep the top-level profiles/ OUT of the build context (it holds data-boundary
+# sensitive denylists) EXCEPT the JSON schema, which the generate path validates
+# against at /app/profiles/schema.json.
+profiles/*
+!profiles/schema.json
+media/
+*.duckdb
+*.png
+.env
