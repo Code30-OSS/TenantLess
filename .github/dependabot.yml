@@ -5,9 +5,20 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    # rsa 0.9 is pinned to rand_core 0.6, which the OsRng used for RS256 key
+    # generation in mock-server/src/jwt.rs depends on. rand 0.10 uses rand_core 0.9
+    # and drops rand::rngs::OsRng, so it cannot satisfy rsa 0.9's keygen bound. Hold
+    # the rand *major* until rsa 0.10 ships (it is currently only a release
+    # candidate — see the note in jwt.rs). Minor/patch rand updates still flow.
+    ignore:
+      - dependency-name: "rand"
+        update-types: ["version-update:semver-major"]
     groups:
-      cargo:
+      # Group only minor + patch bumps into one PR; major bumps come as their own
+      # individual PRs so a breaking major can't block a batch of safe updates.
+      cargo-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: "/frontend"
@@ -15,21 +26,24 @@ updates:
       interval: monthly
     open-pull-requests-limit: 5
     groups:
-      frontend-npm:
+      frontend-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
     groups:
-      github-actions:
+      github-actions-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: docker
     directory: "/mock-server"
     schedule:
       interval: monthly
     groups:
-      docker:
+      docker-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
