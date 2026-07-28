@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-base64 = "0.22"
+base64 = "0.23"
 # RS256 JWT mint/decode + JWKS export (IAM-04, D-08). jsonwebtoken 10.4 chosen for
 # `Jwk::from_encoding_key` (JWKS straight from the signing key) + `use_pem`
 # (EncodingKey/DecodingKey::from_rsa_pem). The ephemeral RSA-2048 keypair is
