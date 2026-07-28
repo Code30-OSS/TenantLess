@@ -24,8 +24,17 @@ def open_duckdb(path: str) -> Iterator["DuckDBReader"]:
 
     The connection is always opened ``read_only=True`` so the external
     multi-gigabyte scanner.duckdb is never mutated or copied.
+
+    ``threads=1`` pins the scan to a single worker so table rows are delivered in
+    deterministic storage order. A multi-threaded scan hands rows to the
+    distribution fitters in a run-varying order, and floating-point mean/std/MLE
+    reductions are order-sensitive at the ULP -- which makes an otherwise fixed
+    ``(profile, seed, cost-as-of)`` derivation drift in its last significant
+    digits between rebuilds. Single-threaded reads are the analyzer's
+    byte-reproducibility guarantee (the scan is over small pre-aggregated frames,
+    so there is no throughput cost worth the nondeterminism).
     """
-    conn = duckdb.connect(path, read_only=True)
+    conn = duckdb.connect(path, read_only=True, config={"threads": 1})
     try:
         yield DuckDBReader(conn)
     finally:
