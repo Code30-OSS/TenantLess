@@ -14,7 +14,7 @@
 # Stage 1 — frontend SPA build (WEBUI-03). Lockfile-exact install (D-07 / T-15-01-SC):
 # `npm ci` honors the committed package-lock.json + `.npmrc` save-exact — never `npm install`.
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS frontend
+FROM node:26-bookworm-slim AS frontend
 WORKDIR /fe
 # Install deps first (layer cache) — only re-runs when the lockfile/manifest changes.
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
