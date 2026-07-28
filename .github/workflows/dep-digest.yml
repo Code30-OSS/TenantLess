@@ -1,0 +1,97 @@
+name: Dependency upgrade digest
+
+# Companion to the Tier-2 Dependabot config: Dependabot only opens grouped
+# minor/patch PRs (+ security-update PRs for CVEs). Majors are ignored there, so
+# this workflow surfaces them monthly by running `cargo outdated` and `npm outdated`
+# and upserting a single tracking issue you triage on your own cadence.
+
+on:
+  schedule:
+    - cron: "0 9 1 * *"   # 09:00 UTC, 1st of each month
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-outdated
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          cargo install cargo-outdated --locked
+
+      - name: cargo outdated (workspace)
+        id: cargo
+        run: |
+          cargo outdated -w --root-deps-only > cargo_outdated.txt 2>&1 || true
+          cat cargo_outdated.txt
+          { echo 'text<<DIGEST_EOF'; cat cargo_outdated.txt; echo DIGEST_EOF; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: npm outdated (frontend)
+        id: npm
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          # npm outdated exits non-zero when anything is outdated — never fail the job on it
+          npm outdated > npm_outdated.txt 2>&1 || true
+          cat npm_outdated.txt
+          { echo 'text<<DIGEST_EOF'; cat npm_outdated.txt; echo DIGEST_EOF; } >> "$GITHUB_OUTPUT"
+
+      - name: Upsert digest issue
+        uses: actions/github-script@v7
+        env:
+          CARGO_TXT: ${{ steps.cargo.outputs.text }}
+          NPM_TXT: ${{ steps.npm.outputs.text }}
+        with:
+          script: |
+            const cargo = (process.env.CARGO_TXT || '').trim() || 'all direct dependencies up to date';
+            const npm = (process.env.NPM_TXT || '').trim() || 'all dependencies up to date';
+            const today = new Date().toISOString().slice(0, 10);
+            const body = [
+              '_Auto-generated monthly by the `dep-digest` workflow. Majors are held by',
+              '`.github/dependabot.yml` (Tier 2) — review and bump them by hand here._',
+              '',
+              '### Rust — `cargo outdated -w --root-deps-only`',
+              '```',
+              cargo,
+              '```',
+              '',
+              '### Frontend — `npm outdated`',
+              '```',
+              npm,
+              '```',
+              '',
+              `Last run: ${today}`,
+            ].join('\n');
+            const title = 'Dependency upgrade digest';
+            const label = 'dependency-digest';
+            const { owner, repo } = context.repo;
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: label, per_page: 100,
+            });
+            if (open.length) {
+              await github.rest.issues.update({ owner, repo, issue_number: open[0].number, body });
+              core.info(`Updated #${open[0].number}`);
+            } else {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: label });
+              } catch {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: label, color: '0e8a16',
+                  description: 'Monthly dependency upgrade digest',
+                });
+              }
+              const created = await github.rest.issues.create({
+                owner, repo, title, body, labels: [label],
+              });
+              core.info(`Created #${created.data.number}`);
+            }
