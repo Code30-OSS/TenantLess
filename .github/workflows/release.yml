@@ -1,0 +1,208 @@
+name: Release (GHCR publish, native amd64 E2E gate)
+
+# v1.1.0 adoption release publish path (D-02 / D-07 / D-14). SEPARATE from ci.yml — this
+# workflow is NOT part of the 7 required checks and must never modify them. Its only
+# additive PR check is the native-amd64 E2E VALIDATION job below.
+#
+# Split triggers, least privilege:
+#   * pull_request / workflow_dispatch → run the native-amd64 E2E VALIDATION job ONLY.
+#     Build both images, seed the seed-42 demo estate, assert the ACTUAL estate. NO GHCR
+#     push. This job is granted NO `packages:` permission, so the Wave-3 PR itself proves
+#     amd64 reproduction and can never publish.
+#   * push tags v*.*.* → run the SAME E2E gate, THEN a separate publish job. `packages:
+#     write` is granted ONLY on that tag-guarded publish job. The personal admin PAT is
+#     used NOWHERE — publish authenticates with the Actions GITHUB_TOKEN (D-07).
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Workflow-default: read-only. Every job starts from this floor; only the publish job
+# below widens it (to packages: write) — and only on a tag ref.
+permissions:
+  contents: read
+
+# Do NOT cancel in progress: a publish triggered by a tag push must run to completion.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Container-network DSN (generator + server reach Postgres by service/container name).
+  E2E_DB_URL_INTERNAL: postgres://tenantless:tenantless_dev@tl-e2e-pg:5432/tenantless
+  # Runner-side DSN (the assertion script reaches the published Postgres port on loopback).
+  E2E_DB_URL_HOST: postgres://tenantless:tenantless_dev@127.0.0.1:55432/tenantless
+  E2E_API_BASE: http://127.0.0.1:18080
+
+jobs:
+  # ---------------------------------------------------------------------------------
+  # Native-amd64 E2E VALIDATION. Runs on EVERY trigger (incl. the tag push, as the
+  # publish gate). Builds both images natively on the amd64 runner (NO QEMU / NO arm64,
+  # D-02), seeds the seed-42 demo estate, then asserts the ACTUAL estate identity +
+  # counts + served planes and FAILS on any mismatch. This job has NO packages: write.
+  # ---------------------------------------------------------------------------------
+  e2e:
+    name: Native amd64 E2E (build → seed → assert)
+    runs-on: ubuntu-latest
+    # No `permissions:` block here → inherits the workflow floor (contents: read only).
+    # Deliberately NO packages: write — a validation run can never publish.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv (for the assertion script)
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Resolve assertion dependencies (psycopg)
+        run: uv sync
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Native amd64 builds loaded into the local daemon (D-02: linux/amd64 ONLY, no QEMU).
+      - name: Build generator image (amd64)
+        run: docker build -f generator.Dockerfile -t tenantless-generator:e2e .
+
+      - name: Build mock-server image (amd64)
+        run: docker build -f mock-server/Dockerfile -t tenantless-mock-server:e2e .
+
+      - name: Create the E2E network
+        run: docker network create tl-e2e
+
+      - name: Start Postgres 16
+        run: |
+          docker run -d --name tl-e2e-pg --network tl-e2e \
+            -e POSTGRES_USER=tenantless \
+            -e POSTGRES_PASSWORD=tenantless_dev \
+            -e POSTGRES_DB=tenantless \
+            -p 127.0.0.1:55432:5432 \
+            -v "$PWD/sql:/docker-entrypoint-initdb.d:ro" \
+            postgres:16-alpine
+          # Bounded readiness wait (never unbounded).
+          for i in $(seq 1 30); do
+            if docker exec tl-e2e-pg pg_isready -U tenantless >/dev/null 2>&1; then
+              echo "postgres ready"; break
+            fi
+            [ "$i" = "30" ] && { echo "::error::postgres never became ready"; docker logs tl-e2e-pg; exit 1; }
+            sleep 2
+          done
+
+      # Seed the demo estate via the generator image (its entrypoint's D-05 guard runs
+      # `tenantless generate --profile demo --seed 42 --cost-as-of 2026-01-01` on the empty
+      # volume). One-shot; a non-zero exit fails the job BEFORE any assertion.
+      - name: Seed the seed-42 demo estate (generator image)
+        run: |
+          docker run --rm --network tl-e2e \
+            -e DATABASE_URL="${E2E_DB_URL_INTERNAL}" \
+            tenantless-generator:e2e
+
+      - name: Start the mock-server (serving the seeded estate)
+        run: |
+          docker run -d --name tl-e2e-server --network tl-e2e \
+            -e DATABASE_URL="${E2E_DB_URL_INTERNAL}" \
+            -e HOST=0.0.0.0 -e PORT=8080 -e BASE_URL=http://localhost:8080 \
+            -p 127.0.0.1:18080:8080 \
+            tenantless-mock-server:e2e
+          # Bounded wait for the first healthy ARM 200.
+          for i in $(seq 1 30); do
+            if curl -fsS -H "Authorization: Bearer health" "${E2E_API_BASE}/subscriptions" >/dev/null 2>&1; then
+              echo "server ready"; break
+            fi
+            [ "$i" = "30" ] && { echo "::error::mock-server never served a 200"; docker logs tl-e2e-server; exit 1; }
+            sleep 2
+          done
+
+      # THE GATE. Asserts the ACTUAL seed-42 estate — fingerprint 2f56d6d2…, the exact
+      # seven-count vector, and non-vacuous served planes (cost on a Jan-2026 timeframe).
+      # A fingerprint/count mismatch here is a DEFECT to investigate, NEVER a new baseline.
+      - name: Assert the seed-42 demo estate (identity + counts + served planes)
+        env:
+          DATABASE_URL: ${{ env.E2E_DB_URL_HOST }}
+          ASSERT_API_BASE: ${{ env.E2E_API_BASE }}
+        run: uv run python scripts/assert_demo_estate.py
+
+      - name: Tear down the E2E stack
+        if: always()
+        run: |
+          docker rm -f tl-e2e-server tl-e2e-pg >/dev/null 2>&1 || true
+          docker network rm tl-e2e >/dev/null 2>&1 || true
+
+  # ---------------------------------------------------------------------------------
+  # GHCR PUBLISH — tag-triggered ONLY, and gated on a green E2E. This is the ONLY job
+  # granted packages: write, and the `if` confines it to a tag ref (a PR / dispatch run
+  # skips it entirely). Authenticates with GITHUB_TOKEN — the personal PAT is never used.
+  # ---------------------------------------------------------------------------------
+  publish:
+    name: Publish to GHCR (amd64, tag only)
+    needs: e2e
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Derive the image version from the tag (v1.1.0 → 1.1.0). This is the guard: the
+      # published image version can only ever be the tag's version — a v1.1.0 tag cannot
+      # publish a 1.0.0 image (D-01), and the recorded manifest is never re-tagged (D-02).
+      - name: Derive version from the tag
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version ${VERSION} from tag ${GITHUB_REF_NAME}"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # GHCR login with the Actions token (D-07) — NOT the personal admin PAT. No
+      # third-party login action: a plain `docker login` piping GITHUB_TOKEN on stdin.
+      - name: Log in to GHCR (GITHUB_TOKEN)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build & push mock-server (amd64)
+        id: push_server
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: mock-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/code30-oss/tenantless-mock-server:${{ steps.ver.outputs.version }}
+          provenance: false
+
+      - name: Build & push generator (amd64)
+        id: push_generator
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: generator.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/code30-oss/tenantless-generator:${{ steps.ver.outputs.version }}
+          provenance: false
+
+      # Record BOTH immutable sha256: digests for Wave 4's Release notes (D-08). The
+      # digest of a pushed v1.1.0 manifest must NEVER be rebuilt/mutated later to add
+      # arm64 (D-02) — a future arm64 image ships under a separate, later release.
+      - name: Record immutable digests to the job summary
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          SERVER_DIGEST="${{ steps.push_server.outputs.digest }}"
+          GENERATOR_DIGEST="${{ steps.push_generator.outputs.digest }}"
+          {
+            echo "## GHCR images published (v${V}, linux/amd64)"
+            echo ""
+            echo "| Image | Reference | Immutable digest |"
+            echo "| ----- | --------- | ---------------- |"
+            echo "| mock-server | \`ghcr.io/code30-oss/tenantless-mock-server:${V}\` | \`${SERVER_DIGEST}\` |"
+            echo "| generator   | \`ghcr.io/code30-oss/tenantless-generator:${V}\` | \`${GENERATOR_DIGEST}\` |"
+            echo ""
+            echo "Platforms: linux/amd64 only (arm64 deferred, D-02). Record both digests in the v${V} Release notes (D-08)."
+          } >> "$GITHUB_STEP_SUMMARY"
