@@ -12,3 +12,20 @@ docs/vision/chart.umd.min.js binary
 # Bundled design-reference artifact (Claude-designed console mockup, encoded blocks) —
 # treat as binary: it's a generated reference we don't diff, keep it byte-exact.
 docs/vision/console-mockup/tenantless-console.mockup.html binary
+
+# The bundled synthetic `demo` profile is byte-fingerprinted
+# (tests/demo_profile.sha256, asserted by tests/test_demo_profile.py) and its
+# derivation is byte-reproducible in the pinned canonical builder. Pin its
+# checkout to LF so the recorded sha256 is stable on EVERY platform — without
+# this, core.autocrlf=true rewrites it to CRLF on a Windows checkout and the
+# fingerprint gate fails. The sidecar is pinned for the same reason.
+src/tenantless/profiles/demo.json text eol=lf
+tests/demo_profile.sha256 text eol=lf
+
+# Container build inputs MUST stay LF on every platform. A CRLF shebang or heredoc
+# in the generator entrypoint breaks `docker build` — the COPY carries CRLF into the
+# image and `#!/bin/sh\r` / the inlined `python - <<'PY'` heredoc fail at runtime.
+# core.autocrlf=true rewrites these to CRLF on a Windows checkout without the pin.
+docker/generator-entrypoint.sh text eol=lf
+generator.Dockerfile text eol=lf
+generator.Dockerfile.dockerignore text eol=lf

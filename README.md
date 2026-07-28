@@ -98,6 +98,45 @@ mock — all while the generated estate stays byte-for-byte reproducible.
 
 Design detail lives in [`docs/architecture.md`](docs/architecture.md).
 
+## Quickstart — one command
+
+The fastest way to see a populated tenant. Requires only
+[Docker](https://docs.docker.com/get-docker/) — no host Python, Node, or Rust.
+
+```bash
+cp .env.example .env
+docker compose --profile demo up
+```
+
+Compose brings up PostgreSQL, runs a one-shot **generator** that seeds a fixed synthetic
+`demo` estate (profile `demo`, seed `42`, cost-as-of `2026-01-01` — roughly 50 subscriptions
+and 5,000 resources across every plane), then starts the ARM mock server on it. First start
+takes **about 10–15 seconds** end-to-end (measured: ~12 s from `up` to the first ARM `200` on
+a pre-built image).
+
+```bash
+# Scan it like a real ARM tenant (presence-only Bearer auth by default)
+curl -H "Authorization: Bearer anything" \
+  "http://localhost:8080/subscriptions?api-version=2022-12-01"
+```
+
+Then open <http://localhost:8080/ui> for the web console.
+
+**Your estate is safe on restart.** The generator checks for an existing estate first and
+**skips** generation when the volume is already populated — it never truncates or overwrites
+your data. Stop and start again as often as you like; the seeded estate is preserved.
+
+To wipe the volume and regenerate the identical estate from scratch (the seeded fixture is
+byte-reproducible):
+
+```bash
+docker compose --profile demo down -v && docker compose --profile demo up
+```
+
+Plain `docker compose up` (without `--profile demo`) keeps the original behavior: PostgreSQL
+and the mock server start on an **empty** tenant, with no generator — populate it yourself via
+the paths below.
+
 ## Quickstart (Docker-assisted)
 
 Requires [Docker](https://docs.docker.com/get-docker/) and [uv](https://docs.astral.sh/uv/)
