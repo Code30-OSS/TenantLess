@@ -65,6 +65,17 @@ The committed benchmark measures 145K resources across 300 subscriptions at p95 
 profile with `scripts/bench_arm_latency.py`. See [`docs/benchmarks/`](docs/benchmarks/).
 Latency is machine-dependent; treat it as a shape, not a promise about your hardware.
 
+## Roadmap
+
+Tenantless 1.0 is **read-only**. The next milestone — **v2.0 Stateful ARM Lifecycle** — turns it
+into a persistent, mutable ARM management plane: create / update / delete through the ARM API
+(opt-in, off by default), durable overlay state layered over the immutable synthetic baseline, and
+a representative `terraform plan → apply → refresh → destroy` workflow that converges against the
+mock — all while the generated estate stays byte-for-byte reproducible.
+
+→ **[v1.0.0 release](https://github.com/Code30-OSS/TenantLess/releases/tag/v1.0)** ·
+**[v2.0 roadmap →](https://github.com/Code30-OSS/TenantLess/issues/32)**
+
 ## Architecture
 
 ```
