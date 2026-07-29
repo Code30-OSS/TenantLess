@@ -44,6 +44,14 @@ _JSONB_COLUMNS = frozenset({"tags", "sku", "properties"})
 # lock auto-releases at transaction end.
 DRIFT_LOCK_KEY = 0x0D_711F_7000  # "drift" lock, stable across the codebase
 
+# Sibling advisory-lock key serializing the destructive GENERATE critical section
+# (Wave2 #1). `generate` takes pg_advisory_xact_lock on this key at the start of its
+# write transaction so the emptiness check and the truncate/write are one atomic
+# section: a populated estate can never be truncated by a check-then-write race, and
+# two generators on a fresh volume can't race the bare-CREATE ensure_* DDL. Distinct
+# from DRIFT_LOCK_KEY so generate and drift never contend. xact-scoped: auto-released.
+GENERATE_LOCK_KEY = 0x0E_711F_7000  # "generate" lock, stable across the codebase
+
 
 def _split_csv(raw: str | None) -> list[str] | None:
     """Parse a comma-separated option into a clean list (or None)."""
@@ -389,6 +397,20 @@ def analyze(source, out, min_bucket_size, denylist, k, allow_no_denylist, non_in
     help="Truncate the synthetic schema without prompting (required when no TTY).",
 )
 @click.option(
+    "--only-if-empty",
+    "only_if_empty",
+    is_flag=True,
+    default=False,
+    help=(
+        "Generate ONLY when the ENTIRE synthetic estate is empty; otherwise "
+        "preserve the existing data and exit 0 without truncating. The whole-estate "
+        "check and the write run under a Postgres advisory lock, so a populated (or "
+        "partially populated) estate is never clobbered by a concurrent writer. "
+        "Intended for the compose one-shot demo seeder — non-destructive, unlike "
+        "--force which always truncates."
+    ),
+)
+@click.option(
     "--violations/--no-violations",
     "inject_violations",
     default=True,
@@ -468,6 +490,7 @@ def generate(
     subscriptions,
     seed,
     force,
+    only_if_empty,
     inject_violations,
     inject_cross_sub,
     cost_granularity,
@@ -548,7 +571,16 @@ def generate(
     click.echo("computing tag entropy...", err=True)
     tenant = result.tenant
 
+    skipped = False
     with writer.open_writer() as conn:
+        # Wave2 #1: serialize the whole check→truncate→write on a dedicated advisory
+        # lock, taken FIRST so it spans the emptiness check AND the destructive write
+        # as one atomic critical section. No concurrent generator (or the compose
+        # one-shot) can populate the estate between the check and the write, and two
+        # generators on a fresh volume can't race the bare-CREATE ensure_* DDL below.
+        # xact-scoped: released when open_writer commits/rolls back. Behind the writer
+        # seam so DB-free CLI tests stub it (never a raw conn.cursor() here).
+        writer.acquire_generate_lock(conn, GENERATE_LOCK_KEY)
         # 260709-blf (Docker-optional / BYO-Postgres): ensure the BASE synthetic
         # schema (sql/001 tenant/subs/RGs/resources, sql/002 dependencies/violations,
         # sql/003 integrity+indexes) exists BEFORE any other ensure_* / truncate /
@@ -578,28 +610,48 @@ def generate(
         # on volumes that already have it. Called UNCONDITIONALLY so copy_tenant's
         # profile_name write never fails on a missing column on a pre-Phase-14 volume.
         writer.ensure_web_metadata_schema(conn)
-        # D-08: truncation is destructive — guard it.
-        if not force and not writer.schema_is_empty(conn):
-            if sys.stdin.isatty():
-                click.confirm(
-                    "This will TRUNCATE the synthetic schema. Continue?",
-                    abort=True,
-                )
-            else:
-                raise click.UsageError(
-                    "Refusing to truncate non-empty synthetic schema without "
-                    "--force/--yes."
-                )
-        writer.truncate_synthetic(conn)
-        writer.write_tenant(
-            conn,
-            tenant,
-            dependencies=result.dependencies,
-            violations=result.violations,
-            cost_records=result.cost_records,
-            principals=result.principals,
-            role_assignments=result.role_assignments,
+        # Wave2 #1: --only-if-empty is the NON-destructive demo/one-shot guard. Under
+        # the advisory lock it inspects the ENTIRE estate (every synthetic table, not
+        # just resources); if ANY table holds rows — a full estate OR a partially
+        # written / interrupted one — it PRESERVES the data and skips generation.
+        # Because the check runs inside the locked write transaction, a populated
+        # estate can never be truncated by a check-then-write race.
+        if only_if_empty and not writer.estate_is_empty(conn):
+            skipped = True
+        else:
+            # D-08: truncation is destructive — guard it.
+            if not force and not writer.schema_is_empty(conn):
+                if sys.stdin.isatty():
+                    click.confirm(
+                        "This will TRUNCATE the synthetic schema. Continue?",
+                        abort=True,
+                    )
+                else:
+                    raise click.UsageError(
+                        "Refusing to truncate non-empty synthetic schema without "
+                        "--force/--yes."
+                    )
+            writer.truncate_synthetic(conn)
+            writer.write_tenant(
+                conn,
+                tenant,
+                dependencies=result.dependencies,
+                violations=result.violations,
+                cost_records=result.cost_records,
+                principals=result.principals,
+                role_assignments=result.role_assignments,
+            )
+
+    if skipped:
+        # The estate was already populated; nothing was truncated or written. Emit a
+        # clear line (never the misleading "Generated tenant …" summary) and exit 0 so
+        # the compose mock-server proceeds on the preserved data.
+        click.echo(
+            "[generate] estate already populated — preserving existing data; "
+            "skipped generation (--only-if-empty).",
+            err=True,
         )
+        return
 
     n_res = sum(len(rg.resources) for rg in tenant.resource_groups)
     elapsed_ms = (time.perf_counter() - started) * 1000.0

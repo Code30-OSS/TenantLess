@@ -14,7 +14,11 @@
 # Stage 1 — frontend SPA build (WEBUI-03). Lockfile-exact install (D-07 / T-15-01-SC):
 # `npm ci` honors the committed package-lock.json + `.npmrc` save-exact — never `npm install`.
 # ---------------------------------------------------------------------------
-FROM node:26-bookworm-slim AS frontend
+# Base pinned BY DIGEST (W3-6): a mutable tag would let two builds of the same
+# version tag differ, which — combined with tag republish — is how a "reproducible"
+# release silently drifts. Refresh these digests deliberately, never implicitly.
+#   node:22-bookworm-slim  resolved 2026-07-28
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS frontend
 WORKDIR /fe
 # Install deps first (layer cache) — only re-runs when the lockfile/manifest changes.
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
@@ -28,7 +32,8 @@ RUN npm run build
 # needs beyond src/: the crate-root build.rs, the built SPA (from stage 1), and the
 # workspace-root sql/ (005/006/007 are include_str!'d by lib.rs).
 # ---------------------------------------------------------------------------
-FROM rust:1-slim-bookworm AS builder
+# rust:1-slim-bookworm  resolved 2026-07-28 (W3-6: pin by digest)
+FROM rust:1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777 AS builder
 WORKDIR /build
 # Workspace manifests + lockfile first (reproducible deps), then the crate inputs.
 COPY Cargo.toml Cargo.lock ./
@@ -45,7 +50,8 @@ RUN cargo build --release -p tenantless-server --bin tenantless-server
 # ---------------------------------------------------------------------------
 # Stage 3 — runtime (unchanged).
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# debian:bookworm-slim  resolved 2026-07-28 (W3-6: pin by digest)
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
 # ca-certificates for any TLS; curl for the container HEALTHCHECK.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

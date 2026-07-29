@@ -59,11 +59,18 @@ DEMO_COST_AS_OF = "2026-01-01"
 DEMO_SUBSCRIPTIONS = 50
 DEMO_RESOURCES = 5000
 DEMO_K = 5
-# The analyzer stamps ``extracted_at`` with wall-clock time, which alone would
-# defeat a byte-reproducible rebuild. Pin it to a fixed derivation anchor so the
-# fingerprint depends ONLY on (profile, seed, cost-as-of) -- an honest, constant
-# derivation timestamp, never a moving now().
-DEMO_EXTRACTED_AT = "2026-01-01T00:00:00Z"
+# ``extracted_at`` is CREATION metadata ("when this profile was derived"). The
+# analyzer stamps it with wall-clock time, which would defeat a byte-reproducible
+# rebuild, so it is pinned to a FIXED derivation date. It is deliberately DISTINCT
+# from DEMO_COST_AS_OF (Wave1 #3): the cost anchor is NOT the creation date, and
+# reusing it here conflated two meanings. The reproducibility inputs (generator_seed,
+# cost_as_of, bootstrap sha256) are recorded SEPARATELY under provenance.derivation.
+DEMO_DERIVATION_DATE = "2026-07-28T00:00:00Z"
+
+# Explicit destructive-build authorization (Wave1 #1). The derivation runs
+# ``generate --force`` (TRUNCATE + rewrite of synthetic.*), so the operator MUST set
+# this to positively acknowledge the target's synthetic estate will be erased.
+_DESTRUCTIVE_AUTH_ENV = "TENANTLESS_BUILD_ALLOW_DESTRUCTIVE"
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -92,7 +99,19 @@ FORBIDDEN_SOURCE_STATS = {
 
 
 def _require_disposable_db() -> str:
-    """Return the disposable ``DATABASE_URL``, refusing the :5433 dev tenant (D-10)."""
+    """Return a DISPOSABLE ``DATABASE_URL`` for the destructive derivation, or exit.
+
+    The derivation runs ``generate --force`` (TRUNCATE + rewrite of synthetic.*), so
+    the guard requires TWO positive signals — never a port heuristic (Wave1 #1):
+
+      1. EXPLICIT destructive-build authorization: ``TENANTLESS_BUILD_ALLOW_DESTRUCTIVE``
+         must be set truthy. Without it, refuse — the operator has not acknowledged
+         that this erases the target's synthetic estate.
+      2. DISPOSABLE IDENTITY: the target must hold NO existing synthetic estate. Any
+         database that already contains synthetic data — dev/prod, on ANY host or port
+         — is refused, so the build can never erase a populated database. The :5433
+         dev-tenant refusal is kept as a redundant backstop, NOT the primary guard.
+    """
     db_url = os.environ.get("TENANTLESS_BUILD_DATABASE_URL") or os.environ.get(
         "DATABASE_URL"
     )
@@ -102,13 +121,43 @@ def _require_disposable_db() -> str:
             "DISPOSABLE Postgres (a throwaway postgres:16-alpine on a non-5433 port). "
             "The persistent :5433 dev tenant must never be used for derivation (D-10)."
         )
-    port = urlsplit(db_url).port
-    if port == 5433:
+    if os.environ.get(_DESTRUCTIVE_AUTH_ENV, "").strip().lower() not in ("1", "true", "yes"):
+        sys.exit(
+            f"Refusing to run the DESTRUCTIVE demo derivation without "
+            f"{_DESTRUCTIVE_AUTH_ENV}=1. It TRUNCATES + rewrites synthetic.* in the "
+            f"target database — set it ONLY for a disposable Postgres you can lose "
+            f"(Wave1 #1 / D-10)."
+        )
+    if urlsplit(db_url).port == 5433:
         sys.exit(
             "Refusing to derive against port 5433 -- that is the persistent dev "
             "tenant, which generate/truncate would destroy (D-10). Use a disposable DB."
         )
+    _assert_disposable_identity(db_url)
     return db_url
+
+
+def _assert_disposable_identity(db_url: str) -> None:
+    """Refuse unless the target holds NO synthetic estate — the disposable-identity
+    check that replaces the port heuristic (Wave1 #1). A DB with any synthetic data is
+    treated as real, so the destructive generate can never erase existing content."""
+    import psycopg
+
+    from tenantless.generator import writer
+
+    try:
+        with psycopg.connect(db_url, connect_timeout=10) as conn:
+            if not writer.estate_is_empty(conn):
+                host = urlsplit(db_url).hostname
+                port = urlsplit(db_url).port
+                sys.exit(
+                    f"Refusing to derive against {host}:{port}: it already holds a "
+                    f"synthetic estate, so it is NOT disposable. The destructive "
+                    f"generate would erase existing data (Wave1 #1 / D-10). Point at a "
+                    f"fresh throwaway Postgres."
+                )
+    except psycopg.OperationalError as exc:
+        sys.exit(f"Cannot reach the target DB to verify it is disposable: {exc}")
 
 
 def _cli(env: dict, *args: str) -> None:
@@ -133,15 +182,18 @@ def _script(env: dict, script: Path, *args: str) -> None:
 def _finalize_profile(seed: int, cost_as_of: str) -> None:
     """Make the stamped profile byte-reproducible and its recipe honest:
 
-    * pin ``extracted_at`` to the fixed derivation anchor (the analyzer stamps
-      wall-clock time, which would otherwise change every rebuild);
+    * pin ``extracted_at`` to the fixed DERIVATION DATE — honest creation metadata,
+      constant so rebuilds are byte-reproducible, and DISTINCT from the cost anchor
+      (Wave1 #3: the analyzer would otherwise stamp wall-clock time, and the cost
+      anchor is not the creation date). The reproducibility inputs live separately
+      under provenance.derivation (generator_seed / cost_as_of / bootstrap sha256);
     * rewrite ``derivation.steps`` to the EXACT demo commands this driver ran (the
       shared stamp script emits a generic enterprise-flavoured recipe).
 
     Re-serialised byte-for-byte the same way the stamp script writes, preserving
     determinism."""
     profile = json.loads(BUILD_PROFILE.read_text(encoding="utf-8"))
-    profile["extracted_at"] = DEMO_EXTRACTED_AT
+    profile["extracted_at"] = DEMO_DERIVATION_DATE
     profile["provenance"]["derivation"]["steps"] = [
         "uv run python scripts/build_demo_profile.py",
         "  (1) tenantless init-db",
@@ -180,9 +232,13 @@ def build() -> int:
     # and single-thread numerical settings pinned (D-11).
     env = dict(os.environ)
     env["DATABASE_URL"] = db_url
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("MKL_NUM_THREADS", "1")
+    # Single-thread the numerical libraries UNCONDITIONALLY (Wave1 #4). setdefault let
+    # a pre-existing OMP/OPENBLAS/MKL value inherited from the caller defeat the
+    # single-thread determinism guarantee; assignment forces it regardless.
+    env["OMP_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
     env["PYTHONHASHSEED"] = "0"
 
     BUILD_DIR.mkdir(parents=True, exist_ok=True)

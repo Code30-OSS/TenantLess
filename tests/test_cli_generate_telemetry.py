@@ -36,6 +36,9 @@ def mocked_writer(monkeypatch):
         yield _FakeConn()
 
     monkeypatch.setattr(writer_mod, "open_writer", fake_open_writer)
+    # Wave2 #1: generate takes an advisory lock behind the writer seam before any
+    # write; stub it so the DB-free _FakeConn is never asked for a real cursor.
+    monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)
@@ -148,6 +151,7 @@ def test_no_identity_still_provisions_identity_schema(monkeypatch):
         yield _FakeConn()
 
     monkeypatch.setattr(writer_mod, "open_writer", fake_open_writer)
+    monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)
@@ -187,6 +191,7 @@ def test_generate_ensures_base_schema_first(monkeypatch):
         yield _FakeConn()
 
     monkeypatch.setattr(writer_mod, "open_writer", fake_open_writer)
+    monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)

@@ -1,0 +1,77 @@
+name: Demo profile (canonical rebuild)
+
+# Wave1 #2: the committed bundled `demo` profile is otherwise only self-certified —
+# tests/test_demo_profile.py checks that demo.json agrees with its adjacent sidecar,
+# which a hand-edit of BOTH would satisfy without ever reproducing the derivation.
+# This job rebuilds demo.json from scratch in the PINNED canonical builder image
+# (bootstrap -> generate -> export -> analyze -> stamp) against a DISPOSABLE Postgres,
+# then fails if the result drifts from the committed bytes. SEPARATE workflow — NOT one
+# of the 7 required ci.yml checks.
+on:
+  pull_request:
+    paths:
+      - "profiles/oss-bootstrap.json"
+      - "scripts/build_demo_profile.py"
+      - "scripts/demo-builder.Dockerfile"
+      - "scripts/export_estate_duckdb.py"
+      - "scripts/stamp_synthetic_provenance.py"
+      - "src/tenantless/**"
+      - "sql/**"
+      - "uv.lock"
+      - "pyproject.toml"
+      - "src/tenantless/profiles/demo.json"
+      - "tests/demo_profile.sha256"
+      - ".github/workflows/demo-profile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canonical-rebuild:
+    name: Rebuild demo.json in the pinned canonical builder and diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build the pinned canonical builder image
+        run: docker build -f scripts/demo-builder.Dockerfile -t tenantless-demo-builder:pinned .
+
+      - name: Rebuild demo.json against a disposable Postgres, then diff vs committed
+        run: |
+          set -euo pipefail
+          docker network create tl-demobuild
+          # Disposable Postgres, pinned by digest (Wave1 #6-analogue). Auto-torn-down.
+          docker run -d --name tl-demopg --network tl-demobuild \
+            -e POSTGRES_USER=tenantless -e POSTGRES_PASSWORD=tenantless_dev -e POSTGRES_DB=tenantless \
+            postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 >/dev/null
+          for i in $(seq 1 30); do
+            docker exec tl-demopg pg_isready -U tenantless >/dev/null 2>&1 && break
+            [ "$i" = "30" ] && { echo "::error::postgres never became ready"; docker logs tl-demopg; exit 1; }
+            sleep 2
+          done
+          # Non-root (Wave1 #5): run as the runner user so the rebuilt files are not
+          # root-owned. Explicit destructive authorization + disposable DSN (Wave1 #1).
+          docker run --rm --network tl-demobuild --user "$(id -u):$(id -g)" \
+            -e TENANTLESS_BUILD_ALLOW_DESTRUCTIVE=1 \
+            -e DATABASE_URL=postgres://tenantless:tenantless_dev@tl-demopg:5432/tenantless \
+            -v "$PWD:/src" \
+            tenantless-demo-builder:pinned
+          echo "== diff rebuilt profile + sidecar vs committed (any drift FAILS) =="
+          # The canonical rebuild must reproduce the committed bytes exactly. build/*
+          # is gitignored, so only the tracked profile + sidecar are compared.
+          git diff --exit-code -- src/tenantless/profiles/demo.json tests/demo_profile.sha256 \
+            || { echo "::error::demo.json drifted from its canonical rebuild — re-derive via scripts/build_demo_profile.py in the pinned builder and commit the result"; exit 1; }
+          echo "demo.json reproduced byte-for-byte in the canonical builder."
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f tl-demopg >/dev/null 2>&1 || true
+          docker network rm tl-demobuild >/dev/null 2>&1 || true

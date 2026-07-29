@@ -140,7 +140,7 @@
       "probability": 0.5
     }
   },
-  "extracted_at": "2026-01-01T00:00:00Z",
+  "extracted_at": "2026-07-28T00:00:00Z",
   "governance_violations": {
     "type_frequencies": {
       "DISK_UNENCRYPTED": 0.006335189095795738,
@@ -192,7 +192,7 @@
     },
     "derivation": {
       "bootstrap_profile": "profiles/oss-bootstrap.json",
-      "bootstrap_profile_sha256": "458fb3f70c3478e3c91e5c667fe69c503e6c99110022ef62385e91590dd9df2c",
+      "bootstrap_profile_sha256": "e672a876caed9cf4bd61c16b8d03f12cbd8bda63eb0887c7f82d2efe2480736c",
       "cost_as_of": "2026-01-01",
       "estate": {
         "resource_groups": 952,
