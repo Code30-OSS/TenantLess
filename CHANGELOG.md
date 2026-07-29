@@ -9,6 +9,32 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.0 — One-command demo and container images
+
+Adoption release. No API, CLI, or profile-schema changes — the `1.x` public surface is unchanged.
+
+### Added
+
+- **One-command demo:** `docker compose --profile demo up` starts Postgres, a one-shot
+  generator that seeds a deterministic synthetic estate, and the mock server with the
+  embedded web console. Plain `docker compose up` keeps today's empty-tenant behavior; the
+  generator never overwrites a non-empty volume. Reset with
+  `docker compose --profile demo down -v && docker compose --profile demo up`.
+- **Bundled `demo` profile** derived from synthetic data (with cost distributions), rebuilt
+  byte-for-byte in a pinned canonical builder and verified in CI.
+- **Container images (linux/amd64)** published to GHCR by digest behind a native amd64
+  end-to-end gate: `ghcr.io/code30-oss/tenantless-mock-server:1.1.0` and
+  `ghcr.io/code30-oss/tenantless-generator:1.1.0`.
+
+### Changed
+
+- Base images pinned by digest for reproducible builds.
+
+### Notes
+
+- Images are **amd64-only** in this release; arm64 is deferred behind a native-runner gate
+  passing the same end-to-end test.
+
 ## 1.0.0 — Initial public release
 
 First public release. Tenantless was developed privately before this point; the public
