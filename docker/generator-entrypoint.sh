@@ -21,12 +21,16 @@ fi
 : "${DATABASE_URL:=postgres://tenantless:tenantless_dev@postgres-sim:5432/tenantless}"
 export DATABASE_URL
 
-# D-05 non-empty guard with a BOUNDED connection wait (D-12). The slim image has
-# no psql, so the probe uses the bundled psycopg; connect_timeout bounds each
-# attempt and an overall deadline bounds the wait. It prints exactly SKIP or
-# GENERATE on stdout, or exits non-zero (fatal) if Postgres never becomes
-# reachable — `set -e` then aborts BEFORE any destructive generate.
-decision="$(
+# BOUNDED wait for Postgres CONNECTIVITY only (D-12). The slim image has no psql, so
+# the probe uses the bundled psycopg; connect_timeout bounds each attempt and an
+# overall deadline bounds the wait. It exits non-zero (fatal) if Postgres never
+# becomes reachable — `set -e` then aborts BEFORE the generate.
+#
+# The destructive-safety decision (generate vs preserve) is NO LONGER made here
+# (Wave2 #1). It lives in the generator under an advisory lock: `--only-if-empty`
+# inspects the ENTIRE estate and either generates (empty) or preserves + exits 0
+# (populated), atomically with the write — so this entrypoint can never truncate a
+# populated volume, and there is no check-then-generate race across two connections.
 python - <<'PY'
 import os
 import sys
@@ -39,17 +43,8 @@ deadline = time.monotonic() + 120.0  # bounded overall wait
 last = None
 while time.monotonic() < deadline:
     try:
-        with psycopg.connect(dsn, connect_timeout=5) as conn, conn.cursor() as cur:
-            # to_regclass() is NULL when the table is absent (fresh volume before
-            # generate self-provisions the schema) -> treat as empty -> GENERATE.
-            cur.execute("SELECT to_regclass('synthetic.resources')")
-            reg = cur.fetchone()[0]
-            n = 0
-            if reg is not None:
-                cur.execute("SELECT count(*) FROM synthetic.resources")
-                n = int(cur.fetchone()[0])
-        print("SKIP" if n > 0 else "GENERATE")
-        sys.exit(0)
+        with psycopg.connect(dsn, connect_timeout=5):
+            sys.exit(0)
     except psycopg.OperationalError as exc:
         last = exc
         sys.stderr.write(f"[generator] waiting for Postgres: {exc}\n")
@@ -58,19 +53,6 @@ while time.monotonic() < deadline:
 sys.stderr.write(f"[generator] FATAL: Postgres unreachable within 120s: {last}\n")
 sys.exit(1)
 PY
-)"
 
-case "$decision" in
-  SKIP)
-    echo "[generator] estate present -- skipping generate; existing volume preserved (D-05)."
-    exit 0
-    ;;
-  GENERATE)
-    echo "[generator] empty estate -- generating demo (profile=demo seed=42 cost-as-of=2026-01-01)."
-    exec tenantless generate --profile demo --seed 42 --cost-as-of 2026-01-01 --force
-    ;;
-  *)
-    echo "[generator] FATAL: unexpected probe decision '$decision'." >&2
-    exit 1
-    ;;
-esac
+echo "[generator] Postgres reachable -- seeding demo ONLY IF the estate is empty (advisory-locked, non-destructive)."
+exec tenantless generate --profile demo --seed 42 --cost-as-of 2026-01-01 --only-if-empty

@@ -122,9 +122,11 @@ curl -H "Authorization: Bearer anything" \
 
 Then open <http://localhost:8080/ui> for the web console.
 
-**Your estate is safe on restart.** The generator checks for an existing estate first and
-**skips** generation when the volume is already populated — it never truncates or overwrites
-your data. Stop and start again as often as you like; the seeded estate is preserved.
+**Your estate is safe on restart.** The generator inspects the **entire** estate first — under
+a Postgres advisory lock, atomically with the write — and **skips** generation when *any* of it
+is already populated, so it never truncates or overwrites your data (not even a partially
+generated estate, and never via a concurrent-writer race). Stop and start again as often as you
+like; the seeded estate is preserved.
 
 To wipe the volume and regenerate the identical estate from scratch (the seeded fixture is
 byte-reproducible):
@@ -134,8 +136,9 @@ docker compose --profile demo down -v && docker compose --profile demo up
 ```
 
 Plain `docker compose up` (without `--profile demo`) keeps the original behavior: PostgreSQL
-and the mock server start on an **empty** tenant, with no generator — populate it yourself via
-the paths below.
+and the mock server start with **no generator**, so the server serves whatever the volume
+already holds — an **empty** tenant on a fresh volume, or your **existing** estate if the
+volume was previously populated. Populate an empty one yourself via the paths below.
 
 ## Quickstart (Docker-assisted)
 

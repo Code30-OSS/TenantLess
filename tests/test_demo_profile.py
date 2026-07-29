@@ -156,9 +156,16 @@ def test_demo_estate_exercises_every_plane(pg_conn) -> None:
         )
 
     db_url = os.environ.get("DATABASE_URL", "")
-    assert ":5433/" not in db_url, (
-        "refusing to run the demo estate integration test against the :5433 dev "
-        "tenant -- use a disposable DB (D-10)"
+    # Disposable IDENTITY, not a port heuristic (Wave1 #1). Combined with the
+    # TENANTLESS_E2E_ALLOW_TRUNCATE gate above (explicit destructive authorization),
+    # this mirrors the build driver's guard: refuse unless the target holds NO
+    # synthetic estate, so the truncate/rewrite can never erase a populated database
+    # on ANY host or port. The :5433 string check is kept only as a redundant backstop.
+    assert ":5433/" not in db_url, "never the :5433 dev tenant (D-10)"
+    assert writer.estate_is_empty(pg_conn), (
+        "refusing to run the destructive demo-estate integration test against a "
+        "database that already holds a synthetic estate -- point DATABASE_URL at a "
+        "fresh DISPOSABLE Postgres (Wave1 #1 / D-10)"
     )
 
     profile = load_profile(resolve_profile("demo"))

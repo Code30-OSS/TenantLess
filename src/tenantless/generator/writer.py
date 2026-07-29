@@ -234,6 +234,38 @@ def schema_is_empty(conn: psycopg.Connection) -> bool:
         return int(cur.fetchone()[0]) == 0
 
 
+def acquire_generate_lock(conn: psycopg.Connection, key: int) -> None:
+    """Take the xact-scoped advisory lock serializing the destructive generate
+    critical section (Wave2 #1). Behind the writer seam (like truncate_synthetic /
+    write_tenant) so the DB-free CLI tests can stub it — cli.py must never touch a raw
+    ``conn.cursor()`` directly, which would bypass those mocks."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+
+
+def estate_is_empty(conn: psycopg.Connection) -> bool:
+    """True only when EVERY existing synthetic table holds zero rows.
+
+    Stronger than :func:`schema_is_empty` (which inspects only tenant/subscriptions/
+    resource_groups): a partially written or interrupted estate — rows in
+    resources/cost/identity/drift but no tenant row, or any other single populated
+    table — reads as NON-empty here. The demo one-shot guard (``--only-if-empty``)
+    uses this so it NEVER truncates a populated OR partially populated volume
+    (Wave2 #1). Absent tables (a later migration than the target schema) are skipped
+    via ``to_regclass``, mirroring :func:`truncate_synthetic`; the table names come
+    from the STATIC ``_SYNTHETIC_TABLES`` literal, so the f-string is injection-free.
+    """
+    with conn.cursor() as cur:
+        for t in _SYNTHETIC_TABLES:
+            cur.execute("SELECT to_regclass(%s)", (t,))
+            if cur.fetchone()[0] is None:
+                continue
+            cur.execute(f"SELECT EXISTS (SELECT 1 FROM {t})")  # STATIC name
+            if cur.fetchone()[0]:
+                return False
+    return True
+
+
 def truncate_synthetic(conn: psycopg.Connection) -> None:
     """TRUNCATE every EXISTING synthetic table (RESTART IDENTITY CASCADE), FK-safe.
 

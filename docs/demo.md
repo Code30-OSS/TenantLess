@@ -28,9 +28,11 @@ first ARM `200` on a pre-built image; add the one-time image build on the very f
 
 **Repeat start (populated volume).** Run `docker compose --profile demo up` again and the
 generator detects the existing estate and **skips** generation — it prints
-`estate present -- skipping generate; existing volume preserved` and exits, and the mock
-server comes straight up on your existing data. `generate` is destructive, so this guard is
-what guarantees a restart never truncates or overwrites an estate you already have.
+`estate already populated — preserving existing data; skipped generation (--only-if-empty)`
+and exits, and the mock server comes straight up on your existing data. The check inspects
+the **entire** estate (not just the resources table) and runs under a Postgres advisory lock
+atomically with the write, so a restart — or a concurrent writer — never truncates or
+overwrites an estate you already have, even a partially generated one.
 
 **Clean reset.** To wipe the volume and regenerate the identical estate from scratch:
 
@@ -42,8 +44,10 @@ Because the fixture is byte-reproducible, the reset estate is identical to the f
 the same subscriptions, resources, costs, and violations, down to the resource IDs.
 
 **Plain `docker compose up`** (no `--profile demo`) is unchanged: PostgreSQL and the mock
-server start on an **empty** tenant with no generator. Populate it with the host-side
-`uv run tenantless generate …` step below, or via the control-plane generate action.
+server start with **no generator**, so the server simply serves whatever the volume already
+contains — an **empty** tenant on a fresh volume, or your **existing** estate if the volume
+was previously populated. Populate an empty one with the host-side `uv run tenantless
+generate …` step below, or via the control-plane generate action.
 
 The rest of this page uses the source-development path (host `uv` + a locally built server),
 which gives you the full CLI (`generate`, `apply-drift`, `revert-drift`) for the deeper tour.
@@ -147,10 +151,14 @@ resolves the same way a one-level path does.
 
 ## 4. Costs
 
+The demo estate's costs are anchored to **January 2026** (`--cost-as-of 2026-01-01`), so
+query a **Custom** timeframe over that month — a `MonthToDate` query resolves against *today*
+and would read `0` against the fixed fixture:
+
 ```bash
 curl -s -X POST -H "Authorization: $TOKEN" -H "Content-Type: application/json" \
   "http://localhost:8080/subscriptions/$SUB/providers/Microsoft.CostManagement/query?api-version=2023-03-01" \
-  -d '{"type":"ActualCost","timeframe":"MonthToDate","dataset":{"granularity":"None","aggregation":{"totalCost":{"name":"Cost","function":"Sum"}},"grouping":[{"type":"Dimension","name":"ResourceType"}]}}'
+  -d '{"type":"ActualCost","timeframe":"Custom","timePeriod":{"from":"2026-01-01","to":"2026-01-31"},"dataset":{"granularity":"None","aggregation":{"totalCost":{"name":"Cost","function":"Sum"}},"grouping":[{"type":"Dimension","name":"ResourceType"}]}}'
 ```
 
 ## 5. Identity and RBAC

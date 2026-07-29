@@ -1,0 +1,267 @@
+name: Release (GHCR publish, native amd64 E2E gate)
+
+# v1.1.0 adoption-release publish path (D-02 / D-07 / D-14). SEPARATE from ci.yml —
+# NOT one of the 7 required checks; its only additive PR check is the native-amd64 E2E
+# VALIDATION job below.
+#
+# Split triggers, least privilege:
+#   * pull_request / workflow_dispatch → the `e2e` VALIDATION job ONLY: build both
+#     images LOCALLY, seed the seed-42 estate, assert the ACTUAL served estate. NO GHCR
+#     push, NO `packages:` permission — a PR proves amd64 reproduction, never publishes.
+#   * push tags v*.*.* → the `publish` job ONLY. It is the ONLY job granted
+#     `packages: write`. Its ordering is chosen to make a publish safe to RE-RUN:
+#       1. reconcile the tag version against pyproject / Cargo / package.json (#W3-4);
+#       2. resume-check: if this commit's candidate `:sha-<gitsha>` images already exist
+#          in GHCR (a prior run built+tested+pushed but did not finish tagging), REUSE
+#          them — do not rebuild (#round2-1);
+#       3. otherwise build BOTH images ONCE into a LOCAL registry with provenance+SBOM,
+#          run the SAME estate gate against those exact staged bytes, and ONLY on a
+#          green gate copy them to GHCR by digest + a durable `:sha-<gitsha>` candidate
+#          tag (#round2-2: nothing reaches GHCR before E2E passes);
+#       4. promote the human version tag IDEMPOTENTLY from each candidate digest — an
+#          existing tag equal to the candidate is success, a different digest is a hard
+#          failure, an absent tag is created (#round2-1);
+#       5. record both immutable digests.
+#     Every registry existence check uses scripts/ghcr_manifest_probe.sh, which treats
+#     ONLY an explicit 404 as absent and aborts on any other response (#round2-3 — the
+#     preflight fails CLOSED). Auth is the Actions GITHUB_TOKEN (D-07); no PAT.
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMG_SERVER: ghcr.io/code30-oss/tenantless-mock-server
+  IMG_GENERATOR: ghcr.io/code30-oss/tenantless-generator
+  REPO_SERVER: code30-oss/tenantless-mock-server
+  REPO_GENERATOR: code30-oss/tenantless-generator
+  LOCAL_SERVER: localhost:5000/tenantless-mock-server
+  LOCAL_GENERATOR: localhost:5000/tenantless-generator
+
+jobs:
+  # ---------------------------------------------------------------------------------
+  # PR / dispatch VALIDATION. Builds both images natively on the amd64 runner (NO QEMU
+  # / NO arm64, D-02), seeds the seed-42 estate, asserts the ACTUAL estate identity +
+  # counts + served planes. NO packages: write. Skipped on a tag push (the publish job
+  # runs the identical gate against the staged bytes).
+  # ---------------------------------------------------------------------------------
+  e2e:
+    name: Native amd64 E2E (build → seed → assert)
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install uv (for the assertion script)
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+      - name: Resolve assertion dependencies (psycopg)
+        run: uv sync
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build generator image (amd64)
+        run: docker build -f generator.Dockerfile -t tenantless-generator:e2e .
+      - name: Build mock-server image (amd64)
+        run: docker build -f mock-server/Dockerfile -t tenantless-mock-server:e2e .
+      - name: E2E — seed the demo estate and assert the served bytes
+        env:
+          GENERATOR_IMAGE: tenantless-generator:e2e
+          SERVER_IMAGE: tenantless-mock-server:e2e
+        run: bash scripts/e2e_demo_stack.sh
+
+  # ---------------------------------------------------------------------------------
+  # GHCR PUBLISH — tag-triggered ONLY. The ONLY job with packages: write. A local
+  # registry stages the built images so E2E tests the EXACT bytes before any GHCR push.
+  # ---------------------------------------------------------------------------------
+  publish:
+    name: Publish to GHCR (amd64, tag only)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    services:
+      # Local staging registry — build target for the pre-push E2E (#round2-2). Pinned
+      # by digest (#W3-6). Nothing here is published; it lives only for this job.
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    env:
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv (for the assertion script)
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+      - name: Resolve assertion dependencies (psycopg)
+        run: uv sync
+
+      # host network so buildkit can push to the localhost:5000 staging registry.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: network=host
+
+      # (1) Derive the version from the tag AND reconcile it against every app manifest
+      # (#W3-4). Fail before doing anything if a manifest disagrees with the tag.
+      - name: Derive + reconcile version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          py=$(grep -m1 -E '^version = ' pyproject.toml         | sed -E 's/.*"([^"]+)".*/\1/')
+          rs=$(grep -m1 -E '^version = ' mock-server/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          fe=$(grep -m1 -E '"version":'  frontend/package.json  | sed -E 's/.*"version":[[:space:]]*"([^"]+)".*/\1/')
+          echo "tag=$VERSION  pyproject=$py  cargo=$rs  frontend=$fe"
+          fail=0
+          for pair in "pyproject:$py" "cargo:$rs" "frontend:$fe"; do
+            name=${pair%%:*}; val=${pair##*:}
+            [ "$val" = "$VERSION" ] || { echo "::error::$name version '$val' != tag '$VERSION'"; fail=1; }
+          done
+          [ "$fail" = "0" ] || { echo "::error::bump all manifests to $VERSION before tagging"; exit 1; }
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR (GITHUB_TOKEN)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # (2) Resume check (#round2-1). If this commit's candidate :sha tags already exist,
+      # a prior run got as far as pushing — REUSE them and skip build/test/push. The
+      # probe fails closed, so an inconclusive registry response aborts the job.
+      - name: Resume check — candidate :sha tags already published?
+        id: cand
+        run: |
+          set -euo pipefail
+          SHA="sha-${GITHUB_SHA}"
+          srv=$(bash scripts/ghcr_manifest_probe.sh "$REPO_SERVER" "$SHA")
+          gen=$(bash scripts/ghcr_manifest_probe.sh "$REPO_GENERATOR" "$SHA")
+          echo "server probe: $srv"; echo "generator probe: $gen"
+          if [ "${srv%% *}" = PRESENT ] && [ "${gen%% *}" = PRESENT ]; then
+            echo "resume=true"  >> "$GITHUB_OUTPUT"
+            echo "Both candidates present — resuming at promotion (no rebuild)."
+          else
+            echo "resume=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # (3) Build+stage to the LOCAL registry with provenance+SBOM (only when not
+      # resuming). Nothing reaches GHCR here.
+      - name: Stage mock-server → local registry (provenance + SBOM)
+        if: steps.cand.outputs.resume != 'true'
+        id: stage_server
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: mock-server/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.LOCAL_SERVER }}:stage
+          push: true
+          provenance: true
+          sbom: true
+
+      - name: Stage generator → local registry (provenance + SBOM)
+        if: steps.cand.outputs.resume != 'true'
+        id: stage_generator
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: generator.Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.LOCAL_GENERATOR }}:stage
+          push: true
+          provenance: true
+          sbom: true
+
+      # (4) E2E against the EXACT staged bytes, BEFORE any GHCR push (#round2-2).
+      - name: E2E — assert the staged bytes
+        if: steps.cand.outputs.resume != 'true'
+        env:
+          GENERATOR_IMAGE: ${{ env.LOCAL_GENERATOR }}@${{ steps.stage_generator.outputs.digest }}
+          SERVER_IMAGE: ${{ env.LOCAL_SERVER }}@${{ steps.stage_server.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$GENERATOR_IMAGE"
+          docker pull "$SERVER_IMAGE"
+          bash scripts/e2e_demo_stack.sh
+
+      # (5) Gate passed → copy the tested bytes to GHCR by digest, tagged with the
+      # durable candidate :sha-<gitsha> (the resume anchor). imagetools copies the
+      # manifest incl. provenance/SBOM; it does NOT rebuild.
+      - name: Publish tested bytes to GHCR candidate tags
+        if: steps.cand.outputs.resume != 'true'
+        run: |
+          set -euo pipefail
+          SHA="sha-${GITHUB_SHA}"
+          docker buildx imagetools create --tag "${IMG_SERVER}:${SHA}"    "${LOCAL_SERVER}@${{ steps.stage_server.outputs.digest }}"
+          docker buildx imagetools create --tag "${IMG_GENERATOR}:${SHA}" "${LOCAL_GENERATOR}@${{ steps.stage_generator.outputs.digest }}"
+
+      # (6) Resolve the canonical GHCR candidate digests (single source of truth for both
+      # the fresh and the resumed path). A non-PRESENT result here is a hard failure.
+      - name: Resolve candidate digests from GHCR
+        id: final
+        run: |
+          set -euo pipefail
+          SHA="sha-${GITHUB_SHA}"
+          srv=$(bash scripts/ghcr_manifest_probe.sh "$REPO_SERVER" "$SHA")
+          gen=$(bash scripts/ghcr_manifest_probe.sh "$REPO_GENERATOR" "$SHA")
+          [ "${srv%% *}" = PRESENT ] || { echo "::error::server candidate $SHA not present: $srv"; exit 1; }
+          [ "${gen%% *}" = PRESENT ] || { echo "::error::generator candidate $SHA not present: $gen"; exit 1; }
+          echo "server_digest=${srv#PRESENT }"       >> "$GITHUB_OUTPUT"
+          echo "generator_digest=${gen#PRESENT }"     >> "$GITHUB_OUTPUT"
+
+      # (7) Idempotent promotion of the human version tag (#round2-1). Per image:
+      #   absent               → create the tag from the candidate digest
+      #   present == candidate → already done (idempotent no-op; a retry resumes here)
+      #   present != candidate → hard failure (never overwrite a different release)
+      - name: Promote version tags (idempotent)
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          promote() {
+            local repo="$1" img="$2" want="$3"
+            local cur; cur=$(bash scripts/ghcr_manifest_probe.sh "$repo" "$V")
+            case "$cur" in
+              ABSENT)
+                echo "creating ${img}:${V} -> ${want}"
+                docker buildx imagetools create --tag "${img}:${V}" "${img}@${want}" ;;
+              "PRESENT ${want}")
+                echo "${img}:${V} already == ${want} (idempotent no-op)" ;;
+              PRESENT*)
+                echo "::error::${img}:${V} exists at ${cur#PRESENT } != candidate ${want} — refusing to overwrite"; exit 1 ;;
+              *)
+                echo "::error::inconclusive probe for ${img}:${V}: ${cur}"; exit 1 ;;
+            esac
+          }
+          promote "$REPO_SERVER"    "$IMG_SERVER"    "${{ steps.final.outputs.server_digest }}"
+          promote "$REPO_GENERATOR" "$IMG_GENERATOR" "${{ steps.final.outputs.generator_digest }}"
+
+      # (8) Record the immutable digests for the v{V} Release notes (D-08).
+      - name: Record immutable digests to the job summary
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          SD="${{ steps.final.outputs.server_digest }}"
+          GD="${{ steps.final.outputs.generator_digest }}"
+          {
+            echo "## GHCR images published (v${V}, linux/amd64)"
+            echo ""
+            echo "| Image | Reference | Immutable digest |"
+            echo "| ----- | --------- | ---------------- |"
+            echo "| mock-server | \`${IMG_SERVER}:${V}\` | \`${SD}\` |"
+            echo "| generator   | \`${IMG_GENERATOR}:${V}\` | \`${GD}\` |"
+            echo ""
+            echo "Pin by digest: \`${IMG_SERVER}@${SD}\` / \`${IMG_GENERATOR}@${GD}\`"
+            echo "Platforms: linux/amd64 only (arm64 deferred, D-02)."
+          } >> "$GITHUB_STEP_SUMMARY"

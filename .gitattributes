@@ -29,3 +29,8 @@ tests/demo_profile.sha256 text eol=lf
 docker/generator-entrypoint.sh text eol=lf
 generator.Dockerfile text eol=lf
 generator.Dockerfile.dockerignore text eol=lf
+
+# Release/E2E shell scripts run by `bash …` on the Linux CI runner — a CRLF shebang
+# or heredoc breaks them. Pin LF so a Windows checkout (core.autocrlf=true) cannot
+# introduce CR into the committed blob.
+scripts/*.sh text eol=lf

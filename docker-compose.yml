@@ -2,7 +2,8 @@ services:
   # Synthetic data Postgres -- isolated on port 5433 to avoid host Postgres conflicts
   postgres-sim:
     image: postgres:16-alpine
-    container_name: tenantless-postgres
+    # No container_name (Wave2 #3): a fixed name defeats Compose project-name
+    # isolation, so two clones / test runs / users cannot run concurrently.
     env_file: .env
     ports:
       # D-12 hardening: bind the host mapping to loopback only (was `5433:5432`,
@@ -14,7 +15,10 @@ services:
       - sim-pgdata:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tenantless"]
+      # Wave2 #2: honor a changed POSTGRES_USER — read it from the container's runtime
+      # env (env_file: .env) rather than hardcoding `tenantless`. `$$` escapes Compose
+      # interpolation so the shell in the container expands it.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tenantless}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,11 +29,13 @@ services:
       context: .
       dockerfile: mock-server/Dockerfile
     image: tenantless-mock-server
-    container_name: tenantless-mock-server
+    # No container_name (Wave2 #3): keep Compose project-name isolation.
     # Explicit env (NOT env_file: .env, whose DATABASE_URL points at localhost:5433 —
-    # wrong inside the compose network). Reach Postgres by service name on 5432.
+    # wrong inside the compose network). Reach Postgres by service name on 5432, but
+    # honor the SAME POSTGRES_USER/PASSWORD/DB as postgres-sim (Wave2 #2) — Compose
+    # substitutes these from the auto-loaded .env, defaulting to the dev values.
     environment:
-      DATABASE_URL: postgres://tenantless:tenantless_dev@postgres-sim:5432/tenantless
+      DATABASE_URL: postgres://${POSTGRES_USER:-tenantless}:${POSTGRES_PASSWORD:-tenantless_dev}@postgres-sim:5432/${POSTGRES_DB:-tenantless}
       BASE_URL: http://localhost:8080
       PORT: "8080"
       # SEC-HIGH-3: the server defaults to a 127.0.0.1 bind, which is unreachable
@@ -67,14 +73,15 @@ services:
       context: .
       dockerfile: generator.Dockerfile
     image: tenantless-generator
-    container_name: tenantless-generator
+    # No container_name (Wave2 #3): keep Compose project-name isolation.
     # Compose profile `demo` (D-04) — distinct namespace from the generation
     # `--profile demo` alias the entrypoint passes to `tenantless generate`.
     profiles: ["demo"]
     environment:
       # Reach Postgres by SERVICE NAME on 5432 (container<->container), never the
-      # host localhost:5433 mapping.
-      DATABASE_URL: postgres://tenantless:tenantless_dev@postgres-sim:5432/tenantless
+      # host localhost:5433 mapping. Honor the SAME credentials as postgres-sim
+      # (Wave2 #2) — substituted from the auto-loaded .env, dev values as defaults.
+      DATABASE_URL: postgres://${POSTGRES_USER:-tenantless}:${POSTGRES_PASSWORD:-tenantless_dev}@postgres-sim:5432/${POSTGRES_DB:-tenantless}
     depends_on:
       postgres-sim:
         condition: service_healthy
