@@ -16,7 +16,10 @@ Security posture:
 - T-07-02: the full DATABASE_URL is never echoed on the success path; the
   preflight relies on the connect error to surface reachability problems.
 - T-07-03: binary discovery is bounded to trusted locations only (PATH, the
-  repo's ``target/{release,debug}``, then ``cargo run``) — no user-supplied path.
+  repo's ``target/{release,debug}``, then a GUARDED ``cargo run`` that is offered
+  ONLY inside a real Rust source checkout with cargo on PATH) — no user-supplied
+  path. Everywhere else (e.g. an installed wheel) discovery fails fast with an
+  actionable, DSN-free ``ClickException`` rather than a cryptic ``cargo run``.
 """
 
 from __future__ import annotations
@@ -41,12 +44,21 @@ BINARY_NAME = "tenantless-server"  # config.rs:12 / mock-server/Cargo.toml [pack
 
 
 def _discover_command(repo_root: Path) -> list[str]:
-    """D-01 discovery order: PATH -> target/release -> target/debug -> cargo run.
+    """D-01 discovery order: PATH -> target/release -> target/debug -> GUARDED cargo.
 
     Returns the argv prefix that runs the server (a single-element ``[path]`` for
     a discovered binary, or the multi-element ``cargo run`` fallback). The ``.exe``
     suffix is appended only on Windows (``os.name == "nt"``). Discovery is bounded
     to trusted locations only (T-07-03) — never an arbitrary user-supplied path.
+
+    T-07-03 (fail-fast): the ``cargo run`` fallback is a
+    CHECKOUT-ONLY convenience — it is returned ONLY when a real Rust workspace is
+    present (a root ``Cargo.toml`` or the ``mock-server`` member) AND ``cargo`` is
+    on PATH. Everywhere else — most importantly an installed pure-Python wheel with
+    no Rust toolchain — there is nothing to run, so we raise an actionable,
+    DSN-free ``ClickException`` naming the two real remedies (build/install the
+    binary, or run the published container image) instead of shelling out to a
+    ``cargo run`` that would fail cryptically deep in a child process.
     """
     on_path = shutil.which(BINARY_NAME)
     if on_path:
@@ -56,8 +68,28 @@ def _discover_command(repo_root: Path) -> list[str]:
         candidate = repo_root / "target" / profile / exe
         if candidate.is_file():
             return [str(candidate)]
-    # Zero-setup dev path: build+run via cargo.
-    return ["cargo", "run", "-p", BINARY_NAME, "--"]
+    # Guarded zero-setup dev path: build+run via cargo, but ONLY inside a real
+    # source checkout (workspace anchor present) with cargo on PATH.
+    has_workspace = (repo_root / "Cargo.toml").is_file() or (
+        repo_root / "mock-server" / "Cargo.toml"
+    ).is_file()
+    has_cargo = shutil.which("cargo") is not None
+    if has_workspace and has_cargo:
+        return ["cargo", "run", "-p", BINARY_NAME, "--"]
+    # Nothing to run and nothing to build from — fail fast with actionable remedies.
+    raise click.ClickException(
+        f"No `{BINARY_NAME}` binary was found on PATH or in "
+        "target/release / target/debug, and no Rust workspace is available to "
+        "build one from (an installed wheel ships no Rust binary).\n"
+        "To run the mock server, either:\n"
+        f"  1. Build/install the binary from a source checkout — "
+        f"`cargo build --release -p {BINARY_NAME}` — then put "
+        f"target/release/{BINARY_NAME} on your PATH; or\n"
+        "  2. Run the published container image "
+        "`ghcr.io/code30-oss/tenantless-mock-server` (choose the tag for your "
+        "release from the GitHub Releases page / release notes — there is no "
+        "floating :latest), or `docker compose up mock-server`."
+    )
 
 
 def _preflight_postgres(database_url: str, timeout: int = 3) -> None:
