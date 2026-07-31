@@ -174,10 +174,49 @@ def test_discover_falls_back_to_debug(monkeypatch, tmp_path):
 
 
 def test_discover_falls_back_to_cargo(monkeypatch, tmp_path):
-    """which->None and no built binary: the cargo run fallback is returned."""
-    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    """which(binary)->None + no built binary BUT a real workspace + cargo on PATH:
+    the cargo run fallback is returned (the zero-setup dev checkout, T-07-03)."""
+    # Real source-checkout anchors: root workspace + the mock-server member.
+    (tmp_path / "Cargo.toml").write_text('[workspace]\nmembers = ["mock-server"]\n')
+    (tmp_path / "mock-server").mkdir()
+    (tmp_path / "mock-server" / "Cargo.toml").write_text("[package]\nname = 'x'\n")
+
+    def which(name):
+        # The server binary is NOT on PATH, but cargo IS (a dev toolchain).
+        return "/usr/bin/cargo" if name == "cargo" else None
+
+    monkeypatch.setattr(serve_mod.shutil, "which", which)
     cmd = serve_mod._discover_command(tmp_path)
     assert cmd == ["cargo", "run", "-p", serve_mod.BINARY_NAME, "--"]
+
+
+def test_discover_fails_fast_without_workspace(monkeypatch, tmp_path):
+    """No binary anywhere AND no Rust workspace (the installed-wheel case): discovery
+    raises an actionable ClickException naming the binary, the GHCR image, and the
+    build-from-source remedy — NEVER a cryptic `cargo run`."""
+    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    # tmp_path is bare: no Cargo.toml, no mock-server/.
+    with pytest.raises(click.ClickException) as exc:
+        serve_mod._discover_command(tmp_path)
+    msg = str(exc.value)
+    assert serve_mod.BINARY_NAME in msg
+    assert "ghcr.io/code30-oss/tenantless-mock-server" in msg
+    # The build-from-source remedy is named (a cargo BUILD, not a bare cargo run).
+    assert "cargo build" in msg
+    # The old cryptic fallback must be gone from the guidance.
+    assert "cargo run" not in msg
+
+
+def test_discover_fails_fast_when_cargo_absent(monkeypatch, tmp_path):
+    """A real workspace is present but cargo is NOT on PATH (a checkout without the
+    Rust toolchain): discovery cannot build, so it fails fast with a ClickException."""
+    (tmp_path / "Cargo.toml").write_text('[workspace]\nmembers = ["mock-server"]\n')
+    (tmp_path / "mock-server").mkdir()
+    (tmp_path / "mock-server" / "Cargo.toml").write_text("[package]\nname = 'x'\n")
+    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    with pytest.raises(click.ClickException) as exc:
+        serve_mod._discover_command(tmp_path)
+    assert "cargo run" not in str(exc.value)
 
 
 def test_discover_exe_suffix_is_platform_guarded(monkeypatch, tmp_path):
@@ -245,7 +284,13 @@ def test_launch_forwards_flags_as_argv_list(monkeypatch, tmp_path):
         captured["kwargs"] = kwargs
         return _FakeCompleted(0)
 
-    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    # The server binary is discoverable on PATH so discovery short-circuits there
+    # (the guarded cargo/fail-fast branches are covered by the discovery tests).
+    monkeypatch.setattr(
+        serve_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/tenantless-server" if name == serve_mod.BINARY_NAME else None,
+    )
     monkeypatch.setattr(serve_mod.subprocess, "run", fake_run)
 
     with pytest.raises(SystemExit) as exc:
@@ -272,7 +317,11 @@ def test_launch_forwards_flags_as_argv_list(monkeypatch, tmp_path):
 
 def test_launch_propagates_child_returncode(monkeypatch, tmp_path):
     """A child returncode of 7 becomes SystemExit(7)."""
-    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        serve_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/tenantless-server" if name == serve_mod.BINARY_NAME else None,
+    )
     monkeypatch.setattr(serve_mod.subprocess, "run", lambda cmd, **k: _FakeCompleted(7))
 
     with pytest.raises(SystemExit) as exc:
@@ -291,7 +340,11 @@ def test_launch_filenotfound_becomes_clickexception(monkeypatch, tmp_path):
     def boom(cmd, **kwargs):
         raise FileNotFoundError("cargo not found")
 
-    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        serve_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/tenantless-server" if name == serve_mod.BINARY_NAME else None,
+    )
     monkeypatch.setattr(serve_mod.subprocess, "run", boom)
 
     with pytest.raises(click.ClickException):
@@ -315,7 +368,11 @@ def _capture_launch_cmd(monkeypatch, **launch_kwargs):
         captured["kwargs"] = kwargs
         return _FakeCompleted(0)
 
-    monkeypatch.setattr(serve_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        serve_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/tenantless-server" if name == serve_mod.BINARY_NAME else None,
+    )
     monkeypatch.setattr(serve_mod.subprocess, "run", fake_run)
 
     with pytest.raises(SystemExit):

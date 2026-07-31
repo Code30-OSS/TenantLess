@@ -1488,18 +1488,63 @@ def init_db(database_url):
     All five ensure_* functions are idempotent (base via a to_regclass guard, the
     rest via CREATE ... IF NOT EXISTS), so re-running ``init-db`` against an
     already-provisioned database is a harmless no-op.
+
+    Reports HONESTLY: if a bundled migration file is absent — for example an
+    installed package shipped without its ``sql/`` data files — the command exits
+    nonzero and NAMES the missing migration(s) instead of printing a false
+    "Provisioned schema 001..007" success. The host-only status line prints ONLY
+    on full success.
+
+    ATOMIC (all-or-nothing): BEFORE opening any transaction, a pre-flight gate
+    verifies all seven migration files exist — a missing bundled file aborts with
+    the database untouched (no half-open connection). Only if all seven are present
+    is a single writer transaction opened; ANY failure inside it (a partially
+    applied base schema, or a migration whose file vanished at apply time) is raised
+    inside the transaction so it rolls the whole thing back — the schema is never
+    left half-provisioned, and the status line prints only after a clean commit.
     """
     from tenantless.generator import writer
 
     db_url = database_url or writer.DATABASE_URL
+
+    # Pre-flight file gate (P2a): verify ALL 7 migration files exist BEFORE opening
+    # any transaction. A missing bundled file (the packaging bug) aborts here — no
+    # DB connection is opened, nothing is touched.
+    missing = [p for p in writer._all_migration_sql_files() if not p.is_file()]
+    if missing:
+        raise click.ClickException(
+            "init-db could not provision — missing bundled migration file(s): "
+            + ", ".join(p.name for p in missing)
+            + ". The installed package is missing bundled sql/ — reinstall a wheel "
+            "built with force-include, or run against a repo checkout / docker initdb."
+        )
+
+    # All seven present -> apply all-or-nothing inside ONE writer transaction. Any
+    # exception raised here propagates OUT of the `with`, so open_writer rolls back
+    # everything (never a record-then-commit-then-raise partial provision).
     with writer.open_writer(db_url) as conn:
-        # Apply 001..007 in dependency order (base tables first).
+        # Base (001..003): a PartialBaseSchemaError (a ClickException) surfaces a
+        # partly-migrated base and rolls back; True/False is applied-vs-already-
+        # present (Docker volume / re-run no-op), NOT a failure.
         writer.ensure_base_schema(conn)
-        writer.ensure_cost_schema(conn)
-        writer.ensure_identity_schema(conn)
-        writer.ensure_drift_schema(conn)
-        writer.ensure_web_metadata_schema(conn)
-    # Status line: never echo the full database_url (T-07-02) — host only.
+        # Twins (004..007) IN ORDER: a False return means the file vanished between
+        # the pre-flight gate and apply (should not happen after the gate) — treat
+        # it as a hard failure and raise INSIDE the with so the base apply rolls back.
+        for name, ensure in (
+            ("004_cost", writer.ensure_cost_schema),
+            ("005_identity", writer.ensure_identity_schema),
+            ("006_drift", writer.ensure_drift_schema),
+            ("007_web_metadata", writer.ensure_web_metadata_schema),
+        ):
+            if not ensure(conn):
+                raise click.ClickException(
+                    f"init-db could not provision — migration {name} became "
+                    "unavailable during apply (bundled sql/ missing). Nothing was "
+                    "committed; the database is unchanged."
+                )
+
+    # Status line: prints ONLY after a clean commit. Never echo the full
+    # database_url (T-07-02) — host only.
     from urllib.parse import urlsplit
 
     host = urlsplit(db_url).hostname or "the configured host"

@@ -15,9 +15,11 @@ lifecycle so the shared ``tenantless`` DB's ``synthetic.*`` data is untouched.
 
 from __future__ import annotations
 
+import re
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
+import click
 import pytest
 
 from tenantless.generator import writer as writer_mod
@@ -127,3 +129,149 @@ def test_ensure_base_schema_missing_sql_returns_false(fresh_db_conn, monkeypatch
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('synthetic.tenant')")
         assert cur.fetchone()[0] is None
+
+
+# --------------------------------------------------------------------------- #
+# EXHAUSTIVE base-object inventory + PartialBaseSchemaError
+# --------------------------------------------------------------------------- #
+def _scan_base_objects() -> set[str]:
+    """Derive the object names sql/001+002+003 actually declare, by scanning the
+    three base-schema files for every CREATE TABLE / CREATE INDEX / named
+    CONSTRAINT. Used to guard the inventory against SQL drift."""
+    names: set[str] = set()
+    for p in writer_mod._base_schema_sql_files():
+        text = p.read_text(encoding="utf-8")
+        names |= set(re.findall(r"CREATE TABLE synthetic\.(\w+)", text))
+        names |= set(re.findall(r"CREATE INDEX (?:IF NOT EXISTS )?(\w+)", text))
+        names |= set(re.findall(r"ADD CONSTRAINT (\w+)", text))
+    return names
+
+
+def test_base_inventory_is_exhaustive():
+    """``_BASE_SCHEMA_INVENTORY`` must be the exhaustive 19 objects sql/001-003
+    declare — 6 relations + 2 FK constraints + 11 indexes — and its name set must
+    equal the set scanned from the SQL, so a future 001-003 object addition fails
+    this test loudly instead of silently escaping the completeness check."""
+    inv = writer_mod._BASE_SCHEMA_INVENTORY
+    assert len(inv) == 19, f"expected 19 base objects, got {len(inv)}: {inv}"
+    kinds = [k for k, _ in inv]
+    assert kinds.count("relation") == 6, f"expected 6 relations, got {kinds.count('relation')}"
+    assert kinds.count("constraint") == 2, f"expected 2 constraints, got {kinds.count('constraint')}"
+    assert kinds.count("index") == 11, f"expected 11 indexes, got {kinds.count('index')}"
+
+    inv_names = {n for _, n in inv}
+    scanned = _scan_base_objects()
+    assert inv_names == scanned, (
+        "inventory drift vs sql/001-003:\n"
+        f"  only in inventory: {inv_names - scanned}\n"
+        f"  only in sql:       {scanned - inv_names}"
+    )
+
+
+class _RecordingConn:
+    """DB-free connection double: records every ``execute()`` (the base-file apply)
+    so the branch tests can assert whether the 001->003 chain ran."""
+
+    def __init__(self):
+        self.executed: list[str] = []
+
+    def execute(self, sql):  # noqa: D401 — mirrors psycopg Connection.execute
+        self.executed.append(sql)
+
+
+def test_ensure_base_schema_complete_is_noop(monkeypatch):
+    """All 19 objects present -> no-op (returns False), applies nothing."""
+    monkeypatch.setattr(
+        writer_mod, "_base_object_present", lambda conn, kind, name: True
+    )
+    conn = _RecordingConn()
+    assert writer_mod.ensure_base_schema(conn) is False
+    assert conn.executed == []
+
+
+def test_ensure_base_schema_bare_applies_chain(monkeypatch):
+    """No object present + all base files on disk -> applies 001->002->003 (one
+    execute per base file) and returns True."""
+    monkeypatch.setattr(
+        writer_mod, "_base_object_present", lambda conn, kind, name: False
+    )
+    conn = _RecordingConn()
+    assert writer_mod.ensure_base_schema(conn) is True
+    assert len(conn.executed) == 3, (
+        f"expected one execute per base file (001,002,003); got {len(conn.executed)}"
+    )
+
+
+def test_ensure_base_schema_bare_missing_files_returns_false(monkeypatch, tmp_path):
+    """No object present + bundled sql/ absent (installed-package / docker-initdb
+    path) -> returns False, applies nothing."""
+    monkeypatch.setattr(
+        writer_mod, "_base_object_present", lambda conn, kind, name: False
+    )
+    monkeypatch.setattr(
+        writer_mod,
+        "_base_schema_sql_files",
+        lambda: [
+            tmp_path / "001_synthetic_tenant.sql",
+            tmp_path / "002_cross_sub_dependencies.sql",
+            tmp_path / "003_integrity_and_index.sql",
+        ],
+    )
+    conn = _RecordingConn()
+    assert writer_mod.ensure_base_schema(conn) is False
+    assert conn.executed == []
+
+
+def test_ensure_base_schema_partial_missing_index_raises(monkeypatch):
+    """PARTIAL base — everything present EXCEPT one INDEX (idx_viol_type) — raises
+    PartialBaseSchemaError naming the missing index, and applies nothing. Exercising
+    a missing INDEX (not just a table/constraint) pins that indexes are covered."""
+
+    def present(conn, kind, name):
+        return not (kind == "index" and name == "idx_viol_type")
+
+    monkeypatch.setattr(writer_mod, "_base_object_present", present)
+    conn = _RecordingConn()
+    with pytest.raises(writer_mod.PartialBaseSchemaError) as exc:
+        writer_mod.ensure_base_schema(conn)
+    assert "idx_viol_type" in str(exc.value), (
+        f"the missing index must be named: {exc.value}"
+    )
+    assert conn.executed == [], "a partial base must apply nothing"
+
+
+def test_partial_base_schema_error_is_clickexception():
+    """PartialBaseSchemaError is a ClickException so BOTH callers (generate,
+    init-db) surface it cleanly with zero per-caller code."""
+    assert issubclass(writer_mod.PartialBaseSchemaError, click.ClickException)
+
+
+def test_ensure_base_schema_partial_after_dropped_index_raises(fresh_db_conn):
+    """ISOLATED-DB: apply the base once, DROP a real 002 index, then a re-run raises
+    PartialBaseSchemaError naming idx_viol_type (the false-complete bug)."""
+    conn = fresh_db_conn
+    assert writer_mod.ensure_base_schema(conn) is True
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("DROP INDEX synthetic.idx_viol_type")
+    conn.commit()
+    with pytest.raises(writer_mod.PartialBaseSchemaError) as exc:
+        writer_mod.ensure_base_schema(conn)
+    assert "idx_viol_type" in str(exc.value)
+    conn.rollback()
+
+
+def test_all_migration_sql_files_lists_seven(monkeypatch):
+    """``_all_migration_sql_files`` returns the 3 base + 4 twin migration paths (the
+    pre-flight file gate init-db checks before opening any transaction)."""
+    files = writer_mod._all_migration_sql_files()
+    names = [p.name for p in files]
+    assert names == [
+        "001_synthetic_tenant.sql",
+        "002_cross_sub_dependencies.sql",
+        "003_integrity_and_index.sql",
+        "004_cost.sql",
+        "005_identity.sql",
+        "006_drift.sql",
+        "007_web_metadata.sql",
+    ], names

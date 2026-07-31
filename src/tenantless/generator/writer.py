@@ -20,8 +20,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator
 
+import click
 import psycopg
 from psycopg.types.json import Jsonb
+
+from tenantless._resources import resource_path
 
 if TYPE_CHECKING:
     from .pipeline import Tenant
@@ -66,21 +69,105 @@ def open_writer(conn_str: str | None = None) -> Iterator[psycopg.Connection]:
         conn.close()
 
 
+class PartialBaseSchemaError(click.ClickException):
+    """Raised when the synthetic base schema is PARTIALLY applied.
+
+    Subclasses :class:`click.ClickException` so an UNCAUGHT raise is formatted
+    cleanly (non-zero exit, no traceback) by BOTH callers — ``generate`` and
+    ``init-db`` — with zero per-caller handling. ``open_writer`` already rolls back
+    on any exception, so a partial base surfaced here leaves the DB untouched.
+
+    "Partial" means SOME base objects (of the exhaustive 19 in
+    :data:`_BASE_SCHEMA_INVENTORY`) exist while others are missing. Blindly
+    re-running sql/001+002 (bare ``CREATE TABLE``, not ``IF NOT EXISTS``) would
+    error, and silently reporting "complete" would hide a corrupt/partly-migrated
+    schema — so this is a hard, actionable failure naming the missing object(s).
+    """
+
+
+# EXHAUSTIVE base-object inventory — every CREATE TABLE / CREATE INDEX / named
+# CONSTRAINT in sql/001 + sql/002 + sql/003 (6 relations + 2 FK constraints + 11
+# indexes = 19). A base missing ANY of these is NOT complete. ``kind`` drives the
+# catalog probe in :func:`_base_object_present`; ``name`` is the bare identifier
+# (relations/indexes live in the ``synthetic`` schema, so they are probed as
+# ``to_regclass('synthetic.<name>')``; constraints via ``pg_constraint.conname``).
+# NOTE: index names are unqualified in the DDL but live in the synthetic schema.
+_BASE_SCHEMA_INVENTORY: tuple[tuple[str, str], ...] = (
+    # relations (6) — sql/001 (4) + sql/002 (2)
+    ("relation", "tenant"),
+    ("relation", "subscriptions"),
+    ("relation", "resource_groups"),
+    ("relation", "resources"),
+    ("relation", "dependencies"),
+    ("relation", "violations"),
+    # constraints (2) — sql/003 guarded DO-blocks
+    ("constraint", "fk_resources_subscription"),
+    ("constraint", "fk_violations_resource"),
+    # indexes (11) — sql/001 (6) + sql/002 (4) + sql/003 (1)
+    ("index", "idx_subs_tenant"),
+    ("index", "idx_rg_sub"),
+    ("index", "idx_res_sub"),
+    ("index", "idx_res_rg"),
+    ("index", "idx_res_type"),
+    ("index", "idx_res_location"),
+    ("index", "idx_dep_source_sub"),
+    ("index", "idx_dep_target_sub"),
+    ("index", "idx_viol_resource"),
+    ("index", "idx_viol_type"),
+    ("index", "idx_res_lower_id"),
+)
+
+
 def _base_schema_sql_files() -> list[Path]:
     """The ordered sql/001 -> 002 -> 003 base-schema migration files (STATIC project
     files).
 
     Split out as a seam so the installed-package branch of
     :func:`ensure_base_schema` (no bundled ``sql/`` on disk) is unit-testable
-    without a checkout. Resolves relative to the repo root, exactly like the
-    ``ensure_cost/identity/drift`` twins locate their single file.
+    without a checkout. Resolves via the shared packaged-or-repo resolver, exactly
+    like the ``ensure_cost/identity/drift`` twins locate their single file.
     """
-    base = Path(__file__).resolve().parents[3] / "sql"
     return [
-        base / "001_synthetic_tenant.sql",
-        base / "002_cross_sub_dependencies.sql",
-        base / "003_integrity_and_index.sql",
+        resource_path("sql", "001_synthetic_tenant.sql"),
+        resource_path("sql", "002_cross_sub_dependencies.sql"),
+        resource_path("sql", "003_integrity_and_index.sql"),
     ]
+
+
+def _all_migration_sql_files() -> list[Path]:
+    """Every migration file the full sql/001..007 chain needs, in order — the 3
+    base files (001..003) plus the four twin migrations (004..007).
+
+    The pre-flight file gate in ``init-db`` (P2a) checks all seven exist BEFORE
+    opening any DB transaction, so a missing bundled file (the packaging bug)
+    aborts without touching the database. Resolves via the shared packaged-or-repo
+    resolver; ``parts`` are STATIC filenames, never user input.
+    """
+    return _base_schema_sql_files() + [
+        resource_path("sql", "004_cost.sql"),
+        resource_path("sql", "005_identity.sql"),
+        resource_path("sql", "006_drift.sql"),
+        resource_path("sql", "007_web_metadata.sql"),
+    ]
+
+
+def _base_object_present(conn: psycopg.Connection, kind: str, name: str) -> bool:
+    """Catalog-probe seam: True if the base object ``name`` (a ``kind`` of
+    ``relation`` / ``index`` / ``constraint``) already exists.
+
+    Split out so :func:`ensure_base_schema`'s complete/partial/bare branch logic is
+    monkeypatch-testable DB-free. Relations and indexes both live in the
+    ``synthetic`` schema and are probed via ``to_regclass('synthetic.<name>')``;
+    constraints are looked up by ``pg_constraint.conname``. The ``name`` is bound as
+    a ``%s`` parameter (never spliced) — the project SQL bar.
+    """
+    with conn.cursor() as cur:
+        if kind == "constraint":
+            cur.execute("SELECT 1 FROM pg_constraint WHERE conname = %s", (name,))
+            return cur.fetchone() is not None
+        # relation or index — both qualified into the synthetic schema.
+        cur.execute("SELECT to_regclass(%s)", (f"synthetic.{name}",))
+        return cur.fetchone()[0] is not None
 
 
 def ensure_base_schema(conn: psycopg.Connection) -> bool:
@@ -108,17 +195,51 @@ def ensure_base_schema(conn: psycopg.Connection) -> bool:
     schema already exists (Docker volume / prior run), applying the full 001->003
     chain in order only on a bare DB.
 
-    Returns True if the base schema was applied, False if it was already present
-    (guard short-circuit) OR the bundled ``sql/`` files are absent (installed
-    package with no checkout — those deployments provision via docker initdb). The
-    statement text is STATIC project files read via ``read_text()``, never
+    EXHAUSTIVE completeness check. The old guard probed ONLY
+    ``to_regclass('synthetic.tenant')``: a base that had the tenant table but was
+    missing (say) an index or a later table read as "complete", so ``generate`` /
+    ``init-db`` ran on a partly-migrated schema and later failed cryptically. This
+    now checks the full :data:`_BASE_SCHEMA_INVENTORY` (6 relations + 2 FK
+    constraints + 11 indexes) and resolves to exactly three outcomes:
+
+    - **complete** (none of the 19 missing) -> ``False`` no-op (unchanged contract);
+    - **partial** (some present AND some missing) -> raise
+      :class:`PartialBaseSchemaError` naming the missing object(s); applies nothing.
+      ``open_writer`` rolls back, so the DB is left untouched;
+    - **bare** (none present) -> the original file-existence guard then the
+      001->002->003 apply, returning ``True`` (or ``False`` when the bundled
+      ``sql/`` is absent — the installed-package / docker-initdb deployment).
+
+    The statement text is STATIC project files read via ``read_text()``, never
     user/profile input — no injection surface (the project SQL bar, identical to
     the cost/identity/drift twins).
     """
-    with conn.cursor() as cur:
-        cur.execute("SELECT to_regclass('synthetic.tenant')")
-        if cur.fetchone()[0] is not None:
-            return False  # base schema already present (Docker volume) — no-op
+    present: list[tuple[str, str]] = []
+    missing: list[tuple[str, str]] = []
+    for kind, name in _BASE_SCHEMA_INVENTORY:
+        (present if _base_object_present(conn, kind, name) else missing).append(
+            (kind, name)
+        )
+
+    if not missing:
+        return False  # base schema fully present (Docker volume / prior run) — no-op
+
+    if present:
+        # PARTIAL: some base objects exist, some are gone. Refuse to blindly re-run
+        # bare CREATE (it would error) and refuse to falsely report complete.
+        def _fmt(kind: str, name: str) -> str:
+            return f"constraint {name}" if kind == "constraint" else f"{kind} synthetic.{name}"
+
+        raise PartialBaseSchemaError(
+            "the synthetic base schema is PARTIALLY applied — missing "
+            + f"{len(missing)} of {len(_BASE_SCHEMA_INVENTORY)} base object(s): "
+            + ", ".join(_fmt(k, n) for k, n in missing)
+            + ". Restore the missing object(s), or drop and re-provision the base "
+            "schema (sql/001..003) against a clean database."
+        )
+
+    # BARE: nothing present — apply the full 001 -> 003 chain (file-existence guard
+    # preserves the installed-package / docker-initdb path).
     files = _base_schema_sql_files()
     if not all(p.is_file() for p in files):
         return False  # installed package, no bundled sql/ (docker initdb path)
@@ -139,13 +260,13 @@ def ensure_cost_schema(conn: psycopg.Connection) -> bool:
     idempotent (``CREATE … IF NOT EXISTS`` + a guarded FK ``DO`` block), so
     applying it here is safe to repeat.
 
-    Locates the migration relative to the repo root (the dev/generate workflow
-    runs from a checkout). Returns True if applied, False if the file was not
-    found (e.g. an installed package with no bundled ``sql/`` — those deployments
-    apply the schema via docker initdb). The statement text is a STATIC project
-    file, never user/profile input — no injection surface.
+    Locates the migration via the shared packaged-or-repo resolver (installed
+    wheel first, repo checkout fallback). Returns True if applied, False if the
+    file was not found (e.g. an installed package with no bundled ``sql/`` — those
+    deployments apply the schema via docker initdb). The statement text is a
+    STATIC project file, never user/profile input — no injection surface.
     """
-    sql_path = Path(__file__).resolve().parents[3] / "sql" / "004_cost.sql"
+    sql_path = resource_path("sql", "004_cost.sql")
     if not sql_path.is_file():
         return False
     # psycopg3 runs a multi-statement script in one execute() when no params are
@@ -169,7 +290,7 @@ def ensure_identity_schema(conn: psycopg.Connection) -> bool:
     the file was not found (installed package with no bundled ``sql/`` — those
     deployments apply the schema via docker initdb).
     """
-    sql_path = Path(__file__).resolve().parents[3] / "sql" / "005_identity.sql"
+    sql_path = resource_path("sql", "005_identity.sql")
     if not sql_path.is_file():
         return False
     conn.execute(sql_path.read_text(encoding="utf-8"))
@@ -192,7 +313,7 @@ def ensure_drift_schema(conn: psycopg.Connection) -> bool:
     the file was not found (installed package with no bundled ``sql/`` — those
     deployments apply the schema via docker initdb).
     """
-    sql_path = Path(__file__).resolve().parents[3] / "sql" / "006_drift.sql"
+    sql_path = resource_path("sql", "006_drift.sql")
     if not sql_path.is_file():
         return False
     conn.execute(sql_path.read_text(encoding="utf-8"))
@@ -213,7 +334,7 @@ def ensure_web_metadata_schema(conn: psycopg.Connection) -> bool:
     found (installed package with no bundled ``sql/`` — those deployments apply
     the schema via docker initdb).
     """
-    sql_path = Path(__file__).resolve().parents[3] / "sql" / "007_web_metadata.sql"
+    sql_path = resource_path("sql", "007_web_metadata.sql")
     if not sql_path.is_file():
         return False
     conn.execute(sql_path.read_text(encoding="utf-8"))

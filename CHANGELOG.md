@@ -9,6 +9,25 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.6 — Fix: ship a functional Python wheel; fail-fast `serve`; atomic `init-db`
+
+Bug-fix patch. No new commands or flags; the `1.x` public surface is unchanged.
+
+### Fixed
+
+- **The Python wheel now ships its runtime data files.** The built wheel was missing the SQL
+  migrations (`sql/*.sql`) and the profile schema (`profiles/schema.json`), so `init-db` and
+  `generate` failed with a missing-file error when run from an installed wheel. Those files are
+  now included in the wheel (via `force-include`), and both the packaged install and an
+  editable/source checkout resolve them through a shared resolver.
+- **`serve` fails fast with a clear error** instead of falling back to a cryptic `cargo run`
+  when the compiled mock-server binary is absent — it now names the binary to build (or the
+  published container image) rather than attempting a build the user did not ask for.
+- **`init-db` is now atomic.** It pre-checks that all migration files are present before opening
+  a transaction and applies them all-or-nothing, rolling back on any mid-apply failure instead
+  of leaving a partially-provisioned schema; a partial base schema is reported explicitly rather
+  than as a false success.
+
 ## 1.1.5 — Fix: web console refreshes after control-plane jobs, and survives an empty tenant
 
 Bug-fix patch (web console). No API, CLI-flag, or profile-schema changes.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenantless"
-version = "1.1.5"
+version = "1.1.6"
 description = "Azure Tenant Simulator - local ARM API mock server backed by synthetic data"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -52,6 +52,18 @@ packages = ["src/tenantless"]
 # This keeps `--profile enterprise|small` resolvable via importlib.resources
 # after a pip/uv install, not only from a repo checkout.
 artifacts = ["src/tenantless/profiles/*.json"]
+
+# ship the runtime-required STATIC data files INTO the wheel.
+# repo-root sql/ + profiles/schema.json stay the single source of truth (Rust
+# include_str! + Docker/CI path-filters depend on that repo-root location) — we
+# do NOT move them. force-include COPIES them into the wheel package tree so
+# importlib.resources (via tenantless._resources.resource_path) resolves them
+# post-install; without this an installed wheel raised FileNotFoundError on every
+# schema load and every sql/001..007 migration lookup. Key = source path relative
+# to project root, value = destination path inside the wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"sql" = "tenantless/sql"
+"profiles/schema.json" = "tenantless/profiles/schema.json"
 
 [tool.pytest.ini_options]
 # Integration tests (live-Postgres end-to-end parity) and the opt-in scale

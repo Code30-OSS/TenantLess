@@ -9,21 +9,21 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-# profiles/schema.json relative to the repo root:
-# src/tenantless/analyzer/schema_validate.py -> parents[3] == repo root
-_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "profiles" / "schema.json"
+from tenantless._resources import resource_path
 
 
 @lru_cache(maxsize=1)
 def _load_schema() -> dict[str, Any]:
-    with _SCHEMA_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+    # Resolve profiles/schema.json via the shared packaged-or-repo resolver
+    # (packaged wheel first, repo-root fallback for editable dev). ``.read_text``
+    # works on both a Path and an importlib.resources Traversable.
+    schema = resource_path("profiles", "schema.json")
+    return json.loads(schema.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
