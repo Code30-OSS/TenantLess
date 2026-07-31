@@ -9,6 +9,24 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.1 — Security: enforce the k-anonymity floor on `--min-bucket-size`
+
+Security patch. The `1.x` public surface is unchanged and the default behavior is identical;
+the only change is that unsafe `--min-bucket-size` values, which were previously accepted, are
+now rejected. See the associated GitHub Security Advisory.
+
+### Security
+
+- **Enforce the minimum-aggregation (k-anonymity) floor on `analyze --min-bucket-size`.**
+  The flag previously accepted any integer — including `1`, `0`, or negatives. A value below
+  the floor disabled the minimum-aggregation threshold that keeps rare real values (locations,
+  tag values, resource-group/type co-occurrences, cost outliers, name samples) out of the
+  statistical profile, weakening the data-boundary guarantee that profiles contain no
+  real-tenant identifiers. The floor is now a hard minimum of **5**, enforced at the CLI and
+  independently in `build_profile()` for programmatic callers (reject, not clamp), failing
+  closed on non-integer and int-subclass inputs. The default remains `5`, so runs using the
+  default are unaffected.
+
 ## 1.1.0 — One-command demo and container images
 
 Adoption release. No API, CLI, or profile-schema changes — the `1.x` public surface is unchanged.

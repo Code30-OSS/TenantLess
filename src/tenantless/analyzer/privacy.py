@@ -22,11 +22,41 @@ from typing import Any, Iterable
 
 import polars as pl
 
+# k-anonymity privacy floor: the SINGLE source of truth for the minimum
+# aggregation bucket size. Statistical buckets observed fewer than this many
+# times are dropped before normalization, so no low-count value can fingerprint
+# a real tenant. BELOW this bar (k < 5) rare/unique REAL values survive
+# ``merge_min_buckets`` into the "synthetic" profile -- undetected by the denylist
+# scan, which only catches KNOWN identifiers. Both the CLI ``--min-bucket-size``
+# guard (IntRange) and the ``build_profile`` guard import this constant so the
+# floor cannot drift out of sync between the two enforcement layers.
+MIN_BUCKET_FLOOR = 5
+
 
 class DenylistLeakError(ValueError):
     """Raised when a denylisted real identifier appears in the profile output.
 
     This is the loud-failure signal for the privacy acceptance gate.
+    """
+
+
+class PrivacyFloorError(ValueError):
+    """Raised when ``min_bucket_size`` cannot enforce the k-anonymity floor.
+
+    Two cases are refused fail-closed:
+
+    * an under-floor value (a genuine ``int`` ``< :data:`MIN_BUCKET_FLOOR```), and
+    * an INVALID TYPE -- anything that is not an exact ``int`` (a ``float`` incl.
+      ``NaN``/``inf``, ``str``, ``None``, ``bool``, or an ``int`` subclass that
+      could override comparison), which a bare ordering check would silently admit.
+
+    The min-aggregation threshold is only a real data boundary if it cannot be
+    lowered below the k-anonymity bar. Below k=5, a rare or unique real value is
+    observed too few times to be dropped by :func:`merge_min_buckets`, so it can
+    survive into the "synthetic" profile output where the denylist scan -- which
+    only catches KNOWN identifiers -- will not detect it. This error REJECTS such
+    a value (never clamps it) at both the CLI boundary and inside
+    ``build_profile`` (defense in depth for programmatic callers).
     """
 
 
