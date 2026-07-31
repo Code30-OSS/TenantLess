@@ -1,7 +1,7 @@
 {
   "name": "tenantless-frontend",
   "private": true,
-  "version": "1.1.3",
+  "version": "1.1.4",
   "type": "module",
   "description": "Tenantless ARM mock console — React + Vite + TypeScript SPA (embedded under /ui).",
   "license": "Apache-2.0",

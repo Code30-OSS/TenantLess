@@ -9,6 +9,25 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.4 — Fix: bound generator memory and hold no locks across generation
+
+Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is
+unchanged, and generated output is byte-for-byte identical.
+
+### Fixed
+
+- **`generate` no longer materializes millions of cost records in memory.** Cost rows now
+  stream through a bounded on-disk spool during the CPU phase, so a large estate no longer
+  holds the full set of cost records resident at once. The COPY payload and draw order are
+  unchanged.
+- **`generate` no longer holds a write transaction or DDL locks across the CPU phase.** The
+  check-then-write mutual exclusion now rides a session-scoped advisory lock on a dedicated
+  connection: schema provisioning commits in its own short transaction before generation, the
+  CPU/worker phase runs with no open write transaction, and the write happens in a fresh
+  transaction. Concurrent generators are still serialized. The expensive generation is also
+  hoisted after the emptiness / destructive-confirm gate, so a declined or `--only-if-empty`
+  run aborts before doing any of that work.
+
 ## 1.1.3 — Fix: bound the Cost Management query against resource exhaustion
 
 Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is

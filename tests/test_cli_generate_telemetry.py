@@ -39,6 +39,17 @@ def mocked_writer(monkeypatch):
     # Wave2 #1: generate takes an advisory lock behind the writer seam before any
     # write; stub it so the DB-free _FakeConn is never asked for a real cursor.
     monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
+    # the generate path now rides a SESSION advisory lock on a
+    # dedicated autocommit connection (open_lock_connection) instead of the xact lock.
+    # Stub the new seam so this fixture stays DB-free (it would otherwise open a real
+    # psycopg connection to the live :5433 dev tenant).
+    monkeypatch.setattr(writer_mod, "open_lock_connection", fake_open_writer)
+    monkeypatch.setattr(
+        writer_mod, "acquire_generate_lock_session", lambda conn, key: None
+    )
+    monkeypatch.setattr(
+        writer_mod, "release_generate_lock_session", lambda conn, key: None
+    )
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)
@@ -152,6 +163,14 @@ def test_no_identity_still_provisions_identity_schema(monkeypatch):
 
     monkeypatch.setattr(writer_mod, "open_writer", fake_open_writer)
     monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
+    # stub the SESSION-lock seam so this inline fixture stays DB-free.
+    monkeypatch.setattr(writer_mod, "open_lock_connection", fake_open_writer)
+    monkeypatch.setattr(
+        writer_mod, "acquire_generate_lock_session", lambda conn, key: None
+    )
+    monkeypatch.setattr(
+        writer_mod, "release_generate_lock_session", lambda conn, key: None
+    )
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)
@@ -192,6 +211,14 @@ def test_generate_ensures_base_schema_first(monkeypatch):
 
     monkeypatch.setattr(writer_mod, "open_writer", fake_open_writer)
     monkeypatch.setattr(writer_mod, "acquire_generate_lock", lambda conn, key: None)
+    # stub the SESSION-lock seam so this inline fixture stays DB-free.
+    monkeypatch.setattr(writer_mod, "open_lock_connection", fake_open_writer)
+    monkeypatch.setattr(
+        writer_mod, "acquire_generate_lock_session", lambda conn, key: None
+    )
+    monkeypatch.setattr(
+        writer_mod, "release_generate_lock_session", lambda conn, key: None
+    )
     monkeypatch.setattr(writer_mod, "schema_is_empty", lambda conn: True)
     monkeypatch.setattr(writer_mod, "truncate_synthetic", lambda conn: None)
     monkeypatch.setattr(writer_mod, "write_tenant", lambda *a, **k: None)

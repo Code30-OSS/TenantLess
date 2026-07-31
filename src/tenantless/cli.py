@@ -561,74 +561,62 @@ def generate(
 
     as_of = cost_as_of.date() if cost_as_of is not None else _dt.date.today()
 
-    click.echo("generating tenant...", err=True)
-    result = generate_tenant(
-        profile_dict,
-        seed=seed,
-        n_subs=n_subs,
-        n_resources=n_resources,
-        inject_violations=inject_violations,
-        inject_cross_sub=inject_cross_sub,
-        cost_granularity=cost_granularity,
-        cost_as_of=as_of,
-        inject_identity=inject_identity,
-        over_privilege_rate=over_privilege_rate,
-        jobs=effective_jobs,
-        profile_name=derived_profile_name,
-    )
-    click.echo("computing tag entropy...", err=True)
-    tenant = result.tenant
+    # DoS-self: generation is HOISTED past the emptiness /
+    # destructive-confirm gates below — a declined confirmation or an
+    # --only-if-empty skip must abort/skip WITHOUT paying the (multi-GB at 500K
+    # resources) in-memory tenant + cost materialization. `result` / `tenant` are
+    # bound inside the generate branch only after the gate passes; the skip path
+    # returns before referencing them, so their scoping stays valid.
+    result = None
+    tenant = None
+
+    # the cost post-pass streams into a bounded on-disk CostSpool during
+    # the CPU phase (P1 memory), so 6-15M cost dicts are never all resident.
+    from tenantless.generator import cost as _cost
 
     skipped = False
-    with writer.open_writer() as conn:
-        # Wave2 #1: serialize the whole check→truncate→write on a dedicated advisory
-        # lock, taken FIRST so it spans the emptiness check AND the destructive write
-        # as one atomic critical section. No concurrent generator (or the compose
-        # one-shot) can populate the estate between the check and the write, and two
-        # generators on a fresh volume can't race the bare-CREATE ensure_* DDL below.
-        # xact-scoped: released when open_writer commits/rolls back. Behind the writer
-        # seam so DB-free CLI tests stub it (never a raw conn.cursor() here).
-        writer.acquire_generate_lock(conn, GENERATE_LOCK_KEY)
-        # 260709-blf (Docker-optional / BYO-Postgres): ensure the BASE synthetic
-        # schema (sql/001 tenant/subs/RGs/resources, sql/002 dependencies/violations,
-        # sql/003 integrity+indexes) exists BEFORE any other ensure_* / truncate /
-        # write. On a bare non-Docker PG16 the base tables were previously applied
-        # ONLY by the docker initdb mount, so generate failed on the missing schema;
-        # this self-provisions 001->002->003 first. A no-op on an already-provisioned
-        # Docker volume (function-level to_regclass guard, since sql/001,002 are bare
-        # CREATE, not IF NOT EXISTS). Called FIRST so the later cost/identity/
-        # web_metadata migrations and the write have their base tables present.
-        writer.ensure_base_schema(conn)
-        # P1 fix: ensure the cost fact table exists before truncate/write — an
-        # existing dev volume initialised before Phase 9 lacks synthetic.cost_records
-        # (sql/004 is initdb-only). Idempotent; no-op on volumes that already have it.
-        if result.cost_records:
-            writer.ensure_cost_schema(conn)
-        # P1 fix (Plan 10-01): ensure the identity tables exist before truncate/write
-        # — an existing dev volume initialised before Phase 10 lacks
-        # synthetic.principals / role_assignments (sql/005 is initdb-only).
-        # Idempotent; no-op on volumes that already have them. Called
-        # UNCONDITIONALLY (even with --no-identity / zero identity rows) so the empty
-        # tables exist and the mock-server's roleAssignments SELECT serves [] rather
-        # than 500ing on a missing relation.
-        writer.ensure_identity_schema(conn)
-        # P1 fix (Plan 14-05, D-14): ensure the profile_name column exists before
-        # truncate/write — an existing dev volume initialised before Phase 14 lacks
-        # synthetic.tenant.profile_name (sql/007 is initdb-only). Idempotent; no-op
-        # on volumes that already have it. Called UNCONDITIONALLY so copy_tenant's
-        # profile_name write never fails on a missing column on a pre-Phase-14 volume.
-        writer.ensure_web_metadata_schema(conn)
-        # Wave2 #1: --only-if-empty is the NON-destructive demo/one-shot guard. Under
-        # the advisory lock it inspects the ENTIRE estate (every synthetic table, not
-        # just resources); if ANY table holds rows — a full estate OR a partially
-        # written / interrupted one — it PRESERVES the data and skips generation.
-        # Because the check runs inside the locked write transaction, a populated
-        # estate can never be truncated by a check-then-write race.
-        if only_if_empty and not writer.estate_is_empty(conn):
-            skipped = True
-        else:
-            # D-08: truncation is destructive — guard it.
-            if not force and not writer.schema_is_empty(conn):
+    # Lock/txn-regression fix: the destructive-generate exclusion now
+    # rides a SESSION advisory lock on a dedicated idle (autocommit) connection instead
+    # of an xact lock inside one long write transaction. This preserves the Wave2 #1
+    # check→generate→write mutual exclusion WITHOUT holding a write transaction or the
+    # ensure_* DDL locks across the CPU / multiprocessing-fork phase (the earlier ordering fix had
+    # wrapped ALL of generation in a single open_writer txn). Provisioning commits in
+    # its own short transaction BEFORE generation; the CPU phase runs with no open
+    # write txn; the write phase opens a FRESH txn INSIDE the CostSpool block.
+    with writer.open_lock_connection() as lock_conn:
+        # Session-scoped lock (pg_advisory_lock), taken FIRST so it spans the gate AND
+        # the destructive write as one critical section. Held on the autocommit
+        # lock_conn across all three short transactions below; released explicitly at
+        # the end (and again by the connection close). Behind the writer seam so DB-free
+        # CLI tests stub it (never a raw conn.cursor() here).
+        writer.acquire_generate_lock_session(lock_conn, GENERATE_LOCK_KEY)
+
+        # Provisioning in its OWN short transaction that COMMITS before generation, so
+        # the bare-CREATE ensure_base DDL and the idempotent ensure_* twins release
+        # their table locks BEFORE the CPU phase — no DDL lock crosses the fork.
+        with writer.open_writer() as prov_conn:
+            # 260709-blf (Docker-optional / BYO-Postgres): ensure the BASE synthetic
+            # schema (sql/001..003) exists FIRST. A no-op on an already-provisioned
+            # Docker volume (function-level to_regclass guard, since sql/001,002 are
+            # bare CREATE, not IF NOT EXISTS).
+            writer.ensure_base_schema(prov_conn)
+            # P1 (Plan 10-01): identity tables — called UNCONDITIONALLY (even with
+            # --no-identity) so the mock-server's roleAssignments SELECT serves [].
+            writer.ensure_identity_schema(prov_conn)
+            # P1 (Plan 14-05, D-14): the profile_name column — UNCONDITIONAL so
+            # copy_tenant never fails on a pre-Phase-14 volume.
+            writer.ensure_web_metadata_schema(prov_conn)
+
+        # Emptiness / destructive-confirm gate (gate-before-generate preserved) in
+        # its OWN short transaction, under the session lock. --only-if-empty inspects
+        # the ENTIRE estate (every synthetic table); a populated OR partially written
+        # estate is PRESERVED. A declined/refused truncate aborts HERE, before the
+        # expensive generation.
+        with writer.open_writer() as gate_conn:
+            if only_if_empty and not writer.estate_is_empty(gate_conn):
+                skipped = True
+            elif not force and not writer.schema_is_empty(gate_conn):
+                # D-08: truncation is destructive — guard it.
                 if sys.stdin.isatty():
                     click.confirm(
                         "This will TRUNCATE the synthetic schema. Continue?",
@@ -639,16 +627,58 @@ def generate(
                         "Refusing to truncate non-empty synthetic schema without "
                         "--force/--yes."
                     )
-            writer.truncate_synthetic(conn)
-            writer.write_tenant(
-                conn,
-                tenant,
-                dependencies=result.dependencies,
-                violations=result.violations,
-                cost_records=result.cost_records,
-                principals=result.principals,
-                role_assignments=result.role_assignments,
-            )
+
+        if not skipped:
+            # only NOW — every gate passed — do we pay the
+            # expensive generation. Same generate_tenant kwargs / cost draw order;
+            # the identity assertions in test_generate_gate_ordering.py pin the
+            # fingerprint. The "generating tenant..." progress line stays here (after
+            # the gate passes, before generate).
+            click.echo("generating tenant...", err=True)
+            # the CostSpool block SPANS generate AND write — the CPU phase
+            # drains cost rows into the bounded on-disk spool with NO open write txn;
+            # the write phase (nested below) then streams from the spool into COPY while
+            # the file STILL exists. RAII removes it on every exit path.
+            with _cost.CostSpool() as spool:
+                result = generate_tenant(
+                    profile_dict,
+                    seed=seed,
+                    n_subs=n_subs,
+                    n_resources=n_resources,
+                    inject_violations=inject_violations,
+                    inject_cross_sub=inject_cross_sub,
+                    cost_granularity=cost_granularity,
+                    cost_as_of=as_of,
+                    inject_identity=inject_identity,
+                    over_privilege_rate=over_privilege_rate,
+                    jobs=effective_jobs,
+                    profile_name=derived_profile_name,
+                    cost_sink=spool,
+                )
+                click.echo("computing tag entropy...", err=True)
+                tenant = result.tenant
+                # Fresh write transaction INSIDE the spool block (the spool file must
+                # exist while COPY streams from it). ensure_cost_schema only when there
+                # are cost rows — an empty spool is falsy, so an empty-cost profile
+                # skips it (and opens no COPY). Idempotent; no-op on volumes that
+                # already have synthetic.cost_records.
+                with writer.open_writer() as write_conn:
+                    if result.cost_records:
+                        writer.ensure_cost_schema(write_conn)
+                    writer.truncate_synthetic(write_conn)
+                    writer.write_tenant(
+                        write_conn,
+                        tenant,
+                        dependencies=result.dependencies,
+                        violations=result.violations,
+                        cost_records=result.cost_records,
+                        principals=result.principals,
+                        role_assignments=result.role_assignments,
+                    )
+
+        # Release the session lock explicitly (belt-and-suspenders; the autocommit
+        # lock connection close on __exit__ also releases it).
+        writer.release_generate_lock_session(lock_conn, GENERATE_LOCK_KEY)
 
     if skipped:
         # The estate was already populated; nothing was truncated or written. Emit a
