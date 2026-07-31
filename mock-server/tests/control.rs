@@ -696,11 +696,26 @@ async fn child_env_omits_control_token() {
         "the pg_dump child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
     );
 
-    // The pg_restore (restore) child.
-    let restore = tenantless_server::snapshot::restore_command(&cp, "snap1");
+    // The pg_restore (decode) child.
+    let decode = tenantless_server::snapshot::decode_command(
+        &cp,
+        "snap1",
+        std::path::Path::new("/tmp/x.sql"),
+    );
     assert!(
-        scrubs_token(&restore),
-        "the pg_restore child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+        scrubs_token(&decode),
+        "the pg_restore decode child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+    );
+
+    // The psql (restore apply) child.
+    let apply = tenantless_server::snapshot::restore_apply_command(
+        &cp,
+        "TRUNCATE synthetic.tenant",
+        std::path::Path::new("/tmp/x.sql"),
+    );
+    assert!(
+        scrubs_token(&apply),
+        "the psql apply child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
     );
 }
 
@@ -1165,8 +1180,10 @@ async fn delete_idle_removes_artifact() {
 /// the client tools are absent — the default state on this dev box.
 #[tokio::test]
 async fn snapshot_roundtrip() {
-    if !binary_present("pg_dump") || !binary_present("pg_restore") {
-        eprintln!("skipping snapshot_roundtrip: pg_dump/pg_restore not on PATH (RESEARCH default)");
+    if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
+        eprintln!(
+            "skipping snapshot_roundtrip: pg_dump/pg_restore/psql not on PATH (RESEARCH default)"
+        );
         return;
     }
     let (pool, container) = start_pg().await;
@@ -1258,5 +1275,434 @@ async fn snapshot_roundtrip() {
     assert!(
         !bfin["value"].as_array().unwrap().is_empty(),
         "the running server serves the restored tenant hot (D-05, no restart)"
+    );
+
+    // The decode temp is cleaned on every path — no `.restore-*.sql` lingers (RAII).
+    assert!(
+        no_restore_temp(&cp.dirs.snapshots),
+        "the psql-path restore leaves no decoded .restore-*.sql temp behind"
+    );
+}
+
+/// True if no `.restore-*.sql` decode temp lingers in `dir` (the [`TempSqlFile`] RAII Drop must
+/// remove it on every restore exit path — success/failure/kill). A missing dir counts as clean.
+fn no_restore_temp(dir: &std::path::Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().starts_with(".restore-")),
+        Err(_) => true,
+    }
+}
+
+/// Register a fresh `Restore` job in `cp`'s registry and return its id (for the fault-injected
+/// kill/timeout test that drives `snapshot::restore_with_timeout` directly).
+fn register_restore_job(cp: &job::ControlPlane) -> uuid::Uuid {
+    let job = job::Job::new(job::JobKind::Restore);
+    let id = job.id;
+    cp.registry.lock().unwrap().insert(id, job);
+    id
+}
+
+/// Required test #1 (Finding A): a VALIDATED archive whose data load FAILS mid-restore leaves
+/// EVERY synthetic.* row count byte-identical — the in-transaction TRUNCATE is rolled back with the
+/// failed load. We make the LIVE schema reject the archived rows WITHOUT failing decode by adding a
+/// `CHECK (false) NOT VALID` to `synthetic.subscriptions` (existing rows skip the check; the
+/// restore's COPY re-insert trips it → the single psql transaction aborts). Skips cleanly when the
+/// pg client tools are absent (the dev-box default); runs on CI.
+#[tokio::test]
+async fn restore_load_failure_rolls_back_truncate() {
+    if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
+        eprintln!("skipping restore_load_failure_rolls_back_truncate: pg client tools absent");
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    tenantless_server::ensure_web_metadata_schema(&pool)
+        .await
+        .expect("provision web-metadata schema");
+    let _drift = common::seed_drift_rows(&pool).await;
+
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    // Save a good archive of the seeded estate.
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots",
+        Some(TEST_TOKEN),
+        &serde_json::json!({ "name": "s1" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "save → 202");
+    await_status(&app, j["job_id"].as_str().unwrap(), "succeeded").await;
+
+    // Pre-restore counts (the byte-identity ground truth).
+    let count = |q: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(q)
+                .fetch_one(&pool)
+                .await
+                .expect("count")
+        }
+    };
+    let pre_subs = count("SELECT count(*) FROM synthetic.subscriptions").await;
+    let pre_res = count("SELECT count(*) FROM synthetic.resources").await;
+    let pre_drift = count("SELECT count(*) FROM synthetic.drift_records").await;
+    assert!(pre_subs > 0 && pre_res > 0, "non-empty estate to protect");
+
+    // Make the archived subscriptions rows fail on re-insert (decode still succeeds).
+    sqlx::query(
+        "ALTER TABLE synthetic.subscriptions \
+         ADD CONSTRAINT chk_block_restore CHECK (false) NOT VALID",
+    )
+    .execute(&pool)
+    .await
+    .expect("add blocking check constraint");
+
+    // Restore s1 → the COPY re-insert trips the CHECK → the psql transaction rolls back.
+    let (sre, jre) = control_post_json(
+        app.clone(),
+        "/_control/snapshots/s1/restore",
+        Some(TEST_TOKEN),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(sre, StatusCode::ACCEPTED, "restore → 202");
+    await_status(&app, jre["job_id"].as_str().unwrap(), "failed").await;
+
+    // The TRUNCATE was rolled back with the failed load — every count is byte-identical.
+    assert_eq!(
+        count("SELECT count(*) FROM synthetic.subscriptions").await,
+        pre_subs,
+        "subscriptions intact — the in-txn TRUNCATE rolled back with the load"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM synthetic.resources").await,
+        pre_res,
+        "resources intact after a failed load"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM synthetic.drift_records").await,
+        pre_drift,
+        "drift_records intact after a failed load"
+    );
+    assert!(
+        no_restore_temp(&cp.dirs.snapshots),
+        "a failed restore leaves no decoded .restore-*.sql temp behind"
+    );
+}
+
+/// Required test #2 (Finding A): a valid-TOC-but-corrupt-data-block archive fails restore with the
+/// estate INTACT and no decode temp left. We save a good archive, then write a `corrupt.dump` whose
+/// header/TOC prefix is verbatim (so `--list` may parse) but whose trailing data blocks are 0xFF —
+/// decode (or validate) fails BEFORE any mutation. Skips cleanly without the pg client tools.
+#[tokio::test]
+async fn restore_corrupt_data_block_fails_before_mutation() {
+    if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
+        eprintln!("skipping restore_corrupt_data_block_fails_before_mutation: pg tools absent");
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots",
+        Some(TEST_TOKEN),
+        &serde_json::json!({ "name": "good" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    await_status(&app, j["job_id"].as_str().unwrap(), "succeeded").await;
+
+    // corrupt = first ~40% verbatim (header/TOC), trailing ~60% (data blocks) overwritten 0xFF.
+    let good_bytes = std::fs::read(cp.dirs.snapshots.join("good.dump")).expect("read good.dump");
+    let head = good_bytes.len() * 4 / 10;
+    let mut corrupt = good_bytes.clone();
+    for b in corrupt.iter_mut().skip(head) {
+        *b = 0xFF;
+    }
+    std::fs::write(cp.dirs.snapshots.join("corrupt.dump"), &corrupt).expect("write corrupt.dump");
+
+    let pre_subs: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.subscriptions")
+        .fetch_one(&pool)
+        .await
+        .expect("count subs pre");
+    let pre_res: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.resources")
+        .fetch_one(&pool)
+        .await
+        .expect("count resources pre");
+    assert!(pre_subs > 0, "non-empty estate to protect");
+
+    let (sre, jre) = control_post_json(
+        app.clone(),
+        "/_control/snapshots/corrupt/restore",
+        Some(TEST_TOKEN),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(sre, StatusCode::ACCEPTED, "restore → 202");
+    await_status(&app, jre["job_id"].as_str().unwrap(), "failed").await;
+
+    // Estate untouched — the corrupt archive failed at validate/decode, before any mutation.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM synthetic.subscriptions")
+            .fetch_one(&pool)
+            .await
+            .expect("count subs post"),
+        pre_subs,
+        "corrupt-archive restore left subscriptions intact (failed before mutation)"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM synthetic.resources")
+            .fetch_one(&pool)
+            .await
+            .expect("count resources post"),
+        pre_res,
+        "corrupt-archive restore left resources intact"
+    );
+    assert!(
+        no_restore_temp(&cp.dirs.snapshots),
+        "a corrupt-archive restore leaves no decoded .restore-*.sql temp behind"
+    );
+}
+
+/// Required test #3 (Finding A, fault-injected): a killed/timed-out psql restore leaves the estate
+/// INTACT and RELEASES the write gate. We drive `snapshot::restore_with_timeout` directly with a
+/// sub-millisecond timeout (bypassing the handler to inject it) while holding the sole permit; the
+/// psql apply is killed → the connection drops → the single transaction rolls back. Skips cleanly
+/// without the pg client tools.
+#[tokio::test]
+async fn restore_kill_rolls_back_and_releases_gate() {
+    if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
+        eprintln!("skipping restore_kill_rolls_back_and_releases_gate: pg tools absent");
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    // Save s1.
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots",
+        Some(TEST_TOKEN),
+        &serde_json::json!({ "name": "s1" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    await_status(&app, j["job_id"].as_str().unwrap(), "succeeded").await;
+
+    let pre_subs: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.subscriptions")
+        .fetch_one(&pool)
+        .await
+        .expect("count subs pre");
+    let pre_res: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.resources")
+        .fetch_one(&pool)
+        .await
+        .expect("count resources pre");
+    assert!(pre_subs > 0, "non-empty estate to protect");
+
+    // Acquire the sole permit, register a Restore job, and drive restore with a 1ms timeout.
+    let permit = cp
+        .write_gate
+        .clone()
+        .try_acquire_owned()
+        .expect("first permit free");
+    let id = register_restore_job(&cp);
+
+    // Outer timeout so a regression (hung restore) fails cleanly instead of hanging the suite.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tenantless_server::snapshot::restore_with_timeout(
+            cp.clone(),
+            id,
+            "s1".to_string(),
+            permit,
+            std::time::Duration::from_millis(1),
+        ),
+    )
+    .await
+    .expect("restore_with_timeout returned within the outer bound (no deadlock)");
+
+    // The injected kill/timeout finalized the job Failed.
+    let status = cp.registry.lock().unwrap().get(&id).map(|jb| jb.status);
+    assert_eq!(
+        status,
+        Some(JobStatus::Failed),
+        "killed restore finalizes Failed"
+    );
+
+    // Estate intact — the killed transaction rolled back (or was killed pre-truncate).
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM synthetic.subscriptions")
+            .fetch_one(&pool)
+            .await
+            .expect("count subs post"),
+        pre_subs,
+        "a killed restore left subscriptions intact (rollback)"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM synthetic.resources")
+            .fetch_one(&pool)
+            .await
+            .expect("count resources post"),
+        pre_res,
+        "a killed restore left resources intact"
+    );
+
+    // The write gate is released (the permit dropped at restore's scope end).
+    assert!(
+        cp.write_gate.clone().try_acquire_owned().is_ok(),
+        "a killed restore releases the write gate"
+    );
+    assert!(
+        no_restore_temp(&cp.dirs.snapshots),
+        "a killed restore leaves no decoded .restore-*.sql temp behind"
+    );
+}
+
+/// Regression: restoring a CORRUPT/truncated archive MUST be
+/// detected BEFORE any TRUNCATE (a `pg_restore --list` TOC dry-run gate), so a failed restore
+/// leaves the live tenant FULLY INTACT (row counts unchanged) — not empty. On the pre-fix code
+/// `restore` TRUNCATEd first and only then handed the garbage to `pg_restore`, wiping the estate.
+/// Skips cleanly when `pg_restore` is absent (the dev-box default).
+#[tokio::test]
+async fn restore_aborts_on_corrupt_archive() {
+    if !binary_present("pg_restore") {
+        eprintln!(
+            "skipping restore_aborts_on_corrupt_archive: pg_restore not on PATH (RESEARCH default)"
+        );
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+
+    // A GARBAGE artifact: NOT a valid custom-format pg_dump archive.
+    std::fs::write(
+        cp.dirs.snapshots.join("bad.dump"),
+        b"this is not a valid pg_dump custom-format archive",
+    )
+    .expect("write corrupt archive");
+
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    // Precondition: the seeded estate is non-empty (a genuine discriminator).
+    let pre_subs: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.subscriptions")
+        .fetch_one(&pool)
+        .await
+        .expect("count subs pre");
+    let pre_res: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.resources")
+        .fetch_one(&pool)
+        .await
+        .expect("count resources pre");
+    assert!(pre_subs > 0, "fixture seeded a non-empty estate");
+
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots/bad/restore",
+        Some(TEST_TOKEN),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::ACCEPTED,
+        "restore → 202 (failure surfaces in the job)"
+    );
+    await_status(&app, j["job_id"].as_str().unwrap(), "failed").await;
+
+    // The estate is UNTOUCHED — validation aborted BEFORE the truncate.
+    let post_subs: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.subscriptions")
+        .fetch_one(&pool)
+        .await
+        .expect("count subs post");
+    let post_res: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.resources")
+        .fetch_one(&pool)
+        .await
+        .expect("count resources post");
+    assert_eq!(
+        post_subs, pre_subs,
+        "corrupt-archive restore left subscriptions intact (no truncate ran)"
+    );
+    assert_eq!(
+        post_res, pre_res,
+        "corrupt-archive restore left resources intact (no truncate ran)"
+    );
+}
+
+/// Regression: a save whose `pg_dump` FAILS must leave NEITHER a
+/// final `<name>.dump` (a truncated file `list()`/`restore()` would treat as valid) NOR the temp
+/// `<name>.dump.partial` — the atomic temp-then-rename cleans up on failure. Here the DSN points
+/// at a NON-existent database so pg_dump exits nonzero. Skips cleanly when `pg_dump` is absent.
+#[tokio::test]
+async fn failed_save_leaves_no_artifact() {
+    if !binary_present("pg_dump") {
+        eprintln!(
+            "skipping failed_save_leaves_no_artifact: pg_dump not on PATH (RESEARCH default)"
+        );
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    // A DSN at a database that does not exist → pg_dump exits nonzero.
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/no_such_db_missing");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots",
+        Some(TEST_TOKEN),
+        &serde_json::json!({ "name": "nope" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "save → 202");
+    await_status(&app, j["job_id"].as_str().unwrap(), "failed").await;
+
+    let final_path = cp.dirs.snapshots.join("nope.dump");
+    let partial_path = cp.dirs.snapshots.join("nope.dump.partial");
+    assert!(
+        !final_path.exists(),
+        "a failed save never leaves a final <name>.dump artifact"
+    );
+    assert!(
+        !partial_path.exists(),
+        "a failed save cleans up the temp <name>.dump.partial"
     );
 }

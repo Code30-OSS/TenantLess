@@ -382,17 +382,31 @@ pub async fn run_command(
     run_command_with_timeout(cp, job_id, cmd, _permit, JOB_TIMEOUT).await;
 }
 
-/// As [`run_command`], but with an injectable wall-clock `timeout` — a test-only seam so the
-/// timeout/permit-release path is drivable without waiting the production hour. Production code
-/// always calls [`run_command`] (which passes [`JOB_TIMEOUT`]); nothing else changes.
-pub async fn run_command_with_timeout(
-    cp: ControlPlane,
+/// The terminal outcome of a [`run_command_keep_permit`] run: whether the child exited 0 and
+/// the LAST stdout line (for the opportunistic `generate` summary parse). Deliberately does NOT
+/// carry the permit or a `Succeeded` transition — the CALLER (`run_command_with_timeout` for
+/// generate/analyze, `save`/`restore` for snapshots) owns finalization so it can retain the
+/// single-writer permit across artifact promotion / temp cleanup before dropping it.
+pub(crate) struct RunOutcome {
+    pub succeeded: bool,
+    pub last_stdout: String,
+}
+
+/// Drive `cmd` to a terminal exit as a tracked job, WITHOUT owning/dropping a permit and WITHOUT
+/// setting `JobStatus::Succeeded` — the permit-retaining core shared by the generate/analyze
+/// runner and the snapshot save/restore runners (P1-A/P1-B). It sets `Running` on entry; on a
+/// spawn error / nonzero exit / timeout it sets `Failed` (+ the same log line as before) and
+/// returns `succeeded: false`; on exit 0 it leaves the job `Running` and returns
+/// `succeeded: true` with the last stdout line, so the caller finalizes (`Succeeded` +
+/// summary parse) only AFTER its own post-run work (rename / temp cleanup) under the still-held
+/// permit. The P1-B kill-before-join timeout ordering is preserved verbatim.
+pub(crate) async fn run_command_keep_permit(
+    cp: &ControlPlane,
     job_id: Uuid,
-    mut cmd: Command,
-    _permit: OwnedSemaphorePermit,
+    cmd: &mut Command,
     timeout: Duration,
-) {
-    with_job(&cp, job_id, |j| j.status = JobStatus::Running);
+) -> RunOutcome {
+    with_job(cp, job_id, |j| j.status = JobStatus::Running);
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -403,11 +417,14 @@ pub async fn run_command_with_timeout(
         Ok(c) => c,
         Err(e) => {
             // Missing binary / not executable: a first-class `Failed`, never a crash (D-08).
-            with_job(&cp, job_id, |j| {
+            with_job(cp, job_id, |j| {
                 j.push_log(format!("failed to spawn subprocess: {e}"));
                 j.status = JobStatus::Failed;
             });
-            return;
+            return RunOutcome {
+                succeeded: false,
+                last_stdout: String::new(),
+            };
         }
     };
 
@@ -446,8 +463,8 @@ pub async fn run_command_with_timeout(
     // Wait with a wall-clock fail-safe. On a TIMEOUT the child may still be alive holding its
     // stdout/stderr pipes open, so we MUST kill (and reap) it BEFORE joining the drain tasks —
     // otherwise the drains never see EOF, `join!` blocks forever, the job never finalizes, and
-    // the single-writer `_permit` is held permanently (the P1-B deadlock). Kill-before-join
-    // guarantees the pipes close so both drains complete and the permit drops.
+    // the single-writer permit is held permanently (the P1-B deadlock). Kill-before-join
+    // guarantees the pipes close so both drains complete and the permit can drop.
     let waited = tokio::time::timeout(timeout, child.wait()).await;
     if waited.is_err() {
         let _ = child.start_kill();
@@ -459,14 +476,14 @@ pub async fn run_command_with_timeout(
     let succeeded = match waited {
         Ok(Ok(status)) => status.success(),
         Ok(Err(e)) => {
-            with_job(&cp, job_id, |j| {
+            with_job(cp, job_id, |j| {
                 j.push_log(format!("failed to await child: {e}"))
             });
             false
         }
         Err(_) => {
             // The child was already killed + reaped above; just log the timeout and fail the job.
-            with_job(&cp, job_id, |j| {
+            with_job(cp, job_id, |j| {
                 j.push_log(format!(
                     "job timed out after {}s — killed (tenant may be dirty; reset or regenerate)",
                     timeout.as_secs()
@@ -476,15 +493,40 @@ pub async fn run_command_with_timeout(
         }
     };
 
+    // Set Failed here (so a failed job is terminal even if the caller does no further work); a
+    // successful job is left `Running` for the caller to finalize under the still-held permit.
+    if !succeeded {
+        with_job(cp, job_id, |j| j.status = JobStatus::Failed);
+    }
+    RunOutcome {
+        succeeded,
+        last_stdout,
+    }
+}
+
+/// As [`run_command`], but with an injectable wall-clock `timeout` — a test-only seam so the
+/// timeout/permit-release path is drivable without waiting the production hour. Production code
+/// always calls [`run_command`] (which passes [`JOB_TIMEOUT`]); nothing else changes.
+///
+/// Delegates the child drive to [`run_command_keep_permit`], then finalizes `Succeeded` (+ the
+/// opportunistic `generate` summary parse) on success. `_permit` drops at scope end — so
+/// generate/analyze behavior (and every existing runner test) is byte-for-byte unchanged.
+pub async fn run_command_with_timeout(
+    cp: ControlPlane,
+    job_id: Uuid,
+    mut cmd: Command,
+    _permit: OwnedSemaphorePermit,
+    timeout: Duration,
+) {
+    let outcome = run_command_keep_permit(&cp, job_id, &mut cmd, timeout).await;
     with_job(&cp, job_id, |j| {
-        if succeeded {
+        if outcome.succeeded {
             j.status = JobStatus::Succeeded;
-            if let Some(result) = parse_generate_summary(&last_stdout) {
+            if let Some(result) = parse_generate_summary(&outcome.last_stdout) {
                 j.result = Some(result);
             }
-        } else {
-            j.status = JobStatus::Failed;
         }
+        // Failure already set to `Failed` inside `run_command_keep_permit`.
     });
     // `_permit` drops here → the single-writer gate is released.
 }
@@ -523,18 +565,102 @@ pub async fn run_reset(cp: ControlPlane, job_id: Uuid, _permit: OwnedSemaphorePe
 /// table-name list is the STATIC [`SYNTHETIC_TABLES`] allowlist, never user input, so the
 /// generated statement carries no injection surface. A no-op (all absent) succeeds.
 pub(crate) async fn truncate_synthetic(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let names: Vec<String> = SYNTHETIC_TABLES.iter().map(|s| s.to_string()).collect();
-    // Filter to the tables that actually exist (bind the allowlist as a $1 text[]).
-    let existing: Vec<String> = sqlx::query_scalar(
-        "SELECT t FROM unnest($1::text[]) AS t WHERE to_regclass(t) IS NOT NULL",
-    )
-    .bind(&names)
-    .fetch_all(pool)
-    .await?;
+    let existing = existing_synthetic_tables(pool).await?;
     if existing.is_empty() {
         return Ok(());
     }
     let sql = format!("TRUNCATE {} RESTART IDENTITY CASCADE", existing.join(", "));
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
+}
+
+/// Filter the STATIC [`SYNTHETIC_TABLES`] allowlist to the relations that CURRENTLY exist in the
+/// target schema (a `to_regclass` probe over the allowlist bound as a `$1 text[]`), preserving the
+/// FK order of the allowlist. Shared by [`truncate_synthetic`] (reset) and the snapshot restore
+/// path, which builds the in-transaction `TRUNCATE {existing}` from it — a test fixture may apply
+/// only a subset of migrations, so an absent table is skipped rather than aborting the statement.
+/// The result carries no injection surface: the names come only from the code-literal allowlist.
+pub(crate) async fn existing_synthetic_tables(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let names: Vec<String> = SYNTHETIC_TABLES.iter().map(|s| s.to_string()).collect();
+    let existing: Vec<String> = sqlx::query_scalar(
+        "SELECT t FROM unnest($1::text[]) AS t WHERE to_regclass(t) IS NOT NULL",
+    )
+    .bind(&names)
+    .fetch_all(pool)
+    .await?;
+    Ok(existing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::Semaphore;
+
+    /// A DB-free `ControlPlane` whose pool is a LAZY (never-dialed) connection — the
+    /// spawn-failure path of `run_command_keep_permit` never touches the pool.
+    fn lazy_cp() -> ControlPlane {
+        let pool = sqlx::postgres::PgPool::connect_lazy("postgres://u:p@localhost:5432/db")
+            .expect("build a lazy (never-dialed) pool");
+        ControlPlane {
+            token_digest: [0u8; 32],
+            database_url: "postgres://u:p@localhost:5432/db".to_string(),
+            repo_root: std::env::temp_dir(),
+            dirs: ControlDirs {
+                profiles: std::env::temp_dir(),
+                sources: std::env::temp_dir(),
+                snapshots: std::env::temp_dir(),
+            },
+            registry: Arc::new(Mutex::new(HashMap::new())),
+            write_gate: Arc::new(Semaphore::new(1)),
+            pipeline_cmd: Vec::new(),
+            pool,
+        }
+    }
+
+    /// Task 1 (P1-B substrate): `run_command_keep_permit` on a nonexistent binary returns
+    /// `succeeded == false`, marks the job `Failed`, and NEVER touches the caller's permit —
+    /// the single-writer gate stays held until the CALLER drops it (so save/restore can retain
+    /// it across artifact promotion / temp cleanup). Required-test #5 substrate.
+    #[tokio::test]
+    async fn keep_permit_spawn_failure_fails_and_retains_permit() {
+        let cp = lazy_cp();
+        let job = Job::new(JobKind::Snapshot);
+        let job_id = job.id;
+        cp.registry.lock().unwrap().insert(job_id, job);
+
+        // A permit the caller retains across keep_permit (models the write gate).
+        let gate = Arc::new(Semaphore::new(1));
+        let permit = gate.clone().try_acquire_owned().expect("first permit free");
+
+        // A binary that does not exist → spawn error → succeeded == false, no pool access.
+        let mut cmd = Command::new("definitely-not-a-real-binary-tenantless-xyz");
+        let outcome = run_command_keep_permit(&cp, job_id, &mut cmd, JOB_TIMEOUT).await;
+        assert!(!outcome.succeeded, "spawn failure → succeeded == false");
+        assert!(
+            outcome.last_stdout.is_empty(),
+            "no stdout captured on spawn failure"
+        );
+
+        // keep_permit did NOT take/drop the caller's permit: the gate is still exhausted.
+        assert!(
+            gate.clone().try_acquire_owned().is_err(),
+            "keep_permit must not touch the caller's permit (gate still held)"
+        );
+
+        // keep_permit set the job Failed itself (the caller does not have to).
+        let mut status = None;
+        with_job(&cp, job_id, |j| status = Some(j.status));
+        assert_eq!(
+            status,
+            Some(JobStatus::Failed),
+            "spawn failure → job Failed"
+        );
+
+        // Dropping the caller's permit is what releases the gate.
+        drop(permit);
+        assert!(
+            gate.try_acquire_owned().is_ok(),
+            "dropping the caller's permit releases the gate"
+        );
+    }
 }
