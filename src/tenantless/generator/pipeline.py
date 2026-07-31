@@ -25,12 +25,17 @@ import re
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from numpy.random import SeedSequence
 
 from . import archetypes, calibrate, naming, resources, sampling, tags
 from .rng import SeededContext
+
+if TYPE_CHECKING:
+    # type-only import to widen GenerationResult.cost_records and
+    # generate_tenant's cost_sink without a runtime import cycle (cost imports rng).
+    from .cost import CostSpool
 
 
 @dataclass
@@ -87,7 +92,9 @@ class GenerationResult:
     violations: tuple[dict, ...]
     dependencies: tuple[dict, ...]
     clamp_notes: tuple[str, ...]
-    cost_records: tuple[dict, ...] = ()
+    # widened to accept a streaming CostSpool (the CLI path) OR the
+    # eager tuple (direct callers / fingerprint tests). Default stays the empty tuple.
+    cost_records: "CostSpool | tuple[dict, ...]" = ()
     principals: tuple[dict, ...] = ()  # Phase-10 IAM-01
     role_assignments: tuple[dict, ...] = ()  # Phase-10 IAM-02
     # D-06: the over-privilege injection count is recorded ONLY here (and surfaced
@@ -347,6 +354,7 @@ def generate_tenant(
     targets: Any = None,
     jobs: int = 1,
     profile_name: str | None = None,
+    cost_sink: "CostSpool | None" = None,
 ) -> GenerationResult:
     """Sample a full DB-free synthetic tenant from ``profile`` (GEN-01).
 
@@ -521,7 +529,13 @@ def generate_tenant(
     # substream (rule 3: cost_ss). The deferred import + the empty-cost_distributions
     # no-op keep a cost-less profile (or --no-cost) byte-identical to the Phase-8
     # baseline (no RNG drawn).
+    # `cost_records` is either a streaming CostSpool (the CLI path,
+    # when `cost_sink` is passed) or the eager tuple (direct callers / fingerprint
+    # tests, when it is None). Both drain the SAME `_iter_cost_rows` generator, so the
+    # draw order / values / per-field types are identical; only WHERE the rows live
+    # (bounded on disk vs a full in-memory tuple) differs.
     cost_rows: list[dict] = []
+    cost_records: "CostSpool | tuple[dict, ...]" = ()
     if inject_cost:
         try:
             from . import cost as _cost  # Plan 09-03
@@ -533,14 +547,29 @@ def generate_tenant(
             # P1 fix: billing periods are derived EXCLUSIVELY from `cost_as_of`
             # (a calendar date), never an internal `date.today()` — so a fixed
             # (profile, seed, cost_as_of) is byte-reproducible across calendar days.
-            if cost_granularity == "daily":
-                cost_rows = _cost.inject_cost(
-                    cost_ctx, tenant, cost_dists, granularity="daily", today=cost_as_of
-                )
+            _cost_granularity = "daily" if cost_granularity == "daily" else "monthly"
+            if cost_sink is not None:
+                # Streaming path (P1 bounded memory): drain the generator directly
+                # into the spool — NEVER build a list/tuple of the 6-15M rows.
+                for row in _cost._iter_cost_rows(
+                    cost_ctx,
+                    tenant,
+                    cost_dists,
+                    granularity=_cost_granularity,
+                    today=cost_as_of,
+                ):
+                    cost_sink.append(row)
+                cost_records = cost_sink
             else:
                 cost_rows = _cost.inject_cost(
-                    cost_ctx, tenant, cost_dists, granularity="monthly", today=cost_as_of
+                    cost_ctx,
+                    tenant,
+                    cost_dists,
+                    granularity=_cost_granularity,
+                    today=cost_as_of,
                 )
+    if cost_sink is None:
+        cost_records = tuple(cost_rows)
 
     # Phase 10 (D-01): the identity post-pass runs AFTER cost and BEFORE constructing
     # GenerationResult, driving its OWN named substream (rule 3: ident_ss). Principals
@@ -570,7 +599,7 @@ def generate_tenant(
         violations=tuple(violation_rows),
         dependencies=tuple(dependency_rows),
         clamp_notes=tuple(clamp_notes),
-        cost_records=tuple(cost_rows),
+        cost_records=cost_records,
         principals=tuple(principal_rows),
         role_assignments=tuple(assignment_rows),
         over_privilege_count=over_privilege_count,

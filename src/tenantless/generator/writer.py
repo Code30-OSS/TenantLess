@@ -238,9 +238,56 @@ def acquire_generate_lock(conn: psycopg.Connection, key: int) -> None:
     """Take the xact-scoped advisory lock serializing the destructive generate
     critical section (Wave2 #1). Behind the writer seam (like truncate_synthetic /
     write_tenant) so the DB-free CLI tests can stub it — cli.py must never touch a raw
-    ``conn.cursor()`` directly, which would bypass those mocks."""
+    ``conn.cursor()`` directly, which would bypass those mocks.
+
+    Superseded on the ``generate`` path by the SESSION-scoped seam below: the xact lock forced the whole check→generate→write to share one
+    open transaction (holding DDL locks + an open write connection across the CPU/
+    multiprocessing-fork phase). Kept for any remaining single-transaction callers.
+    """
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+
+
+@contextmanager
+def open_lock_connection(
+    conn_str: str | None = None,
+) -> Iterator[psycopg.Connection]:
+    """Open a DEDICATED autocommit connection to hold a SESSION advisory lock across
+    the whole check→generate→write critical section.
+
+    ``autocommit=True`` means this connection holds NO implicit transaction — so the
+    session lock spans three independent short transactions (provisioning, gate,
+    write) WITHOUT an idle-in-transaction connection or DDL locks held across the
+    CPU/multiprocessing-fork phase (the P2 regression the xact lock caused). Closing
+    the connection on exit releases any session advisory lock it still holds.
+    """
+    conn = psycopg.connect(conn_str or DATABASE_URL)
+    conn.autocommit = True
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def acquire_generate_lock_session(conn: psycopg.Connection, key: int) -> None:
+    """Take the SESSION-scoped advisory lock (blocking) on the dedicated idle
+    connection. Session-scoped (``pg_advisory_lock``, not
+    ``pg_advisory_xact_lock``) so it survives the per-phase transactions and is
+    released only by :func:`release_generate_lock_session` or connection close.
+    Behind the writer seam so DB-free CLI tests stub it (no raw ``conn.cursor()``
+    in cli.py). The key binds as a ``%s`` literal — no string-spliced SQL."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (key,))
+
+
+def release_generate_lock_session(conn: psycopg.Connection, key: int) -> None:
+    """Release the session advisory lock taken by
+    :func:`acquire_generate_lock_session`. Belt-and-suspenders —
+    closing the autocommit lock connection also releases it — but an explicit unlock
+    keeps the critical section's end unambiguous. Bound ``%s`` literal, no spliced
+    SQL."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_unlock(%s)", (key,))
 
 
 def estate_is_empty(conn: psycopg.Connection) -> bool:
@@ -620,7 +667,12 @@ def copy_cost_records(
     parameterized binary encoding — no string-concatenated SQL (threat T-9-SQLi,
     project memory "mock-server SQL injection bar").
     """
-    rows = list(rows or [])
+    # iterate the source rows DIRECTLY — GenerationResult.cost_records
+    # is a frozen tuple, and materializing it into a fresh list here re-copied (at
+    # scale) 6-15M cost dicts for a single pass. `rows or ()` normalizes None to an
+    # empty no-op; the tuple/list/iterable is iterated once into COPY unchanged, so
+    # the write_row payload order stays byte-identical (fingerprint guarantee).
+    rows = rows or ()
     if not rows:
         return  # no-op default, like copy_violations
     cols = "resource_id, subscription_id, billing_period, cost_amount, currency"
