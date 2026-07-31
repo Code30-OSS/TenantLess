@@ -12,6 +12,7 @@
 import { useState } from 'react';
 import { Outlet } from 'react-router';
 
+import ErrorBoundary from './ErrorBoundary';
 import SidebarNav from './SidebarNav';
 import Topbar from './Topbar';
 import styles from './AppShell.module.css';
@@ -45,7 +46,9 @@ export default function AppShell() {
       <div className={styles.main}>
         <Topbar theme={theme} onToggleTheme={toggleTheme} />
         <main className={styles.content}>
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

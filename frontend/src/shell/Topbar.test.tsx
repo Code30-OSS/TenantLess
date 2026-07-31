@@ -129,3 +129,48 @@ describe('Topbar — manual Refresh (UAT Gap 5, D-04)', () => {
     expect(invalidateSpy).toHaveBeenCalled();
   });
 });
+
+describe('Topbar — non-empty truncation (positive regression)', () => {
+  it('renders the truncated 36-char tenant GUID as `8-char…4-char`', () => {
+    // summaryFixture.tenantId is a full 36-char GUID (aaaa1111-…-eeeeeeeeeeee).
+    // The existing suite only asserts the MOCKUP GUID is ABSENT; positively prove
+    // the caller still funnels a non-null GUID through shortTenant unchanged.
+    mockSummary({ data: summaryFixture });
+    renderTopbar();
+    expect(screen.getByText('aaaa1111…eeee')).toBeTruthy();
+  });
+});
+
+describe('Topbar — empty-tenant summary (null-guard)', () => {
+  // On an EMPTY tenant, GET /_sim/summary returns null for tenantId/seed/profile.
+  // The Summary type declares these non-null (the test file is not typechecked), so
+  // this fixture reproduces the live runtime shape that used to blank the console.
+  const emptyFixture: Summary = {
+    tenantId: null as unknown as string,
+    seed: null as unknown as number,
+    profile: null as unknown as string,
+    totals: { subscriptions: 0, resourceGroups: 0, resources: 0, violations: 0, dependencies: 0 },
+    subscriptions: [],
+    byType: [],
+    byLocation: [],
+  };
+
+  it('does not throw when the summary fields are all null', () => {
+    mockSummary({ data: emptyFixture });
+    expect(() => renderTopbar()).not.toThrow();
+  });
+
+  it('renders em-dash placeholders and never the literal "null"', () => {
+    mockSummary({ data: emptyFixture });
+    renderTopbar();
+    expect(screen.queryByText('null')).toBeNull();
+    // seed, profile and tenant_id cells all collapse to the em-dash placeholder.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('renders a legitimate seed 0 as "0", not the em-dash (guard on != null, not falsy)', () => {
+    mockSummary({ data: { ...emptyFixture, seed: 0 } });
+    renderTopbar();
+    expect(screen.getByText('0')).toBeTruthy();
+  });
+});

@@ -9,6 +9,25 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.5 — Fix: web console refreshes after control-plane jobs, and survives an empty tenant
+
+Bug-fix patch (web console). No API, CLI-flag, or profile-schema changes.
+
+### Fixed
+
+- **The Explorer now refreshes automatically when a control-plane job succeeds.** Generate,
+  analyze, restore, and reset are asynchronous jobs; the console previously invalidated its
+  caches at submit time (before the tenant changed) and did nothing on completion, so the
+  Explorer kept showing the pre-job tenant until a manual Refresh. A single completion-driven
+  invalidation now fires once when a job reaches `succeeded`. The job watcher lives at the app
+  level (above the router), so the refresh still happens even if you navigate away from the
+  control plane while the job is running, and the control-plane lock is disabled while a job is
+  in flight so its auth cannot be torn down mid-poll.
+- **An empty tenant no longer blanks the whole console.** Resetting to an empty tenant sends a
+  null tenant id, which crashed the always-mounted top bar and, with no error boundary, took
+  the entire page down. The top bar now guards null tenant/seed values, and an app-level error
+  boundary contains any render error to a fallback instead of unmounting the whole app.
+
 ## 1.1.4 — Fix: bound generator memory and hold no locks across generation
 
 Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is
