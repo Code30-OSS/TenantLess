@@ -1,5 +1,10 @@
 import click
 
+# k-anonymity privacy floor for `--min-bucket-size` (single source of truth in
+# privacy.py, shared with the build_profile guard). Imported at module scope
+# because the IntRange minimum is bound at decorator-evaluation (import) time.
+from tenantless.analyzer.privacy import MIN_BUCKET_FLOOR
+
 # --------------------------------------------------------------------------- #
 # apply-drift read-modify-write helpers (Plan 11-05, DRIFT-01/03/04).
 #
@@ -291,10 +296,13 @@ def main():
 )
 @click.option(
     "--min-bucket-size",
-    default=5,
+    default=MIN_BUCKET_FLOOR,
     show_default=True,
-    type=int,
-    help="Drop statistical buckets observed fewer than this many times.",
+    type=click.IntRange(min=MIN_BUCKET_FLOOR),
+    help=(
+        "Drop statistical buckets observed fewer than this many times. Values "
+        f"below the k-anonymity floor ({MIN_BUCKET_FLOOR}) are rejected."
+    ),
 )
 @click.option(
     "--denylist",

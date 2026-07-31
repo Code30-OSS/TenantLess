@@ -34,6 +34,7 @@ from typing import Any, Iterator
 import orjson
 
 from . import privacy, review, schema_validate
+from .privacy import MIN_BUCKET_FLOOR, PrivacyFloorError
 from .extractors import archetypes as archetypes_extractor
 from .extractors import cooccurrence as cooccurrence_extractor
 from .extractors import cost as cost_extractor
@@ -238,7 +239,7 @@ def _placeholder_archetype() -> dict[str, Any]:
 def build_profile(
     source: str,
     out: str | Path,
-    min_bucket_size: int = 5,
+    min_bucket_size: int = MIN_BUCKET_FLOOR,
     denylist: str | Path | None = None,
     k: int | None = None,
     allow_no_denylist: bool = False,
@@ -255,7 +256,10 @@ def build_profile(
         Output JSON path (e.g. ``profiles/derived.json``).
     min_bucket_size:
         Buckets observed fewer than this many times are dropped before
-        normalization (privacy min-aggregation).
+        normalization (privacy min-aggregation). Must be >=
+        :data:`~tenantless.analyzer.privacy.MIN_BUCKET_FLOOR` (the k-anonymity
+        floor, 5); an under-floor value is REJECTED with
+        :class:`~tenantless.analyzer.privacy.PrivacyFloorError`, never clamped.
     denylist:
         Optional path to a JSON denylist of real identifiers; when provided the
         assembled profile is scanned and the run fails loudly on any leak.
@@ -273,6 +277,38 @@ def build_profile(
 
     Returns the assembled profile dict (also written to ``out``).
     """
+    # k-anonymity privacy floor (defense in depth for programmatic callers).
+    # This is the VERY FIRST block: an invalid value is REJECTED here, before any
+    # read / extraction / write, so a caller bypassing the CLI IntRange guard
+    # cannot lower the min-aggregation threshold below k=5 and let rare/unique real
+    # values survive into the profile. REJECT, never clamp.
+    #
+    # Require an EXACT ``int`` BEFORE the ordering comparison. A bare
+    # ``min_bucket_size < MIN_BUCKET_FLOOR`` is False for ``float('nan')`` (every
+    # NaN comparison is False) and for other floats like ``5.0``/``inf``, so NaN
+    # would sail past the gate -- and downstream ``count < NaN`` is also False, so a
+    # unique real bucket survives. ``str``/``None`` would raise an uncontrolled
+    # ``TypeError`` at the comparison instead of a fail-closed ``PrivacyFloorError``.
+    # ``type(...) is int`` (NOT ``isinstance``) is mandatory: ``isinstance`` admits
+    # int SUBCLASSES, and a subclass overriding ``__lt__`` to return False would
+    # pass BOTH an isinstance gate and the ``< FLOOR`` comparison (its own ``__lt__``
+    # runs) and survive as a count-1 bucket. Exact identity also rejects ``bool``
+    # (``type(True) is bool``), so no separate bool check is needed.
+    if type(min_bucket_size) is not int:
+        raise PrivacyFloorError(
+            f"min_bucket_size must be an int, got {min_bucket_size!r} "
+            f"({type(min_bucket_size).__name__}); a non-integer or int-subclass "
+            "value (NaN, infinity, float, str, None, bool, or a subclass overriding "
+            "comparison) cannot enforce the k-anonymity minimum-aggregation floor "
+            "and is refused fail-closed."
+        )
+    if min_bucket_size < MIN_BUCKET_FLOOR:
+        raise PrivacyFloorError(
+            f"min_bucket_size={min_bucket_size} is below the k-anonymity privacy "
+            f"floor of {MIN_BUCKET_FLOOR}; refusing to build a profile that could "
+            "encode rare real values below the minimum-aggregation data boundary."
+        )
+
     # SEC-HIGH-1 fail-closed gate (RELOCATED below the reader seam, D-05/D-12):
     # the file denylist is loaded here, but the gate now fires AFTER these terms are
     # unioned with the reader's auto-derived terms. The azure path derives a
