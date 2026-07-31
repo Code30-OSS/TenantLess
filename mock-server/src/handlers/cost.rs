@@ -24,11 +24,14 @@ use crate::{error::ApiError, state::AppState};
 use axum::{
     Json,
     extract::{Path, State},
+    http::header,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------------
@@ -384,6 +387,199 @@ fn aggregation_name(req: &QueryRequest) -> String {
 }
 
 // ---------------------------------------------------------------------------------
+// Resource-exhaustion guards — fail-closed bounds on inbound shape and result
+// size so an any-Bearer caller cannot force unbounded memory/CPU via a cost query.
+// These constants are TRUSTED server values, inlined into SQL like the closed-match
+// column literals — they never weaken the "$N binds only for user data" invariant.
+// ---------------------------------------------------------------------------------
+
+/// Maximum grouping dimensions per cost query. Azure Cost Management documents a max of
+/// 2 groupings; rejecting more BEFORE any SQL runs bounds the GROUP BY fan-out and the
+/// result cardinality at the source (faithful to Azure AND defensive).
+const MAX_COST_GROUPINGS: usize = 2;
+
+/// Hard cap on the rows a single cost query may return. The aggregate fetches
+/// `MAX_COST_QUERY_ROWS + 1` and fails closed with a 400 when the extra row exists, so a
+/// high-cardinality grouping (e.g. ResourceId → one row per resource) can never
+/// materialize an unbounded row set / JSON body. A hard 400 — never a truncated 200.
+const MAX_COST_QUERY_ROWS: usize = 1000;
+
+/// App-owned cost-query deadline (milliseconds) — the AUTHORITATIVE timeout. The whole
+/// streaming read runs inside a `tokio::time::timeout`, so an over-long query fails closed
+/// with a DETERMINISTIC 400 without parsing Postgres error text (a message match breaks
+/// under non-English `lc_messages`). See [`COST_QUERY_DB_BACKSTOP_MS`] for the server-side
+/// safety net.
+const COST_QUERY_TIMEOUT_MS: u64 = 3000;
+
+/// Postgres `statement_timeout` (milliseconds) — the server-side BACKSTOP, set LOCAL in the
+/// cost-query transaction and deliberately LONGER than [`COST_QUERY_TIMEOUT_MS`] so the app
+/// deadline is the one that normally fires. Stops a runaway server-side query if the app
+/// future is somehow not cancelled promptly. Bound as `$1` into `set_config` — never spliced.
+const COST_QUERY_DB_BACKSTOP_MS: i32 = 5000;
+
+/// Max UTF-8 bytes for a SINGLE response cell (a grouping key — resource id or JSONB tag
+/// value). Row count bounds the number of cells, but a cell's size is otherwise unbounded
+/// (profile tag values carry no `maxLength`, and a BYO-Postgres tenant is not guaranteed
+/// synthetic-bounded), so one pathological value could still blow memory. 64 KiB is far
+/// above any legitimate ARM id / tag value. Enforced SERVER-SIDE (`octet_length` + a `CASE`
+/// that NULLs an oversized value) so the big value is never transferred to / decoded in Rust
+/// — rejection AND pre-allocation safety (byte axis).
+const MAX_COST_CELL_BYTES: usize = 64 * 1024;
+
+/// Max SERIALIZED response body bytes, enforced WHILE streaming rows so the handler aborts
+/// before materializing a giant result — the row cap alone does not bound total bytes. The
+/// counter sums each cell's JSON-ESCAPED length (not raw UTF-8 — an escapable-heavy value
+/// serializes larger) plus per-row and base envelope overhead, so it bounds the actual
+/// response body. 8 MiB is generous for a bounded cost aggregate; over it fails closed
+/// (byte axis).
+const MAX_COST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Fixed serialized-byte overhead of the response envelope OUTSIDE the row cells (the
+/// `columns` array, `id`/`name`/`type`, braces). Seeded into the cumulative counter so the
+/// budget bounds the whole body. Generous constant upper bound.
+const RESPONSE_BASE_OVERHEAD_BYTES: usize = 2048;
+
+/// Per-row serialized-byte overhead OUTSIDE the grouping-key cells (the aggregation number,
+/// the `"USD"` currency cell, array brackets + commas). Added once per response row.
+const ROW_ENVELOPE_OVERHEAD_BYTES: usize = 64;
+
+/// Reject a cost query carrying more than [`MAX_COST_GROUPINGS`] grouping dimensions
+/// (exhaustion guard) with an ARM-shaped 400 BEFORE any SQL is built or run.
+/// Pure / DB-free so the "no DB round-trip on over-cap grouping" contract is provable
+/// without a database.
+fn check_grouping_limit(n: usize) -> Result<(), ApiError> {
+    if n > MAX_COST_GROUPINGS {
+        return Err(ApiError::bad_request(format!(
+            "at most {MAX_COST_GROUPINGS} grouping dimensions are supported; the request \
+             has {n} — reduce the grouping[] array to {MAX_COST_GROUPINGS} or fewer"
+        )));
+    }
+    Ok(())
+}
+
+/// The LIMIT-overflow DECISION: given the number of rows actually fetched (the
+/// query fetches [`MAX_COST_QUERY_ROWS`]` + 1`), fail closed with an ARM-shaped 400 when
+/// the count exceeds the cap. Exactly [`MAX_COST_QUERY_ROWS`] is allowed — the 200
+/// boundary. Pure / DB-free so the boundary is provable without a database.
+fn cost_rows_within_cap(fetched_len: usize) -> Result<(), ApiError> {
+    if fetched_len > MAX_COST_QUERY_ROWS {
+        return Err(ApiError::bad_request(format!(
+            "cost query result exceeds the {MAX_COST_QUERY_ROWS}-row cap; narrow the scope \
+             (subscription / resource group) or use a coarser grouping"
+        )));
+    }
+    Ok(())
+}
+
+/// The ARM 400 for an oversized response cell. The per-cell BYTE limit itself is now
+/// enforced SERVER-SIDE (a `CASE` on `octet_length` NULLs an oversized value AND it is never
+/// a hash/sort key), and a `bool_or` flag surfaces here so the handler still fails closed.
+fn oversized_cell_error() -> ApiError {
+    ApiError::bad_request(format!(
+        "cost query response cell exceeds the {MAX_COST_CELL_BYTES}-byte limit; \
+         use a coarser grouping"
+    ))
+}
+
+/// A `std::io::Write` sink that buffers output but ERRORS once `cap` bytes would be exceeded.
+/// Serializing the response through it bounds the ACTUAL body size — including all
+/// user-controlled metadata (aggregation / grouping names, scope / id) that per-cell
+/// accounting misses (P2). `over` records that the cap (not an I/O fault) stopped the write.
+struct CappedWriter {
+    buf: Vec<u8>,
+    cap: usize,
+    over: bool,
+}
+
+impl std::io::Write for CappedWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > self.cap {
+            self.over = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "cost response exceeds cap",
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Run `fut` under an app-owned deadline (P2): on elapse, fail closed with a DETERMINISTIC
+/// ARM 400 — locale-independent, no Postgres error-text parsing. Duration-parameterized so
+/// the elapsed→400 mapping is unit-testable without needing a genuinely slow query.
+async fn run_within_deadline<F>(
+    deadline: std::time::Duration,
+    fut: F,
+) -> Result<Vec<(Vec<Option<String>>, f64)>, ApiError>
+where
+    F: std::future::Future<Output = Result<Vec<(Vec<Option<String>>, f64)>, ApiError>>,
+{
+    match tokio::time::timeout(deadline, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(ApiError::bad_request(
+            "cost query too expensive; narrow the scope (subscription / resource group) or \
+             use a coarser grouping",
+        )),
+    }
+}
+
+/// Fail closed on the cumulative response byte budget (byte axis). Enforced WHILE
+/// streaming so the handler aborts before materializing an oversized result. Pure / DB-free.
+fn check_cumulative_bytes(total_len: usize) -> Result<(), ApiError> {
+    if total_len > MAX_COST_RESPONSE_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "cost query response exceeds the {MAX_COST_RESPONSE_BYTES}-byte limit; narrow \
+             the scope (subscription / resource group) or use a coarser grouping"
+        )));
+    }
+    Ok(())
+}
+
+/// Exact serialized byte length of `s` as a JSON string, INCLUDING the two surrounding
+/// quotes, matching serde_json's default escaping. The cumulative response budget
+/// counts this — not the raw UTF-8 length — so it bounds the actual response body size (a
+/// value full of escapable characters serializes larger than its raw bytes). Pure / DB-free.
+fn json_escaped_len(s: &str) -> usize {
+    let mut n = 2; // the two surrounding double-quotes
+    for c in s.chars() {
+        n += match c {
+            // serde_json escapes these to a 2-byte sequence (`\"`, `\\`, `\n`, …).
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0C}' => 2,
+            // Other C0 control chars become `\u00XX` (6 bytes).
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        };
+    }
+    n
+}
+
+/// Collapse `(group-key, total)` pairs to unique keys, summing totals — **O(n)** via a
+/// `HashMap` index into an order-preserving `Vec` (replaces the previous O(M²)
+/// `iter_mut().find` linear scan, quadratic in the number of distinct keys). Preserves
+/// FIRST-APPEARANCE order — the determinism contract: the SQL `ORDER BY` fixes
+/// appearance order and this fold keeps it, so the response row order stays stable across
+/// query plans and Postgres versions. The `type → ServiceName` service fold (D-10) happens
+/// UPSTREAM, so keys arriving here are already folded and simply re-sum on collision.
+fn fold_rows(pairs: Vec<(Vec<Option<String>>, f64)>) -> Vec<(Vec<Option<String>>, f64)> {
+    let mut index: HashMap<Vec<Option<String>>, usize> = HashMap::with_capacity(pairs.len());
+    let mut acc: Vec<(Vec<Option<String>>, f64)> = Vec::new();
+    for (key, total) in pairs {
+        match index.get(&key) {
+            Some(&i) => acc[i].1 += total,
+            None => {
+                index.insert(key.clone(), acc.len());
+                acc.push((key, total));
+            }
+        }
+    }
+    acc
+}
+
+// ---------------------------------------------------------------------------------
 // Handlers — sub scope + RG scope. Register INSIDE the auth-gated `arm` router so the
 // cost route inherits the any-Bearer scanner contract (presence-only auth). Route wiring lands in 09-05.
 // ---------------------------------------------------------------------------------
@@ -393,7 +589,7 @@ pub async fn cost_query(
     State(state): State<AppState>,
     Path(sub): Path<Uuid>,
     Json(req): Json<QueryRequest>,
-) -> Result<Json<QueryResult>, ApiError> {
+) -> Result<Response, ApiError> {
     let scope = format!("/subscriptions/{sub}");
     run_cost_query(&state, &scope, sub, None, req).await
 }
@@ -405,7 +601,7 @@ pub async fn cost_query_scoped(
     State(state): State<AppState>,
     Path((sub, rg, tail)): Path<(Uuid, String, String)>,
     Json(req): Json<QueryRequest>,
-) -> Result<Json<QueryResult>, ApiError> {
+) -> Result<Response, ApiError> {
     if tail != "Microsoft.CostManagement/query" {
         return Err(ApiError::NotFound { what: tail });
     }
@@ -422,7 +618,11 @@ async fn run_cost_query(
     sub: Uuid,
     rg: Option<String>,
     req: QueryRequest,
-) -> Result<Json<QueryResult>, ApiError> {
+) -> Result<Response, ApiError> {
+    // fail closed on an over-cap grouping[] BEFORE any SQL is built or run — an
+    // unbounded grouping array must never fan out the GROUP BY / result cardinality.
+    check_grouping_limit(req.dataset.grouping.len())?;
+
     // COST-04: Usage/ActualCost/AmortizedCost all accepted; identical SUM in v2.0
     // (amortization math deferred). granularity Daily downgrades to the monthly
     // aggregate against our monthly store (Open Question 1) — both aggregate here.
@@ -445,37 +645,64 @@ async fn run_cost_query(
         group_sql.push(group_expr(g, &mut bind_ix, &mut tag_args)?);
     }
 
-    // Each grouping expr is selected ::text (uniform read) and aliased g{i};
-    // SUM(cost_amount) is the first column.
+    // BOUNDED group/order/select key per grouping expr: the CASE result — the value
+    // when its byte length is within MAX_COST_CELL_BYTES, else NULL. GROUP BY and ORDER BY key
+    // on THIS bounded expression, so the raw oversized value is NEVER a Postgres hash/sort key
+    // (it is read once per row to compute octet_length, but never accumulated in a sort buffer
+    // or hash table). For normal (in-cap) values the CASE is identity, so grouping semantics
+    // are unchanged.
+    let bounded_keys: Vec<String> = group_sql
+        .iter()
+        .map(|e| {
+            format!(
+                "CASE WHEN octet_length(({e})::text) <= {MAX_COST_CELL_BYTES} \
+                 THEN ({e})::text ELSE NULL END"
+            )
+        })
+        .collect();
+    // Each grouping yields the bounded value `g{i}` plus `g{i}_over` = did ANY member of this
+    // group exceed the cap? (bool_or over the raw octet_length). The handler fails closed on
+    // `g{i}_over` so an oversized value still 400s even though it was never a sort/hash key.
     let select_cols: String = group_sql
         .iter()
         .enumerate()
-        .map(|(i, e)| format!(", ({e})::text AS g{i}"))
+        .map(|(i, e)| {
+            format!(
+                ", {key} AS g{i}, bool_or(octet_length(({e})::text) > {MAX_COST_CELL_BYTES}) AS g{i}_over",
+                key = bounded_keys[i]
+            )
+        })
         .collect();
-    let group_by = if group_sql.is_empty() {
+    let group_by = if bounded_keys.is_empty() {
         String::new()
     } else {
-        format!(" GROUP BY {}", group_sql.join(", "))
+        format!(" GROUP BY {}", bounded_keys.join(", "))
     };
-    // P3 fix: GROUP BY does not guarantee row order; an explicit ORDER BY on the
-    // grouping expressions makes the response row order deterministic across
-    // repeated calls, query plans, and Postgres versions (the fold below preserves
-    // first-appearance order, so a stable SQL order yields a stable response).
-    let order_by = if group_sql.is_empty() {
+    // P3 fix: GROUP BY does not guarantee row order; an explicit ORDER BY on the (bounded)
+    // grouping expressions makes the response row order deterministic across repeated calls,
+    // query plans, and Postgres versions (the fold below preserves first-appearance order, so
+    // a stable SQL order yields a stable response).
+    let order_by = if bounded_keys.is_empty() {
         String::new()
     } else {
-        format!(" ORDER BY {}", group_sql.join(", "))
+        format!(" ORDER BY {}", bounded_keys.join(", "))
     };
     let scope_pred = if rg.is_some() {
         " AND c.subscription_id = $3 AND r.resource_group_name = $4"
     } else {
         " AND c.subscription_id = $3"
     };
+    // fetch CAP+1 so an over-cap result is DETECTABLE (rows.len() > CAP → 400).
+    // The limit is a trusted server constant, inlined like the closed-match column
+    // literals — it is not user data, so it never weakens the "$N binds only for user
+    // data" invariant (T-9-01).
+    let fetch_limit = MAX_COST_QUERY_ROWS + 1;
     let sql = format!(
         "SELECT SUM(c.cost_amount) AS total{select_cols}
          FROM synthetic.cost_records c
          JOIN synthetic.resources r ON r.id = c.resource_id
-         WHERE c.billing_period BETWEEN $1::date AND $2::date{scope_pred}{group_by}{order_by}"
+         WHERE c.billing_period BETWEEN $1::date AND $2::date{scope_pred}{group_by}{order_by}
+         LIMIT {fetch_limit}"
     );
 
     // Bind order: $1 from, $2 to, $3 sub, [$4 rg], then tag keys.
@@ -486,29 +713,103 @@ async fn run_cost_query(
     for a in &tag_args {
         q = q.bind(a);
     }
-    let rows = q.fetch_all(&state.pool).await?;
 
-    // Read rows; fold type→ServiceName and re-sum rows collapsing to the same key.
-    let mut acc: Vec<(Vec<Option<String>>, f64)> = Vec::new();
-    for row in &rows {
-        let total: Option<f64> = row.try_get("total")?;
-        let total = total.unwrap_or(0.0);
-        let mut key: Vec<Option<String>> = Vec::with_capacity(group_sql.len());
-        for (i, g) in req.dataset.grouping.iter().enumerate() {
-            let raw: Option<String> = row.try_get(format!("g{i}").as_str())?;
-            let cell = if is_service_dimension(g) {
-                raw.map(|t| service_name(&t).to_string())
-            } else {
-                raw
-            };
-            key.push(cell);
+    // bound Postgres compute with a LOCAL statement_timeout — the server-side
+    // BACKSTOP (LIMIT bounds our memory but Postgres may compute all groups before applying
+    // it). The ms value is BOUND as $1 (never spliced); set_config's 3rd arg `true` scopes it
+    // LOCAL to this txn. The AUTHORITATIVE deadline is the app-owned tokio::time::timeout
+    // below — locale-independent, no Postgres error-text parsing.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+        .bind(COST_QUERY_DB_BACKSTOP_MS.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    // Precompute per-grouping "is this a ServiceName fold?" so the streaming future captures
+    // only `group_meta` + the count (not `req`) — `req`/`group_sql` stay owned for the column
+    // build below.
+    let group_meta: Vec<bool> = req
+        .dataset
+        .grouping
+        .iter()
+        .map(is_service_dimension)
+        .collect();
+    let group_count = group_meta.len();
+
+    // STREAM rows and enforce EVERY bound WHILE reading — row count, per-cell bytes
+    // (the oversized value is already NULLed server-side; `g{i}_len` carries the real byte
+    // length, so nothing huge is decoded in Rust), and cumulative SERIALIZED bytes — failing
+    // closed BEFORE materializing a large result. The whole read runs inside an app-owned
+    // deadline: on elapse we return a DETERMINISTIC 400 without parsing Postgres error text
+    // (locale-safe). Any DB error (including a backstop statement_timeout or an admin cancel)
+    // maps to a 500 via `?` — the client-facing "too expensive" signal is the app timer, not
+    // a fragile SQLSTATE + message match.
+    //
+    // The row-count cap is on RAW fetched rows (pre-fold): a query whose raw cardinality
+    // exceeds the cap is rejected even if the rows would fold to fewer service groups —
+    // deliberate, the bound is on the memory the DB hands us (with the ≤2 grouping limit and
+    // the bounded type catalogue this is unreachable in practice, but the contract is: raw
+    // rows, pre-fold). The type→ServiceName fold (D-10) is applied here, so keys are folded.
+    let read = async move {
+        let mut stream = q.fetch(&mut *tx);
+        let mut pairs: Vec<(Vec<Option<String>>, f64)> = Vec::new();
+        let mut serialized_bytes: usize = RESPONSE_BASE_OVERHEAD_BYTES;
+        while let Some(item) = stream.next().await {
+            let row = item?; // any DB error → ApiError::Internal (500)
+
+            // Row-count cap on RAW rows: LIMIT is CAP+1, so a (CAP+1)th row exceeds the cap.
+            cost_rows_within_cap(pairs.len() + 1)?;
+
+            let total: Option<f64> = row.try_get("total")?;
+            let total = total.unwrap_or(0.0);
+            serialized_bytes += ROW_ENVELOPE_OVERHEAD_BYTES;
+
+            let mut key: Vec<Option<String>> = Vec::with_capacity(group_count);
+            for (i, &is_service) in group_meta.iter().enumerate() {
+                // an oversized member is flagged server-side (`bool_or`); the raw value
+                // was never a hash/sort key and the CASE already NULLed it, so nothing huge is
+                // decoded in Rust. Fail closed here. `bool_or` is NULL for an all-NULL group
+                // (a genuinely-null grouping value) → not oversized.
+                let oversized: Option<bool> = row.try_get(format!("g{i}_over").as_str())?;
+                if oversized == Some(true) {
+                    return Err(oversized_cell_error());
+                }
+
+                let raw: Option<String> = row.try_get(format!("g{i}").as_str())?; // ≤ cap bytes
+                let cell = if is_service {
+                    raw.map(|t| service_name(&t).to_string())
+                } else {
+                    raw
+                };
+                // Cumulative memory guard (bounds the `pairs`/`acc` we build). The
+                // AUTHORITATIVE response-body bound is the CappedWriter serialization below,
+                // which also counts metadata; here we count the JSON-escaped cell length so
+                // this early abort tracks response bytes closely.
+                serialized_bytes += match &cell {
+                    Some(s) => json_escaped_len(s),
+                    None => 4, // "null"
+                };
+                check_cumulative_bytes(serialized_bytes)?;
+                key.push(cell);
+            }
+            pairs.push((key, total));
         }
-        if let Some(slot) = acc.iter_mut().find(|(k, _)| *k == key) {
-            slot.1 += total;
-        } else {
-            acc.push((key, total));
-        }
-    }
+        // The stream borrows `tx`; drop it before committing the (read-only) transaction.
+        drop(stream);
+        tx.commit().await?;
+        Ok::<Vec<(Vec<Option<String>>, f64)>, ApiError>(pairs)
+    };
+
+    // App-owned deadline (authoritative, locale-independent) — see `run_within_deadline`.
+    // On elapse it returns the ARM 400; the future is dropped, rolling back the read-only tx.
+    let pairs = run_within_deadline(
+        std::time::Duration::from_millis(COST_QUERY_TIMEOUT_MS),
+        read,
+    )
+    .await?;
+
+    // Re-sum rows collapsing to the same key — O(n), first-appearance order preserved.
+    let acc = fold_rows(pairs);
 
     // Columns: aggregation (Number) first, then one String per grouping, then Currency.
     let mut columns = vec![QueryColumn {
@@ -545,16 +846,42 @@ async fn run_cost_query(
         .collect();
 
     let guid = Uuid::new_v4().to_string();
-    Ok(Json(QueryResult {
+    let result = QueryResult {
         id: format!("{scope}/providers/Microsoft.CostManagement/Query/{guid}"),
         name: guid,
         r#type: "microsoft.costmanagement/Query".to_string(),
         properties: QueryProperties {
             columns,
             rows: rows_out,
-            next_link: None, // nextLink = null for v2.0 (small grouping cardinalities)
+            // nextLink is always null: the result is bounded fail-closed by
+            // MAX_COST_QUERY_ROWS + the byte budget. An over-cap query returns a hard
+            // 400 (narrow scope / coarser grouping), it does NOT paginate, so a non-null
+            // nextLink could never be honored.
+            next_link: None,
         },
-    }))
+    };
+
+    // P2: serialize through a capped writer so the AUTHORITATIVE response-body bound covers
+    // ALL fields — including the user-controlled aggregation name, grouping (column) names and
+    // scope/id that per-cell accounting misses. Over the cap → a fail-closed 400, never a
+    // response larger than the documented limit.
+    let mut writer = CappedWriter {
+        buf: Vec::new(),
+        cap: MAX_COST_RESPONSE_BYTES,
+        over: false,
+    };
+    match serde_json::to_writer(&mut writer, &result) {
+        Ok(()) => {}
+        Err(_) if writer.over => {
+            return Err(ApiError::bad_request(format!(
+                "cost query response exceeds the {MAX_COST_RESPONSE_BYTES}-byte limit; narrow \
+                 the scope (subscription / resource group) or use a coarser grouping"
+            )));
+        }
+        Err(e) => return Err(ApiError::Internal(format!("cost response serialize: {e}"))),
+    }
+
+    Ok(([(header::CONTENT_TYPE, "application/json")], writer.buf).into_response())
 }
 
 #[cfg(test)]
@@ -621,6 +948,233 @@ mod tests {
         let mut bi = 3;
         let mut a = Vec::<String>::new();
         assert!(group_expr(&bad, &mut bi, &mut a).is_err());
+    }
+
+    /// (a): the grouping-count guard rejects more than MAX_COST_GROUPINGS with an
+    /// ARM-shaped 400 — pure/DB-free, so this fires BEFORE any SQL round-trip.
+    #[test]
+    fn grouping_guard_rejects_more_than_two() {
+        let err = check_grouping_limit(MAX_COST_GROUPINGS + 1).expect_err("3 groupings → 400");
+        assert!(
+            matches!(err, ApiError::BadRequest { .. }),
+            "over-cap grouping must be a 400 BadRequest, got {err:?}"
+        );
+    }
+
+    /// (a): zero and exactly MAX_COST_GROUPINGS groupings are allowed.
+    #[test]
+    fn grouping_guard_allows_zero_and_two() {
+        assert!(check_grouping_limit(0).is_ok(), "0 groupings is allowed");
+        assert!(
+            check_grouping_limit(MAX_COST_GROUPINGS).is_ok(),
+            "exactly MAX_COST_GROUPINGS is allowed"
+        );
+    }
+
+    /// (LIMIT-overflow decision): exactly MAX_COST_QUERY_ROWS is the 200 boundary.
+    #[test]
+    fn row_cap_allows_exactly_cap() {
+        assert!(
+            cost_rows_within_cap(MAX_COST_QUERY_ROWS).is_ok(),
+            "exactly CAP rows → Ok (the 200 boundary)"
+        );
+    }
+
+    /// (c): CAP+1 rows fail closed with an ARM-shaped 400 — never a partial 200.
+    #[test]
+    fn row_cap_rejects_cap_plus_one() {
+        let err = cost_rows_within_cap(MAX_COST_QUERY_ROWS + 1).expect_err("CAP+1 → 400");
+        assert!(
+            matches!(err, ApiError::BadRequest { .. }),
+            "CAP+1 must be a 400 BadRequest, got {err:?}"
+        );
+    }
+
+    /// (byte axis): the oversized-cell error is an ARM 400 (the per-cell limit itself
+    /// is enforced server-side via the CASE + bool_or flag; this maps the flag to a 400).
+    #[test]
+    fn oversized_cell_is_400() {
+        assert!(
+            matches!(oversized_cell_error(), ApiError::BadRequest { .. }),
+            "oversized cell must be a 400 BadRequest"
+        );
+    }
+
+    /// P2: the CappedWriter accepts writes up to `cap` and fails closed (setting `over`) on
+    /// the write that would exceed it — the mechanism that bounds the SERIALIZED response body
+    /// including user-controlled metadata.
+    #[test]
+    fn capped_writer_fails_closed_over_cap() {
+        use std::io::Write as _;
+        let mut w = CappedWriter {
+            buf: Vec::new(),
+            cap: 8,
+            over: false,
+        };
+        assert!(w.write_all(b"12345").is_ok(), "within cap ok");
+        assert!(w.write_all(b"678").is_ok(), "exactly at cap ok");
+        assert!(!w.over, "not over at exactly cap");
+        let err = w.write_all(b"9").expect_err("over cap must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::WriteZero);
+        assert!(w.over, "over flag set once the cap is crossed");
+        // serde_json serializing a value larger than the cap trips `over`.
+        let mut w2 = CappedWriter {
+            buf: Vec::new(),
+            cap: 4,
+            over: false,
+        };
+        assert!(serde_json::to_writer(&mut w2, &"a long string value").is_err());
+        assert!(w2.over, "serde overflow sets the cap flag");
+    }
+
+    /// (byte axis): cumulative bytes at the budget are allowed; over it → ARM 400.
+    #[test]
+    fn cumulative_bytes_boundary() {
+        assert!(
+            check_cumulative_bytes(MAX_COST_RESPONSE_BYTES).is_ok(),
+            "exactly the cumulative budget is allowed"
+        );
+        let err = check_cumulative_bytes(MAX_COST_RESPONSE_BYTES + 1)
+            .expect_err("over-budget response → 400");
+        assert!(
+            matches!(err, ApiError::BadRequest { .. }),
+            "an over-budget response must be a 400, got {err:?}"
+        );
+    }
+
+    /// (byte axis, serialized): `json_escaped_len` matches serde_json's exact
+    /// serialized length (incl. quotes) so the cumulative budget bounds the RESPONSE body,
+    /// not raw UTF-8. Cross-checked against `serde_json::to_string` on the same inputs.
+    #[test]
+    fn json_escaped_len_matches_serde() {
+        for s in [
+            "",
+            "plain",
+            "with \"quotes\" and \\backslash",
+            "tabs\tand\nnewlines",
+            "unicode: café — ☃",
+            "\u{0001}\u{001f}", // C0 controls → \u00XX (6 bytes each)
+        ] {
+            let expected = serde_json::to_string(s).expect("serialize str").len();
+            assert_eq!(
+                json_escaped_len(s),
+                expected,
+                "escaped len must match serde_json for {s:?}"
+            );
+        }
+        // An escapable-heavy value serializes LARGER than its raw byte length — the reason
+        // the cumulative budget must count escaped, not raw, bytes.
+        let quotes = "\"".repeat(100);
+        assert!(
+            json_escaped_len(&quotes) > quotes.len(),
+            "escaping must inflate the counted length"
+        );
+    }
+
+    /// P2 (timeout): an ELAPSED app deadline maps to an ARM 400 — deterministic and
+    /// locale-independent, proven without a slow query by parameterizing the deadline. The
+    /// slow future never completes (the timeout drops it), so the test is fast.
+    #[tokio::test]
+    async fn deadline_elapsed_maps_to_400() {
+        let slow = async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            Ok::<Vec<(Vec<Option<String>>, f64)>, ApiError>(vec![])
+        };
+        let err = run_within_deadline(std::time::Duration::from_millis(5), slow)
+            .await
+            .expect_err("elapsed deadline → 400");
+        assert!(
+            matches!(err, ApiError::BadRequest { .. }),
+            "deadline elapse must be a 400, got {err:?}"
+        );
+    }
+
+    /// P2 (timeout): a future that finishes within the deadline passes through unchanged
+    /// (Ok and Err results are both forwarded verbatim — the deadline only adds the 400).
+    #[tokio::test]
+    async fn deadline_not_elapsed_passes_through() {
+        let fast = async {
+            Ok::<Vec<(Vec<Option<String>>, f64)>, ApiError>(vec![(
+                vec![Some("a".to_string())],
+                1.0,
+            )])
+        };
+        let out = run_within_deadline(std::time::Duration::from_secs(3600), fast)
+            .await
+            .expect("within deadline");
+        assert_eq!(
+            out.len(),
+            1,
+            "result forwarded verbatim when within deadline"
+        );
+    }
+
+    /// (f): the O(n) fold preserves FIRST-APPEARANCE order (the determinism
+    /// contract) and re-sums a repeated key into its first slot.
+    #[test]
+    fn fold_preserves_first_appearance_order() {
+        let key = |s: &str| vec![Some(s.to_string())];
+        let pairs = vec![
+            (key("A"), 1.0),
+            (key("B"), 2.0),
+            (key("A"), 3.0), // re-sum into A's first slot
+            (key("C"), 4.0),
+        ];
+        let out = fold_rows(pairs);
+        let order: Vec<String> = out.iter().map(|(k, _)| k[0].clone().unwrap()).collect();
+        assert_eq!(
+            order,
+            vec!["A", "B", "C"],
+            "first-appearance order preserved"
+        );
+        assert_eq!(out[0].1, 4.0, "A re-summed (1.0 + 3.0)");
+        assert_eq!(out[1].1, 2.0);
+        assert_eq!(out[2].1, 4.0);
+    }
+
+    /// (f): two rows folding to the same (service) key sum into one row, not two.
+    #[test]
+    fn fold_resums_duplicate_keys() {
+        let key = |s: &str| vec![Some(s.to_string()), None];
+        let pairs = vec![
+            (key("Storage"), 10.0),
+            (key("Storage"), 5.5), // service-fold collapse
+            (key("Compute"), 2.0),
+        ];
+        let out = fold_rows(pairs);
+        assert_eq!(out.len(), 2, "duplicate keys collapse to one row");
+        assert_eq!(out[0], (key("Storage"), 15.5));
+        assert_eq!(out[1], (key("Compute"), 2.0));
+    }
+
+    /// (f): the fold stays CORRECT at scale — ≥5000 distinct keys, each also re-summed
+    /// on a second pass, preserving first-appearance order. O(n) is guaranteed structurally by
+    /// the `HashMap`-indexed lookup in `fold_rows` (not by a wall-clock assertion — a timing
+    /// bound is flaky under loaded CI / emulation and doesn't mathematically prove complexity;
+    /// if a throughput regression check is ever wanted it belongs in a benchmark, not a unit
+    /// test).
+    #[test]
+    fn fold_is_correct_on_large_input() {
+        let n = 5000usize;
+        let mut pairs: Vec<(Vec<Option<String>>, f64)> = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            pairs.push((vec![Some(format!("k{i}"))], 1.0));
+        }
+        for i in 0..n {
+            pairs.push((vec![Some(format!("k{i}"))], 2.0)); // every one re-sums
+        }
+        let out = fold_rows(pairs);
+        assert_eq!(out.len(), n, "exactly n distinct keys");
+        assert!(
+            out.iter().all(|(_, t)| (*t - 3.0).abs() < 1e-9),
+            "each key re-summed to 3.0 (1.0 + 2.0)"
+        );
+        assert_eq!(
+            out[0].0,
+            vec![Some("k0".to_string())],
+            "first-appearance order"
+        );
+        assert_eq!(out[n - 1].0, vec![Some(format!("k{}", n - 1))]);
     }
 
     /// COST-03: each timeframe enum maps to a `(from, to)` date pair; the four CONTEXT
