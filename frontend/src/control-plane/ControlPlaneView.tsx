@@ -11,17 +11,20 @@
  * `/control-plane/:section` route, 17-06) and a persistent single-writer `BusyLockBanner` (D-11) that
  * is visible across all screens while the active job is `queued`/`running` — derived from `useJob`.
  *
- * The active job is owned HERE (a single source of truth): forms report a started job via `onStarted`,
- * and the busy state (which disables every start-action) is derived from that one job.
+ * The active job is owned by the app-level `JobProvider` (JobContext, mounted above <Routes> so it
+ * survives route changes); this view is a pure CONSUMER via `useJobContext()`. Forms report a started
+ * job via `onStarted = reportJob`, and the busy state (which disables every start-action) is read from
+ * the provider — so a job that succeeds after the operator leaves this view still invalidates the cache.
  */
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
 import { ArmError } from '../api/client';
-import { controlGet, setControlToken, useJob } from '../api/control';
+import { controlGet, setControlToken } from '../api/control';
 import AnalyzeForm from './AnalyzeForm';
 import ControlTokenGate from './ControlTokenGate';
 import GenerateForm from './GenerateForm';
+import { useJobContext } from './JobContext';
 import ServerStatusView from './ServerStatusView';
 import TenantsManager from './TenantsManager';
 import styles from './controls.module.css';
@@ -58,10 +61,11 @@ export default function ControlPlaneView() {
 
   const [arm, setArm] = useState<ArmState>('loading');
   const [unlocked, setUnlocked] = useState(false);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
-  const { data: activeJob } = useJob(activeJobId);
-  const busy = activeJob?.status === 'queued' || activeJob?.status === 'running';
+  // The active job (id, busy state, and the completion-driven full invalidation) is owned by the
+  // app-level JobProvider so it survives navigation away from this view. This view only
+  // consumes it: forms report a started job through `reportJob`.
+  const { activeJobId, busy, reportJob } = useJobContext();
 
   // Probe ONCE on mount to distinguish disarmed (404) from armed (needs a token).
   useEffect(() => {
@@ -112,7 +116,7 @@ export default function ControlPlaneView() {
     );
   }
 
-  const sectionProps: ControlSectionProps = { busy, activeJobId, onStarted: setActiveJobId };
+  const sectionProps: ControlSectionProps = { busy, activeJobId, onStarted: reportJob };
 
   return (
     <div className={styles.view}>
@@ -154,7 +158,7 @@ export default function ControlPlaneView() {
         <>
           <div className={styles.lockStrip}>
             <span>control token active</span>
-            <button type="button" className={styles.lockBtn} onClick={lock}>
+            <button type="button" className={styles.lockBtn} onClick={lock} disabled={busy}>
               lock
             </button>
           </div>

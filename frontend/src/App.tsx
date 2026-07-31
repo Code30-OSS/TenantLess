@@ -5,6 +5,7 @@ import ResourcesView from './explorer/ResourcesView';
 import DependenciesView from './explorer/DependenciesView';
 import ConsoleView from './console/ConsoleView';
 import ControlPlaneView from './control-plane/ControlPlaneView';
+import { JobProvider } from './control-plane/JobContext';
 import OverviewView from './overview/OverviewView';
 import CatalogView from './demo/CatalogView';
 import ScannerConfigView from './demo/ScannerConfigView';
@@ -34,20 +35,25 @@ import ViewerView from './demo/ViewerView';
  */
 export default function App() {
   return (
-    <Routes>
-      <Route element={<AppShell />}>
-        <Route index element={<Navigate to="overview" replace />} />
-        <Route path="overview" element={<OverviewView />} />
-        <Route path="explorer/resources" element={<ResourcesView />} />
-        <Route path="explorer/dependencies" element={<DependenciesView />} />
-        <Route path="console" element={<ConsoleView />} />
-        <Route path="control-plane" element={<Navigate to="/control-plane/generate" replace />} />
-        <Route path="control-plane/:section" element={<ControlPlaneView />} />
-        <Route path="demo" element={<Navigate to="/demo/catalog" replace />} />
-        <Route path="demo/catalog" element={<CatalogView />} />
-        <Route path="demo/scanner" element={<ScannerConfigView />} />
-        <Route path="demo/viewer" element={<ViewerView />} />
-      </Route>
-    </Routes>
+    // JobProvider sits ABOVE <Routes> (never unmounts on navigation), so a control-plane job that
+    // reaches `succeeded` after the operator leaves the control plane still fires the completion-driven
+    // full invalidation — stale-after-success closed even for the navigate-away-mid-job case.
+    <JobProvider>
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route index element={<Navigate to="overview" replace />} />
+          <Route path="overview" element={<OverviewView />} />
+          <Route path="explorer/resources" element={<ResourcesView />} />
+          <Route path="explorer/dependencies" element={<DependenciesView />} />
+          <Route path="console" element={<ConsoleView />} />
+          <Route path="control-plane" element={<Navigate to="/control-plane/generate" replace />} />
+          <Route path="control-plane/:section" element={<ControlPlaneView />} />
+          <Route path="demo" element={<Navigate to="/demo/catalog" replace />} />
+          <Route path="demo/catalog" element={<CatalogView />} />
+          <Route path="demo/scanner" element={<ScannerConfigView />} />
+          <Route path="demo/viewer" element={<ViewerView />} />
+        </Route>
+      </Routes>
+    </JobProvider>
   );
 }

@@ -12,8 +12,10 @@
  * `window.location.origin` (D-06 same-origin embed under /ui), not a hardcoded host.
  *
  * Manual Refresh (UAT Gap 5, D-04): the app is no-poll (staleTime Infinity + implicit refetch off in
- * main.tsx). Refresh is the ONLY re-fetch path — it calls `queryClient.invalidateQueries()` on click;
- * no polling / refetchInterval is reintroduced here.
+ * main.tsx). Refresh is the MANUAL re-fetch path — it calls `queryClient.invalidateQueries()` on click;
+ * no polling / refetchInterval is reintroduced here. It is not the only refresh path: a control-plane
+ * job reaching `succeeded` ALSO fires a full invalidation via the app-level JobProvider. The
+ * Refresh button code/behavior below is unchanged.
  *
  * Summary string values render as auto-escaped JSX text (no dangerouslySetInnerHTML) — T-15-13.
  */
@@ -38,9 +40,9 @@ export default function Topbar({ theme, onToggleTheme }: TopbarProps) {
   const { data, isLoading, isError } = useSummary();
   const queryClient = useQueryClient();
 
-  const seedText = data ? String(data.seed) : '—';
+  const seedText = data && data.seed != null ? String(data.seed) : '—';
   const profileText = data?.profile ?? '—';
-  const tenantText = data ? shortTenant(data.tenantId) : '—';
+  const tenantText = data && data.tenantId != null ? shortTenant(data.tenantId) : '—';
 
   const status = isLoading ? 'connecting' : isError ? 'error' : 'running';
 

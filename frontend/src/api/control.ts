@@ -16,6 +16,7 @@
  * - On a 401/403 the consuming view calls `setControlToken(null)` to re-lock the plane; `isAuthError`
  *   is the shared predicate so every surface drops to the token gate uniformly.
  */
+import { useEffect, useRef } from 'react';
 import {
   useMutation,
   useQuery,
@@ -68,27 +69,25 @@ export function isAuthError(err: unknown): boolean {
 // Mutations — the app's FIRST useMutation (CTRL-01)
 // ---------------------------------------------------------------------------
 
-/** Start a `generate` job → `202 {job_id}`. On success, refresh the tenant meta (`['summary']`). */
+/**
+ * Start a `generate` job → `202 {job_id}`. Submit only ACCEPTS the job — the tenant is not yet
+ * changed, so there is NO submit-time invalidation (that was the stale-after-success bug). The
+ * Explorer refreshes when the owned active job reaches `succeeded` via {@link useInvalidateOnJobSuccess}.
+ */
 export function useStartGenerate(): UseMutationResult<{ job_id: string }, Error, GenerateArgs> {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: GenerateArgs) => controlPost<{ job_id: string }>('/_control/generate', args),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['summary'] }),
   });
 }
 
 /**
- * Start an `analyze` job → `202 {job_id}`. On success ALSO invalidates `['control-profiles']` so the
- * freshly derived profile appears in the Generate PROFILE select (D-12).
+ * Start an `analyze` job → `202 {job_id}`. No submit-time invalidation: the freshly derived profile
+ * appears in the Generate PROFILE select when the job reaches `succeeded` (the completion full-invalidate
+ * in {@link useInvalidateOnJobSuccess} covers `['control-profiles']`), not at 202-submit (D-12).
  */
 export function useStartAnalyze(): UseMutationResult<{ job_id: string }, Error, AnalyzeArgs> {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: AnalyzeArgs) => controlPost<{ job_id: string }>('/_control/analyze', args),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['summary'] });
-      void qc.invalidateQueries({ queryKey: ['control-profiles'] });
-    },
   });
 }
 
@@ -108,6 +107,32 @@ export function useJob(id: string | null): UseQueryResult<JobSnapshot, Error> {
     enabled: Boolean(id),
     refetchInterval: (query) => jobRefetchInterval(query.state.data?.status),
   });
+}
+
+/**
+ * Completion-driven full cache refresh ("stale-after-success"). Tenant-mutating control-plane
+ * actions are async JOBS: their `202` submit only means "job accepted", NOT "tenant changed" — so a
+ * submit-time invalidation is mistimed. This hook watches the SINGLE owned active job and, the moment
+ * it reports `succeeded`, invalidates the ENTIRE cache with NO queryKey argument (identical to the
+ * Topbar Refresh) so every Explorer family (`['summary']`, `['control-profiles']`, `['snapshots']`, …)
+ * self-heals with no manual Refresh.
+ *
+ * Guarded by a `useRef` keyed on the job id so it fires EXACTLY ONCE per succeeded job — never a storm
+ * from the active-only poll refetch, React StrictMode's double-invoke, or an unrelated rerender. A
+ * later, different succeeded job id invalidates again. Non-terminal states (`queued`/`running`/`failed`/
+ * `undefined`) are no-ops. Invoked by the app-level `JobProvider` (JobContext, mounted above <Routes>) —
+ * the single holder of `activeJob` — so a job that succeeds after the operator navigates away still fires
+ * exactly one invalidation; `ControlPlaneView` is a pure consumer.
+ */
+export function useInvalidateOnJobSuccess(job: JobSnapshot | undefined, jobId: string | null): void {
+  const qc = useQueryClient();
+  const invalidatedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (jobId && job?.status === 'succeeded' && invalidatedRef.current !== jobId) {
+      invalidatedRef.current = jobId;
+      void qc.invalidateQueries();
+    }
+  }, [job?.status, jobId, qc]);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,14 +189,9 @@ export function useSaveSnapshot(): UseMutationResult<{ job_id: string }, Error, 
  * the server also safe-name-validates it.
  */
 export function useRestoreSnapshot(): UseMutationResult<{ job_id: string }, Error, { name: string }> {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ name }: { name: string }) =>
       controlPost<{ job_id: string }>(`/_control/snapshots/${encodeURIComponent(name)}/restore`, {}),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['summary'] });
-      void qc.invalidateQueries({ queryKey: ['snapshots'] });
-    },
   });
 }
 
@@ -185,11 +205,12 @@ export function useDeleteSnapshot(): UseMutationResult<unknown, Error, { name: s
   });
 }
 
-/** Reset the active tenant to empty (`POST /_control/reset`) → `202 {job_id}` (CTRL-03, D-09). */
+/**
+ * Reset the active tenant to empty (`POST /_control/reset`) → `202 {job_id}` (CTRL-03, D-09). No
+ * submit-time invalidation — the Explorer refreshes when the reset job reaches `succeeded`.
+ */
 export function useReset(): UseMutationResult<{ job_id: string }, Error, void> {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: () => controlPost<{ job_id: string }>('/_control/reset', {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['summary'] }),
   });
 }

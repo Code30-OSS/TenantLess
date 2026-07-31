@@ -23,8 +23,9 @@ import {
   useSaveSnapshot,
   useRestoreSnapshot,
   useDeleteSnapshot,
+  useInvalidateOnJobSuccess,
 } from './control';
-import type { GenerateArgs } from './types';
+import type { GenerateArgs, JobSnapshot } from './types';
 
 /**
  * The control-plane data contract (CTRL-01 / CTRL-05, Phase 17) — the app's FIRST write surface.
@@ -257,7 +258,7 @@ describe('isAuthError — 401/403 drops to the token gate (CTRL-05)', () => {
 });
 
 describe('useStartGenerate / useStartAnalyze — the app FIRST useMutation (CTRL-01)', () => {
-  it('useStartGenerate POSTs /_control/generate with the args and invalidates [summary]', async () => {
+  it('useStartGenerate POSTs /_control/generate with the args and does NOT invalidate at submit', async () => {
     setControlToken('s');
     fetchMock.mockResolvedValue(okJson({ job_id: 'j1' }));
     const { wrapper, qc } = hookWrapper();
@@ -273,10 +274,11 @@ describe('useStartGenerate / useStartAnalyze — the app FIRST useMutation (CTRL
     );
     const [, init] = fetchMock.mock.calls[0];
     expect((init as RequestInit).body).toBe(JSON.stringify(GEN_ARGS));
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['summary'] });
+    // Submit only ACCEPTS the job (tenant not yet changed) — the refresh is completion-driven.
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
-  it('useStartAnalyze POSTs /_control/analyze and invalidates [summary] + [control-profiles] (D-12)', async () => {
+  it('useStartAnalyze POSTs /_control/analyze and does NOT invalidate at submit (D-12)', async () => {
     setControlToken('s');
     fetchMock.mockResolvedValue(okJson({ job_id: 'j2' }));
     const { wrapper, qc } = hookWrapper();
@@ -290,8 +292,79 @@ describe('useStartGenerate / useStartAnalyze — the app FIRST useMutation (CTRL
       '/_control/analyze',
       expect.objectContaining({ method: 'POST' }),
     );
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['summary'] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['control-profiles'] });
+    // The freshly derived profile now appears in the PROFILE select via the completion full-invalidate
+    // (useInvalidateOnJobSuccess, covered above), NOT via a submit-time ['control-profiles'] invalidation.
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('useInvalidateOnJobSuccess — completion-driven full refresh', () => {
+  const succeeded = (): JobSnapshot => ({ status: 'succeeded', log: [] });
+  const queued = (): JobSnapshot => ({ status: 'queued', log: [] });
+
+  it('a succeeded job triggers exactly ONE full (no-arg) invalidateQueries (test 2)', () => {
+    const { wrapper, qc } = hookWrapper();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+
+    renderHook(
+      ({ job, id }: { job: JobSnapshot | undefined; id: string | null }) =>
+        useInvalidateOnJobSuccess(job, id),
+      { wrapper, initialProps: { job: succeeded(), id: 'job-1' } },
+    );
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    // Full/all-families invalidation — the SAME shape as the Topbar Refresh: NO queryKey argument.
+    expect(invalidate).toHaveBeenCalledWith();
+  });
+
+  it('never re-invalidates for the SAME succeeded job id across rerenders (ref guard, test 3)', () => {
+    const { wrapper, qc } = hookWrapper();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+
+    const { rerender } = renderHook(
+      ({ job, id }: { job: JobSnapshot | undefined; id: string | null }) =>
+        useInvalidateOnJobSuccess(job, id),
+      { wrapper, initialProps: { job: succeeded(), id: 'job-1' } },
+    );
+
+    // The `useRef` guard is idempotent across ordinary re-renders — e.g. an active-poll refetch that
+    // re-reads the SAME succeeded job id, or any unrelated parent rerender. (No StrictMode effect
+    // replay is exercised here; a plain `rerender` is a re-render, not a mount/unmount/remount.)
+    rerender({ job: succeeded(), id: 'job-1' });
+    rerender({ job: succeeded(), id: 'job-1' });
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later, DIFFERENT succeeded job id invalidates again (test 4)', () => {
+    const { wrapper, qc } = hookWrapper();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+
+    const { rerender } = renderHook(
+      ({ job, id }: { job: JobSnapshot | undefined; id: string | null }) =>
+        useInvalidateOnJobSuccess(job, id),
+      { wrapper, initialProps: { job: succeeded(), id: 'job-1' } },
+    );
+
+    rerender({ job: succeeded(), id: 'job-2' });
+
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it('non-terminal / undefined states are NO-OPS (queued or no job → never invalidates)', () => {
+    const { wrapper, qc } = hookWrapper();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+
+    const { rerender } = renderHook(
+      ({ job, id }: { job: JobSnapshot | undefined; id: string | null }) =>
+        useInvalidateOnJobSuccess(job, id),
+      { wrapper, initialProps: { job: undefined, id: null } },
+    );
+
+    rerender({ job: queued(), id: 'job-1' });
+    rerender({ job: { status: 'running', log: [] }, id: 'job-1' });
+
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });
 
@@ -358,7 +431,7 @@ describe('useSources / useProfiles — server-populated selects (CTRL-01, D-12)'
 });
 
 describe('reset + snapshot mutations (17-04 endpoints)', () => {
-  it('useReset POSTs /_control/reset and invalidates [summary]', async () => {
+  it('useReset POSTs /_control/reset and does NOT invalidate at submit', async () => {
     setControlToken('s');
     fetchMock.mockResolvedValue(okJson({ job_id: 'r1' }));
     const { wrapper, qc } = hookWrapper();
@@ -372,7 +445,8 @@ describe('reset + snapshot mutations (17-04 endpoints)', () => {
       '/_control/reset',
       expect.objectContaining({ method: 'POST' }),
     );
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['summary'] });
+    // Reset is a 202 job — the Explorer refreshes on its `succeeded` transition, not at submit.
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it('useSaveSnapshot POSTs /_control/snapshots and invalidates [snapshots]', async () => {
@@ -392,10 +466,11 @@ describe('reset + snapshot mutations (17-04 endpoints)', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['snapshots'] });
   });
 
-  it('useRestoreSnapshot POSTs /_control/snapshots/{name}/restore with the name encoded', async () => {
+  it('useRestoreSnapshot POSTs /_control/snapshots/{name}/restore (name encoded) and does NOT invalidate at submit', async () => {
     setControlToken('s');
     fetchMock.mockResolvedValue(okJson({ job_id: 's2' }));
-    const { wrapper } = hookWrapper();
+    const { wrapper, qc } = hookWrapper();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
 
     const { result } = renderHook(() => useRestoreSnapshot(), { wrapper });
     result.current.mutate({ name: 'a b' });
@@ -405,6 +480,8 @@ describe('reset + snapshot mutations (17-04 endpoints)', () => {
       '/_control/snapshots/a%20b/restore',
       expect.objectContaining({ method: 'POST' }),
     );
+    // Restore is a 202 hot-swap job — the Explorer refreshes on its `succeeded` transition, not at submit.
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it('useDeleteSnapshot DELETEs /_control/snapshots/{name} and succeeds on a real 204', async () => {

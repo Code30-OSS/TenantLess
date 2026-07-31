@@ -16,6 +16,7 @@ vi.mock('./api/control', () => ({
   controlGet: () => Promise.reject(new ArmError('NotFound', 'not found', 404)),
   setControlToken: () => {},
   useJob: () => ({ data: undefined }),
+  useInvalidateOnJobSuccess: () => {},
 }));
 
 /**

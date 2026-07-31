@@ -10,9 +10,14 @@ import './styles/global.css';
 /**
  * Provider stack for the routed app (WEBUI-04, RESEARCH Pattern 4).
  *
- * D-04 — static tenant, NO polling: the QueryClient caches every fetched view indefinitely
- * (`staleTime: Infinity`) and disables every implicit refetch (focus / reconnect / interval).
- * A manual Refresh in the views is the only re-fetch path; the app never background-polls.
+ * D-04 — static tenant, no background polling under the ARM/Explorer QueryClient DEFAULTS below:
+ * every fetched view is cached indefinitely (`staleTime: Infinity`) with every implicit refetch off
+ * (focus / reconnect / interval), so a manual Refresh in the views is the manual re-fetch path.
+ * The one deliberate exception is NOT a default: the app-level JobProvider (JobContext) runs an
+ * ACTIVE-ONLY poll of the single in-flight control job (via `useJob`'s `refetchInterval`, which polls
+ * only while `queued`/`running` and stops at a terminal status). When that job reaches `succeeded` it
+ * fires a full `invalidateQueries()`, so the Explorer self-heals after a job completes — even if the
+ * operator has navigated away from the control plane.
  *
  * D-06 — the SPA is embedded under `/ui`: BrowserRouter `basename="/ui"` mirrors Vite's
  * `base: '/ui/'` (15-01) so routing works identically in dev (proxy) and the embedded prod mount.
