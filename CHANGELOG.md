@@ -9,6 +9,24 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.3 — Fix: bound the Cost Management query against resource exhaustion
+
+Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is
+unchanged. Well-formed cost queries behave exactly as before; only abusive or pathological
+queries are now rejected instead of consuming unbounded server resources.
+
+### Fixed
+
+- **The Cost Management query endpoint now fails closed on pathological inputs instead of
+  exhausting server memory or compute.** Four bounds are enforced: a grouping-count guard
+  rejects more than the ARM-documented maximum before any SQL is built; the result set is
+  capped and an over-cap query returns a hard ARM-shaped `400` (never a partial `200`); a
+  per-cell and cumulative response-byte budget is enforced *while streaming* rows, with the
+  oversized-cell check pushed server-side so a huge value never crosses the wire; and an
+  app-owned deadline bounds Postgres compute so an inherently high-cardinality aggregation is
+  aborted deterministically. The response fold was also made `O(n)` (from `O(M²)`) while
+  preserving first-appearance ordering.
+
 ## 1.1.2 — Fix: make snapshot restore validate-before-destroy and save atomic
 
 Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is

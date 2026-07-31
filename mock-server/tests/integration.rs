@@ -1555,6 +1555,346 @@ mod cost {
             "every cost_records.resource_id must resolve to a real resource"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Cost Query resource-exhaustion bounds. These seed a DEDICATED
+    // subscription (isolated from SUB_A/SUB_B, so the reconciliation/count
+    // assertions above stay green — project memory: fixture coupling) with
+    // enough distinct resources that a ResourceId grouping crosses the
+    // MAX_COST_QUERY_ROWS cap (1000). They share `cost_app()`/`start_pg` and so
+    // require Docker: CI-run / local-via-Docker, NOT `#[ignore]`d, NOT
+    // skip-clean (start_pg panics without a daemon — that is env, not failure).
+    // -----------------------------------------------------------------------
+
+    /// The MAX_COST_QUERY_ROWS cap mirrored from `handlers::cost` (crate-private
+    /// there; the integration crate can't import it). Keep in sync if it changes.
+    const CAP: i32 = 1000;
+
+    /// Seed a dedicated subscription with `n` distinct resources, each carrying one
+    /// cost row in the COST window — so a sub-scope ResourceId grouping yields exactly
+    /// `n` groups. Bulk-inserted via `generate_series` (fast enough under the 3s
+    /// statement_timeout on a testcontainer).
+    async fn seed_over_cap_scope(pool: &PgPool, sub: uuid::Uuid, n: i32) {
+        sqlx::query(
+            r#"INSERT INTO synthetic.subscriptions
+                   (subscription_id, tenant_id, display_name, state, archetype,
+                    tags, authorization_source, spending_limit)
+               VALUES ($1, $2, 'Cap-Test', 'Enabled', 'prod', '{}'::jsonb, 'RoleBased', 'Off')"#,
+        )
+        .bind(sub)
+        .bind(common::TENANT_ID)
+        .execute(pool)
+        .await
+        .expect("insert cap subscription");
+
+        let rg = "rg-cap-000";
+        let rg_id = format!("/subscriptions/{sub}/resourceGroups/{rg}");
+        sqlx::query(
+            r#"INSERT INTO synthetic.resource_groups
+                   (id, subscription_id, name, location, template_type, tags, provisioning_state)
+               VALUES ($1, $2, $3, 'eastus', 'network', '{}'::jsonb, 'Succeeded')"#,
+        )
+        .bind(&rg_id)
+        .bind(sub)
+        .bind(rg)
+        .execute(pool)
+        .await
+        .expect("insert cap resource group");
+
+        // n distinct resources under the dedicated sub/RG.
+        sqlx::query(
+            r#"INSERT INTO synthetic.resources
+                   (id, subscription_id, resource_group_name, name, type, location,
+                    tags, sku, kind, properties, provisioning_state, managed_by)
+               SELECT
+                   format('/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Storage/storageAccounts/cap-%s',
+                          $1::text, $2::text, g),
+                   $1, $2, format('cap-%s', g), 'Microsoft.Storage/storageAccounts', 'eastus',
+                   '{}'::jsonb, NULL, NULL, '{}'::jsonb, 'Succeeded', NULL
+               FROM generate_series(0, $3 - 1) AS g"#,
+        )
+        .bind(sub)
+        .bind(rg)
+        .bind(n)
+        .execute(pool)
+        .await
+        .expect("bulk insert cap resources");
+
+        // One cost row per resource, in the COST window (FK references the ids above).
+        sqlx::query(
+            r#"INSERT INTO synthetic.cost_records
+                   (resource_id, subscription_id, billing_period, cost_amount, currency)
+               SELECT id, subscription_id, $2::date, 1.0, 'USD'
+               FROM synthetic.resources
+               WHERE subscription_id = $1"#,
+        )
+        .bind(sub)
+        .bind(common::COST_BILLING_PERIOD)
+        .execute(pool)
+        .await
+        .expect("bulk insert cap cost rows");
+    }
+
+    /// (b): a ResourceId grouping whose cardinality is EXACTLY the cap returns a
+    /// full 200 result — the cap boundary is inclusive.
+    #[tokio::test]
+    async fn cost_query_at_cap_returns_200() {
+        let (app, _c, pool, _seed) = cost_app().await;
+        let sub = uuid::Uuid::from_u128(0x0CA9_0000_0000_0000_0000_0000_0000_0000);
+        seed_over_cap_scope(&pool, sub, CAP).await;
+
+        let (status, body) = common::request_json(
+            app,
+            "POST",
+            &sub_scope_path(&sub),
+            Some("x"),
+            &cost_body(Some(("Dimension", "ResourceId")), "ActualCost"),
+        )
+        .await;
+        assert_eq!(status, 200, "exactly CAP distinct groups must 200");
+        assert_eq!(
+            body["properties"]["rows"].as_array().unwrap().len(),
+            CAP as usize,
+            "a CAP-cardinality result returns all CAP rows"
+        );
+    }
+
+    /// (c)/(d)/(e): a ResourceId grouping over CAP+1 distinct resources is bounded
+    /// — a hard ARM-shaped 400 (LIMIT overflow or statement_timeout), NEVER a partial
+    /// 200, and the 400 body carries NO nextLink suggesting more data.
+    #[tokio::test]
+    async fn cost_query_over_cap_resourceid_is_bounded_400() {
+        let (app, _c, pool, _seed) = cost_app().await;
+        let sub = uuid::Uuid::from_u128(0x0CAB_0000_0000_0000_0000_0000_0000_0000);
+        seed_over_cap_scope(&pool, sub, CAP + 1).await;
+
+        let (status, body) = common::request_json(
+            app,
+            "POST",
+            &sub_scope_path(&sub),
+            Some("x"),
+            &cost_body(Some(("Dimension", "ResourceId")), "ActualCost"),
+        )
+        .await;
+        // (c)/(d): fail-closed 400, never an unbounded/partial 200.
+        assert_eq!(
+            status, 400,
+            "an over-cap ResourceId grouping must fail closed with a 400, not a partial 200"
+        );
+        // ARM CloudError shape; assert the message identifies the ROW-CAP overflow path
+        // specifically (contains "exceeds") — CAP+1 fast rows deterministically hit the row
+        // cap, NOT the statement_timeout, so this pins which control fired (the timeout
+        // message is "too expensive"). Guards against the two 400 paths silently swapping.
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("exceeds"),
+            "over-cap 400 must be the row-cap overflow (message contains 'exceeds'), got: {msg:?}"
+        );
+        // (e): no misleading nextLink anywhere in the 400 body.
+        assert!(
+            body.get("nextLink").is_none()
+                && body["properties"].get("nextLink").is_none()
+                && body["properties"].get("next_link").is_none(),
+            "a fail-closed 400 must NOT emit a nextLink suggesting more data: {body}"
+        );
+    }
+
+    /// Seed a dedicated subscription with ONE resource carrying a tag whose VALUE is
+    /// `tag_bytes` long, plus one cost row — so a `Tag:{tag_key}` grouping yields a single
+    /// row whose cell is that large value. Built in SQL (`repeat`) to avoid shipping the
+    /// blob from Rust.
+    async fn seed_big_tag_scope(pool: &PgPool, sub: uuid::Uuid, tag_key: &str, tag_bytes: i32) {
+        sqlx::query(
+            r#"INSERT INTO synthetic.subscriptions
+                   (subscription_id, tenant_id, display_name, state, archetype,
+                    tags, authorization_source, spending_limit)
+               VALUES ($1, $2, 'BigTag-Test', 'Enabled', 'prod', '{}'::jsonb, 'RoleBased', 'Off')"#,
+        )
+        .bind(sub)
+        .bind(common::TENANT_ID)
+        .execute(pool)
+        .await
+        .expect("insert big-tag subscription");
+
+        let rg = "rg-bigtag-000";
+        let rg_id = format!("/subscriptions/{sub}/resourceGroups/{rg}");
+        sqlx::query(
+            r#"INSERT INTO synthetic.resource_groups
+                   (id, subscription_id, name, location, template_type, tags, provisioning_state)
+               VALUES ($1, $2, $3, 'eastus', 'network', '{}'::jsonb, 'Succeeded')"#,
+        )
+        .bind(&rg_id)
+        .bind(sub)
+        .bind(rg)
+        .execute(pool)
+        .await
+        .expect("insert big-tag resource group");
+
+        let res_id = format!(
+            "/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/bigtag-0"
+        );
+        sqlx::query(
+            r#"INSERT INTO synthetic.resources
+                   (id, subscription_id, resource_group_name, name, type, location,
+                    tags, sku, kind, properties, provisioning_state, managed_by)
+               VALUES ($1, $2, $3, 'bigtag-0', 'Microsoft.Storage/storageAccounts', 'eastus',
+                       jsonb_build_object($4::text, repeat('x', $5)), NULL, NULL,
+                       '{}'::jsonb, 'Succeeded', NULL)"#,
+        )
+        .bind(&res_id)
+        .bind(sub)
+        .bind(rg)
+        .bind(tag_key)
+        .bind(tag_bytes)
+        .execute(pool)
+        .await
+        .expect("insert big-tag resource");
+
+        sqlx::query(
+            r#"INSERT INTO synthetic.cost_records
+                   (resource_id, subscription_id, billing_period, cost_amount, currency)
+               VALUES ($1, $2, $3::date, 1.0, 'USD')"#,
+        )
+        .bind(&res_id)
+        .bind(sub)
+        .bind(common::COST_BILLING_PERIOD)
+        .execute(pool)
+        .await
+        .expect("insert big-tag cost row");
+    }
+
+    /// (byte axis): a query returning FEW rows can still be huge if a cell (here a
+    /// JSONB tag value with no maxLength) is enormous. A single ~96 KiB tag value —
+    /// over MAX_COST_CELL_BYTES (64 KiB) — must fail closed with a byte-limit 400, proving
+    /// the response is bounded by BYTES, not just row count.
+    #[tokio::test]
+    async fn cost_query_oversized_cell_is_bounded_400() {
+        let (app, _c, pool, _seed) = cost_app().await;
+        let sub = uuid::Uuid::from_u128(0x0CAC_0000_0000_0000_0000_0000_0000_0000);
+        seed_big_tag_scope(&pool, sub, "huge", 96 * 1024).await;
+
+        let (status, body) = common::request_json(
+            app,
+            "POST",
+            &sub_scope_path(&sub),
+            Some("x"),
+            &cost_body(Some(("Tag", "huge")), "ActualCost"),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "a single oversized response cell must fail closed with a 400 (few rows, huge bytes)"
+        );
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("byte"),
+            "the 400 must be the byte-limit path (message mentions 'byte'), got: {msg:?}"
+        );
+    }
+
+    /// Seed a dedicated subscription with `n` resources, EACH carrying a DISTINCT tag value
+    /// of `per_value_bytes` (individually under MAX_COST_CELL_BYTES so no single cell trips
+    /// the per-cell cap) — so a `Tag:{tag_key}` grouping yields `n` valid rows whose COMBINED
+    /// serialized size crosses the cumulative budget. Distinctness via a per-row suffix.
+    async fn seed_many_valid_cells_scope(
+        pool: &PgPool,
+        sub: uuid::Uuid,
+        n: i32,
+        tag_key: &str,
+        per_value_bytes: i32,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO synthetic.subscriptions
+                   (subscription_id, tenant_id, display_name, state, archetype,
+                    tags, authorization_source, spending_limit)
+               VALUES ($1, $2, 'ManyCells-Test', 'Enabled', 'prod', '{}'::jsonb, 'RoleBased', 'Off')"#,
+        )
+        .bind(sub)
+        .bind(common::TENANT_ID)
+        .execute(pool)
+        .await
+        .expect("insert many-cells subscription");
+
+        let rg = "rg-manycells-000";
+        let rg_id = format!("/subscriptions/{sub}/resourceGroups/{rg}");
+        sqlx::query(
+            r#"INSERT INTO synthetic.resource_groups
+                   (id, subscription_id, name, location, template_type, tags, provisioning_state)
+               VALUES ($1, $2, $3, 'eastus', 'network', '{}'::jsonb, 'Succeeded')"#,
+        )
+        .bind(&rg_id)
+        .bind(sub)
+        .bind(rg)
+        .execute(pool)
+        .await
+        .expect("insert many-cells resource group");
+
+        // n resources, each tags->{tag_key} = repeat('a', per_value_bytes) || <distinct suffix>.
+        sqlx::query(
+            r#"INSERT INTO synthetic.resources
+                   (id, subscription_id, resource_group_name, name, type, location,
+                    tags, sku, kind, properties, provisioning_state, managed_by)
+               SELECT
+                   format('/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Storage/storageAccounts/mc-%s',
+                          $1::text, $2::text, g),
+                   $1, $2, format('mc-%s', g), 'Microsoft.Storage/storageAccounts', 'eastus',
+                   jsonb_build_object($4::text, repeat('a', $5) || lpad(g::text, 8, '0')),
+                   NULL, NULL, '{}'::jsonb, 'Succeeded', NULL
+               FROM generate_series(0, $3 - 1) AS g"#,
+        )
+        .bind(sub)
+        .bind(rg)
+        .bind(n)
+        .bind(tag_key)
+        .bind(per_value_bytes)
+        .execute(pool)
+        .await
+        .expect("bulk insert many-cells resources");
+
+        sqlx::query(
+            r#"INSERT INTO synthetic.cost_records
+                   (resource_id, subscription_id, billing_period, cost_amount, currency)
+               SELECT id, subscription_id, $2::date, 1.0, 'USD'
+               FROM synthetic.resources
+               WHERE subscription_id = $1"#,
+        )
+        .bind(sub)
+        .bind(common::COST_BILLING_PERIOD)
+        .execute(pool)
+        .await
+        .expect("insert many-cells cost rows");
+    }
+
+    /// (byte axis, CUMULATIVE): 150 rows × ~60 KiB distinct tag values — each cell is
+    /// individually valid (< MAX_COST_CELL_BYTES) and the row count is under the row cap, yet
+    /// the COMBINED serialized size crosses the 8 MiB budget. Must fail closed with the
+    /// CUMULATIVE 400 ("response exceeds"), proving the cumulative wiring fires (were it
+    /// removed, all 150 valid cells would return a ~9 MiB 200). Verifies the budget end-to-end.
+    #[tokio::test]
+    async fn cost_query_cumulative_budget_is_bounded_400() {
+        let (app, _c, pool, _seed) = cost_app().await;
+        let sub = uuid::Uuid::from_u128(0x0CAD_0000_0000_0000_0000_0000_0000_0000);
+        // 150 × 60 KiB ≈ 9 MiB raw > 8 MiB; each 60 KiB < 64 KiB per-cell cap; 150 < row cap.
+        seed_many_valid_cells_scope(&pool, sub, 150, "big", 60 * 1024).await;
+
+        let (status, body) = common::request_json(
+            app,
+            "POST",
+            &sub_scope_path(&sub),
+            Some("x"),
+            &cost_body(Some(("Tag", "big")), "ActualCost"),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "many individually-valid cells exceeding the cumulative budget must fail closed"
+        );
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("response exceeds"),
+            "must be the CUMULATIVE byte path (\"response exceeds\"), not per-cell, got: {msg:?}"
+        );
+    }
 }
 
 /// Microsoft.Authorization data plane (Plan 10-03, IAM-02/IAM-03/IAM-05). Mirrors `mod
