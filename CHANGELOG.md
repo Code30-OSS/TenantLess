@@ -9,6 +9,24 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.2 — Fix: make snapshot restore validate-before-destroy and save atomic
+
+Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is
+unchanged.
+
+### Fixed
+
+- **Snapshot restore no longer truncates the estate before the archive is validated.** A
+  restore now runs a `pg_restore --list` table-of-contents dry run and decodes the archive to a
+  server-owned temporary SQL file *before* any data is removed; the truncate and load then run
+  in a single transaction (`--single-transaction`, `ON_ERROR_STOP`), so a corrupt, truncated, or
+  unreadable archive aborts with the existing data fully intact instead of leaving an emptied
+  estate.
+- **Snapshot save is now atomic.** `pg_dump` writes to a same-directory temporary sibling that
+  is renamed to the final `<name>.dump` only on a clean exit, and the job holds the writer
+  permit through the rename before reporting `Succeeded` — so a listed snapshot always
+  corresponds to a complete dump, and a failed or interrupted save leaves no partial artifact.
+
 ## 1.1.1 — Security: enforce the k-anonymity floor on `--min-bucket-size`
 
 Security patch. The `1.x` public surface is unchanged and the default behavior is identical;
