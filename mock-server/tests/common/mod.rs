@@ -183,6 +183,13 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     let sql_006 = include_str!("../../../sql/006_drift.sql");
     pool.execute_unchecked(sql_006).await;
 
+    // v1.1.10: apply sql/008 so the case-insensitive resource-group functional index
+    // exists in the fixture DB, mirroring docker-entrypoint-initdb.d (which applies every
+    // sql/*.sql on a fresh volume). Index-only DDL — no fixture rows are mutated and all
+    // existing counts are unchanged.
+    let sql_008 = include_str!("../../../sql/008_rg_lower_index.sql");
+    pool.execute_unchecked(sql_008).await;
+
     // 1 tenant.
     sqlx::query(
         r#"INSERT INTO synthetic.tenant

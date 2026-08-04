@@ -265,7 +265,8 @@ mod tests {
     }
 
     /// The rg-scoped handler seeds the filter at $5 (rg holds $4) so a filtered scoped
-    /// query never collides placeholders with the `resource_group_name = $4` bind.
+    /// query never collides placeholders with the `lower(resource_group_name) = lower($4)`
+    /// bind.
     #[test]
     fn filter_conjunct_seeds_at_five_for_scoped_handler() {
         let parsed = Some(filter::parse("location eq 'eastus'").expect("parse"));

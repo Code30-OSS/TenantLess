@@ -12,7 +12,7 @@ hand-edited copy of ``small.json`` with cost fields injected. Credibility is in
 the chain:
 
     profiles/oss-bootstrap.json        (hand-authored, synthetic)
-      -> tenantless init-db            (provision synthetic schema 001..007)
+      -> tenantless init-db            (provision synthetic schema 001..008)
       -> tenantless generate           (a synthetic estate in a DISPOSABLE PG)
       -> export_estate_duckdb.py       (a DuckDB view of that estate)
       -> tenantless analyze            (fit build/demo.json from the estate)
@@ -243,10 +243,10 @@ def build() -> int:
 
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # (1) Provision synthetic schema 001..007 (idempotent). init-db is the ONLY
+    # (1) Provision synthetic schema 001..008 (idempotent). init-db is the ONLY
     # path that ensures 006_drift (the drift_deleted_at column export.py filters
     # on); a bare generate provisions 001..005,007 but not 006.
-    print("[demo-build] (1) init-db -- provision synthetic schema 001..007")
+    print("[demo-build] (1) init-db -- provision synthetic schema 001..008")
     _cli(env, "init-db")
 
     # (2) Generate the synthetic estate into the disposable DB.

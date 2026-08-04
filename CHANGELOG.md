@@ -9,6 +9,31 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.10 — Perf: index the case-insensitive resource-group predicate
+
+Bug-fix patch (performance). No API, CLI-flag, or profile-schema changes. Follow-up to
+1.1.8, which made the resource-group-scoped resource listing and cost query compare
+`lower(resource_group_name) = lower($4)`.
+
+### Fixed
+
+- **The case-insensitive resource-group predicate is now index-backed.** The existing
+  `idx_res_rg (subscription_id, resource_group_name)` can serve only the subscription
+  prefix for a `lower(resource_group_name)` match — Postgres cannot use its second key for
+  the functional predicate — so at scale a resource-group-scoped listing could scan every
+  resource in the subscription, and the cost query could process a broader join before
+  filtering. A new functional index
+  `idx_res_rg_lower (subscription_id, lower(resource_group_name), id)` backs both paths;
+  the trailing `id` serves the listing's `ORDER BY id` / keyset pagination. This mirrors
+  the existing `lower(id)` functional index for the resource-detail lookup.
+- **Existing databases upgrade automatically.** The index ships as a new idempotent
+  migration (`sql/008_rg_lower_index.sql`) applied unconditionally by `generate` and
+  `init-db` — the same "twin migration" mechanism as the cost/identity/drift/web-metadata
+  schemas. A database provisioned before this release gains the index on its next
+  `generate`/`init-db` with no manual step, and it is deliberately **not** part of the
+  base-schema completeness check, so an additive performance index never makes a healthy
+  install read as "incomplete" or demand a re-provision.
+
 ## 1.1.9 — Fix: bound the control-plane job store's memory
 
 Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is

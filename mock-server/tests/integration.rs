@@ -1178,6 +1178,43 @@ async fn lower_id_functional_index_exists() {
     );
 }
 
+/// The case-insensitive RG-scoped read paths (resources.rs listing +
+/// cost.rs: `lower(resource_group_name) = lower($4)`) are backed by a functional index
+/// on `(subscription_id, lower(resource_group_name), id)` — the sql/008 twin migration.
+/// The plain `idx_res_rg (subscription_id, resource_group_name)` can serve only the
+/// subscription prefix for the `lower(...)` predicate, so this functional index is what
+/// keeps a scoped listing from scanning every resource in the subscription; the trailing
+/// `id` serves the listing's `ORDER BY id` / keyset pagination.
+#[tokio::test]
+async fn rg_lower_functional_index_exists() {
+    let (pool, _container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+
+    let indexdef: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes \
+         WHERE schemaname = 'synthetic' AND tablename = 'resources' \
+           AND indexdef ILIKE '%lower(resource_group_name)%' \
+         LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("query pg_indexes");
+
+    let def = indexdef.expect(
+        "expected a functional index on lower(resource_group_name) over synthetic.resources",
+    );
+    // The index must lead with subscription_id (equality prefix) and carry id (keyset
+    // ORDER BY id), so the RG-scoped listing/cost predicates and pagination are covered.
+    assert!(
+        def.contains("subscription_id"),
+        "RG-lower index must lead with subscription_id: {def}"
+    );
+    assert!(
+        def.contains("id)") || def.ends_with("id"),
+        "RG-lower index must include id for keyset ORDER BY: {def}"
+    );
+}
+
 /// The safe FK from synthetic.resources(subscription_id) -> synthetic.subscriptions
 /// exists after sql/003 (validity holds: every resource is minted under a seeded
 /// subscription; the fixture seeds all resources under SUB_A).

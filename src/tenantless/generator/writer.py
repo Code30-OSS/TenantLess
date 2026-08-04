@@ -135,10 +135,10 @@ def _base_schema_sql_files() -> list[Path]:
 
 
 def _all_migration_sql_files() -> list[Path]:
-    """Every migration file the full sql/001..007 chain needs, in order — the 3
-    base files (001..003) plus the four twin migrations (004..007).
+    """Every migration file the full sql/001..008 chain needs, in order — the 3
+    base files (001..003) plus the five twin migrations (004..008).
 
-    The pre-flight file gate in ``init-db`` (P2a) checks all seven exist BEFORE
+    The pre-flight file gate in ``init-db`` (P2a) checks all eight exist BEFORE
     opening any DB transaction, so a missing bundled file (the packaging bug)
     aborts without touching the database. Resolves via the shared packaged-or-repo
     resolver; ``parts`` are STATIC filenames, never user input.
@@ -148,6 +148,7 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "005_identity.sql"),
         resource_path("sql", "006_drift.sql"),
         resource_path("sql", "007_web_metadata.sql"),
+        resource_path("sql", "008_rg_lower_index.sql"),
     ]
 
 
@@ -175,8 +176,8 @@ def ensure_base_schema(conn: psycopg.Connection) -> bool:
 
     This closes the Docker-optional / bring-your-own-Postgres gap. ``docker
     compose up`` does two jobs: it provides Postgres 16 AND auto-applies
-    sql/001..007 via the ``./sql -> /docker-entrypoint-initdb.d`` mount. The
-    runtime already self-provisions sql/004..007 idempotently (the ``ensure_*``
+    sql/001..008 via the ``./sql -> /docker-entrypoint-initdb.d`` mount. The
+    runtime already self-provisions sql/004..008 idempotently (the ``ensure_*``
     twins below), but the BASE tables (sql/001 tenant/subs/RGs/resources, sql/002
     dependencies/violations, sql/003 integrity + indexes) were applied ONLY by the
     Docker initdb mount — so a bare non-Docker PG16 was missing the base schema and
@@ -184,7 +185,7 @@ def ensure_base_schema(conn: psycopg.Connection) -> bool:
     ``init-db`` command) lets anyone point ``DATABASE_URL`` at any reachable PG16
     and run the simulator end to end.
 
-    WHY it needs a FUNCTION-LEVEL guard (unlike the 004..007 twins, which blindly
+    WHY it needs a FUNCTION-LEVEL guard (unlike the 004..008 twins, which blindly
     read-and-execute): sql/001 and sql/002 use BARE ``CREATE TABLE`` / ``CREATE
     INDEX`` (NOT ``IF NOT EXISTS``) — only sql/003..007 are internally idempotent.
     Blindly running sql/001 against an already-migrated Docker volume would raise
@@ -335,6 +336,28 @@ def ensure_web_metadata_schema(conn: psycopg.Connection) -> bool:
     the schema via docker initdb).
     """
     sql_path = resource_path("sql", "007_web_metadata.sql")
+    if not sql_path.is_file():
+        return False
+    conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+def ensure_rg_index_schema(conn: psycopg.Connection) -> bool:
+    """Apply the idempotent ``sql/008_rg_lower_index.sql`` migration — the functional
+    index backing the case-insensitive resource-group predicate added in v1.1.8.
+
+    Verbatim twin of :func:`ensure_web_metadata_schema`, swapping ``007_web_metadata.sql``
+    for ``008_rg_lower_index.sql``. Applied UNCONDITIONALLY by ``generate``/``init-db`` so
+    a database provisioned before v1.1.10 gains the index automatically on the next run —
+    the index is deliberately a twin migration, NOT a base-schema object, so an existing
+    healthy install is never reported as an incomplete base schema over an additive
+    performance index. ``sql/008`` is fully idempotent (``CREATE INDEX IF NOT EXISTS``), so
+    applying it here is safe to repeat. The statement text is a STATIC project file, never
+    user/profile input — no injection surface. Returns True if applied, False if the file
+    was not found (installed package with no bundled ``sql/`` — those deployments apply the
+    schema via docker initdb).
+    """
+    sql_path = resource_path("sql", "008_rg_lower_index.sql")
     if not sql_path.is_file():
         return False
     conn.execute(sql_path.read_text(encoding="utf-8"))

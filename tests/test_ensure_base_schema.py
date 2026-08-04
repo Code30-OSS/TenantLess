@@ -261,8 +261,8 @@ def test_ensure_base_schema_partial_after_dropped_index_raises(fresh_db_conn):
     conn.rollback()
 
 
-def test_all_migration_sql_files_lists_seven(monkeypatch):
-    """``_all_migration_sql_files`` returns the 3 base + 4 twin migration paths (the
+def test_all_migration_sql_files_lists_eight(monkeypatch):
+    """``_all_migration_sql_files`` returns the 3 base + 5 twin migration paths (the
     pre-flight file gate init-db checks before opening any transaction)."""
     files = writer_mod._all_migration_sql_files()
     names = [p.name for p in files]
@@ -274,4 +274,5 @@ def test_all_migration_sql_files_lists_seven(monkeypatch):
         "005_identity.sql",
         "006_drift.sql",
         "007_web_metadata.sql",
+        "008_rg_lower_index.sql",
     ], names

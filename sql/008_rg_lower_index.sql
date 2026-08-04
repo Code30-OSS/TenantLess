@@ -1,0 +1,23 @@
+-- Additive functional index for the case-insensitive resource-group predicate.
+--
+-- v1.1.8 made the resource-group-scoped resource listing (resources.rs) and the
+-- RG-scoped Cost Management query (cost.rs) compare
+-- ``lower(resource_group_name) = lower($4)``. The base index
+-- ``idx_res_rg (subscription_id, resource_group_name)`` (sql/001) can serve only the
+-- ``subscription_id`` prefix for that functional predicate — Postgres cannot use its
+-- second key for ``lower(resource_group_name)`` — so at scale a scoped listing would
+-- otherwise scan every resource in the subscription, and the cost query would process a
+-- broader join before filtering. This functional index covers both paths; the trailing
+-- ``id`` serves the listing's ``ORDER BY id`` / keyset pagination (``id > $2``). It
+-- mirrors the ``lower(id)`` functional index (sql/003) for the resource-detail lookup.
+--
+-- This is a TWIN migration (like sql/004..007): fully idempotent and applied
+-- unconditionally by ``generate`` / ``init-db`` (writer.ensure_rg_index_schema), so it
+-- UPGRADES an existing database automatically. It is deliberately NOT part of the
+-- base-schema completeness inventory (writer._BASE_SCHEMA_INVENTORY): an additive
+-- performance index must never make a healthy pre-existing install read as an
+-- "incomplete" base schema and demand re-provisioning. ``CREATE INDEX IF NOT EXISTS``
+-- makes a re-apply a no-op. The statement text is a STATIC project file, never
+-- user/profile input — no injection surface.
+CREATE INDEX IF NOT EXISTS idx_res_rg_lower
+    ON synthetic.resources (subscription_id, lower(resource_group_name), id);

@@ -4,7 +4,7 @@ Context: the built wheel omitted ``profiles/schema.json`` and ``sql/*.sql``, and
 runtime code resolved them by repo-relative ``parents[3]`` paths, so an installed
 wheel raised ``FileNotFoundError`` on every ``load_profile`` (schema validation)
 and every generator/init-db migration lookup — while ``init-db`` still printed
-"Provisioned schema 001..007" (false success).
+"Provisioned schema 001..008" (false success).
 
 These tests are DB-free (mirror ``tests/test_cli_generate_telemetry.py``): the
 Postgres writer seam (``open_writer`` + the five ``ensure_*`` migrations) is
@@ -97,7 +97,7 @@ def test_schema_validate_resolves_via_resolver():
 # Test D — writer sql lookups resolve to existing files
 # --------------------------------------------------------------------------- #
 def test_writer_sql_lookups_resolve_to_existing_files():
-    """All 3 base-schema files plus the four twin migrations (004..007) resolve
+    """All 3 base-schema files plus the five twin migrations (004..008) resolve
     to existing ``.is_file()`` resources in the dev checkout."""
     base = writer_mod._base_schema_sql_files()
     assert len(base) == 3
@@ -109,6 +109,7 @@ def test_writer_sql_lookups_resolve_to_existing_files():
         "005_identity.sql",
         "006_drift.sql",
         "007_web_metadata.sql",
+        "008_rg_lower_index.sql",
     ):
         resolved = _resources.resource_path("sql", name)
         assert resolved.is_file(), f"twin migration missing: {resolved!r}"
@@ -143,6 +144,7 @@ def test_init_db_fails_and_names_missing_migration(fake_open_writer):
     monkeypatch.setattr(writer_mod, "ensure_identity_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_drift_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
 
     runner = CliRunner()
     result = runner.invoke(main, ["init-db"])
@@ -150,7 +152,7 @@ def test_init_db_fails_and_names_missing_migration(fake_open_writer):
     assert result.exit_code != 0, "a missing twin migration must exit nonzero"
     combined = (result.output or "") + (result.stderr or "")
     assert "004" in combined, f"missing migration 004 not named: {combined!r}"
-    assert "Provisioned schema 001..007" not in combined, (
+    assert "Provisioned schema 001..008" not in combined, (
         "false-success line must not print when a migration is missing"
     )
 
@@ -165,6 +167,7 @@ def test_init_db_success_prints_host_only(fake_open_writer):
     monkeypatch.setattr(writer_mod, "ensure_identity_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_drift_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -198,6 +201,7 @@ _EXPECTED_SQL = (
     "005_identity.sql",
     "006_drift.sql",
     "007_web_metadata.sql",
+    "008_rg_lower_index.sql",
 )
 
 
@@ -240,7 +244,7 @@ def built_wheel(tmp_path_factory):
 
 
 def test_wheel_contents_ship_data_files(built_wheel):
-    """The freshly built wheel must physically contain schema.json + all seven sql
+    """The freshly built wheel must physically contain schema.json + all eight sql
     migrations under the package tree — asserted by EXACT namelist membership (not a
     ``00{i}_`` prefix substring), so a truncated / renamed entry fails loudly."""
     namelist = zipfile.ZipFile(built_wheel).namelist()

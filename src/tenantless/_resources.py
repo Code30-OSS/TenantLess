@@ -1,7 +1,7 @@
 """Shared packaged-or-repo resource resolver.
 
 Runtime code needs two kinds of STATIC project data files at runtime:
-``profiles/schema.json`` (analyzer schema validation) and ``sql/001..007_*.sql``
+``profiles/schema.json`` (analyzer schema validation) and ``sql/001..008_*.sql``
 (generator + ``init-db`` migrations). These live at the REPO ROOT — the single
 source of truth shared with the Rust crate's ``include_str!`` and several
 Dockerfiles / CI path-filters — so they are NOT moved.
