@@ -1215,6 +1215,46 @@ async fn rg_lower_functional_index_exists() {
     );
 }
 
+/// The composite keyset index `idx_ra_sub_assignment (subscription_id, assignment_id)`
+/// exists on `synthetic.role_assignments` — it backs the paginated roleAssignments read
+/// (`WHERE subscription_id = $1 AND assignment_id > $2 ORDER BY assignment_id LIMIT $3`).
+/// The single-key `idx_ra_sub` serves only the equality prefix, so this composite index is
+/// what turns the seek + `ORDER BY` into an index range scan instead of a per-page sort of
+/// the subscription's whole assignment set. It ships in sql/005 (idempotent), so an
+/// existing DB gains it on the next `ensure_identity_schema` — hence seeding the identity
+/// schema (which applies sql/005) is the precondition here.
+#[tokio::test]
+async fn ra_sub_assignment_composite_index_exists() {
+    let (pool, _container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    common::seed_identity_rows(&pool).await; // applies sql/005 → creates the index
+
+    let indexdef: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes \
+         WHERE schemaname = 'synthetic' AND tablename = 'role_assignments' \
+           AND indexname = 'idx_ra_sub_assignment' \
+         LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("query pg_indexes");
+
+    let def = indexdef
+        .expect("expected the composite idx_ra_sub_assignment over synthetic.role_assignments");
+    // Must cover both keys, with subscription_id (the equality prefix) LEADING
+    // assignment_id (the keyset seek + ORDER BY), so the paginated read is a range scan.
+    let sub_pos = def
+        .find("subscription_id")
+        .expect("index must reference subscription_id");
+    let asg_pos = def
+        .find("assignment_id")
+        .expect("index must reference assignment_id");
+    assert!(
+        sub_pos < asg_pos,
+        "composite index must lead with subscription_id then assignment_id: {def}"
+    );
+}
+
 /// The safe FK from synthetic.resources(subscription_id) -> synthetic.subscriptions
 /// exists after sql/003 (validity holds: every resource is minted under a seeded
 /// subscription; the fixture seeds all resources under SUB_A).
@@ -2321,9 +2361,11 @@ mod identity {
         }
     }
 
-    /// #4 (roleAssignments `$filter=atScope()`): only assignments stored at EXACTLY the
-    /// subscription scope are returned (the two Owner-at-subscription grants), not the
-    /// inherited RG/resource-scoped ones.
+    /// roleAssignments `$filter=atScope()`: Azure defines `atScope()` as "assignments at or
+    /// above the given scope". TenantLess models no management-group/tenant-root
+    /// assignments, so at a subscription scope that reduces to exactly `/subscriptions/{sub}`
+    /// — the two Owner-at-subscription grants — and the RG/resource-scoped assignments BELOW
+    /// it are excluded. This asserts that modeled reduction, not the general Azure contract.
     #[tokio::test]
     async fn role_assignments_filter_at_scope() {
         let (app, _c, _pool, _seed) = identity_app().await;
@@ -2340,13 +2382,15 @@ mod identity {
         assert_eq!(
             value.len(),
             2,
-            "exactly two seeded assignments live at the bare subscription scope"
+            "two seeded assignments live at the subscription scope (no mgmt-group/root \
+             assignments are modeled, so 'at or above' reduces to exactly this scope)"
         );
         for item in value {
             assert_eq!(
                 item["properties"]["scope"].as_str().unwrap(),
                 sub_scope,
-                "atScope() must return only assignments at exactly the subscription scope"
+                "with no scopes above the subscription modeled, atScope() returns only \
+                 assignments at /subscriptions/{{sub}} (never the RG/resource ones below)"
             );
         }
     }

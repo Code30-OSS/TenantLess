@@ -303,8 +303,15 @@ mod ra_filter {
     /// predicate (an empty filter is rejected), so it always contributes a `WHERE` conjunct.
     #[derive(Debug, Default, PartialEq, Eq)]
     pub(super) struct RaFilter {
-        /// `atScope()` — restrict to assignments stored at EXACTLY the subscription scope
-        /// (`/subscriptions/{sub}`), excluding the inherited RG/resource-scoped ones.
+        /// `atScope()` — Azure defines this as "assignments AT OR ABOVE the given scope"
+        /// (i.e. this scope plus any inherited from parent management groups / the tenant
+        /// root), which excludes the RG/resource-scoped assignments BELOW it. TenantLess
+        /// models no management-group or tenant-root assignments, so at a subscription scope
+        /// "at or above" reduces to EXACTLY `/subscriptions/{sub}` — [`to_conjunct`] filters
+        /// on `scope = '/subscriptions/{sub}'`, which is the correct reduction of the Azure
+        /// contract for the modeled subset, NOT the general "exactly this scope" rule.
+        ///
+        /// [`to_conjunct`]: RaFilter::to_conjunct
         pub at_scope: bool,
         /// `principalId eq '{guid}'` — restrict to one principal. The literal is validated
         /// as a GUID at parse time (a non-GUID is a 400), mirroring real ARM's GUID
