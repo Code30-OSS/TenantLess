@@ -108,11 +108,15 @@ pub async fn list_resources(
 /// `$filter`ed (D-03).
 ///
 /// Identical to [`list_resources`] plus one bound predicate: `AND
-/// resource_group_name = $4`. `{rg}` is bound as a parameter — never spliced into
-/// SQL (T-03-10) — and is covered by `idx_res_rg (subscription_id,
-/// resource_group_name)`. An unknown `{sub}` or `{rg}` simply yields zero rows, so the
-/// envelope is `{ "value": [] }` (no existence pre-check, no 404 — locked decision).
-/// Because `rg` keeps `$4`, the `$filter` placeholders seed at `$5`.
+/// lower(resource_group_name) = lower($4)`. The comparison is case-insensitive so a
+/// differently-cased `{rg}` in the request resolves to the canonically-cased stored
+/// group — the same rule the resource-detail lookup applies to the whole id
+/// (`lower(id) = lower($1)`), so a scanner that lists an RG's resources and one that
+/// fetches a resource by id agree on which RG a path names. `{rg}` is bound as a
+/// parameter — never spliced into SQL (T-03-10). An unknown `{sub}` or `{rg}` simply
+/// yields zero rows, so the envelope is `{ "value": [] }` (no existence pre-check, no
+/// 404 — locked decision). Because `rg` keeps `$4`, the `$filter` placeholders seed at
+/// `$5`.
 pub async fn list_rg_resources(
     State(state): State<AppState>,
     Path((sub, rg)): Path<(Uuid, String)>,
@@ -130,7 +134,7 @@ pub async fn list_rg_resources(
         "SELECT id, name, type, location, tags, sku, kind, properties
          FROM synthetic.resources
          WHERE subscription_id = $1 AND ($2::text IS NULL OR id > $2)
-           AND resource_group_name = $4 AND drift_deleted_at IS NULL{where_extra}
+           AND lower(resource_group_name) = lower($4) AND drift_deleted_at IS NULL{where_extra}
          ORDER BY id
          LIMIT $3"
     );
