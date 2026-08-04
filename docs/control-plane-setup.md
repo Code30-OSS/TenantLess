@@ -69,7 +69,8 @@ them:
 
 | Realm | Header | Rule |
 |-------|--------|------|
-| **ARM API** (`/subscriptions`, `/_sim`, …) | `Authorization: Bearer <anything>` | Any non-empty Bearer passes (the placeholder `Bearer tenantless-ui` the UI sends). Deliberately weak — read-only scanner surface. |
+| **ARM API** (`/subscriptions`, resource routes, …) | `Authorization: Bearer <anything>` | Any non-empty Bearer passes (the placeholder `Bearer tenantless-ui` the UI sends). Deliberately weak — read-only scanner surface. |
+| **Bearer-exempt surfaces** (`/_sim`, `/ui`, `/_console`, `/token` + JWKS) | *(none)* | **No auth.** These are merged outside the ARM Bearer layer, so they respond without any `Authorization` header — the console must load in a plain browser, and `/_sim` exposes read-only simulation metadata (e.g. `/_sim/summary`). If exposing the server beyond localhost, gate these at your proxy. |
 | **Control plane** (`/_control/*`) | `X-Control-Token: <secret>` | Must **exactly** match the configured control token. Compared as a SHA-256 digest with a constant-time `subtle::ct_eq` (no value/length leak). Wrong/missing → fixed `401 InvalidControlToken`. |
 
 The raw token is **never stored** (only its digest) and **never logged**. In the browser the
