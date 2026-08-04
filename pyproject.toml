@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenantless"
-version = "1.1.6"
+version = "1.1.7"
 description = "Azure Tenant Simulator - local ARM API mock server backed by synthetic data"
 requires-python = ">=3.11"
 license = "Apache-2.0"
