@@ -256,14 +256,16 @@ pub fn pipeline_command(cp: &ControlPlane, subcommand: &str) -> Command {
     cmd
 }
 
-/// Insert a fresh `Queued` job of `kind` into the registry and return its id.
+/// Insert a fresh `Queued` job of `kind` into the registry and return its id. Bounds the
+/// registry first: `evict_terminal` drops the oldest already-terminal jobs so completed
+/// job history cannot grow without bound over the life of the process (in-flight jobs are
+/// never evicted).
 fn register_job(cp: &ControlPlane, kind: JobKind) -> Uuid {
     let job = Job::new(kind);
     let id = job.id;
-    cp.registry
-        .lock()
-        .expect("registry mutex not poisoned")
-        .insert(id, job);
+    let mut reg = cp.registry.lock().expect("registry mutex not poisoned");
+    job::evict_terminal(&mut reg, job::JOB_RETENTION);
+    reg.insert(id, job);
     id
 }
 
