@@ -3295,6 +3295,7 @@ dependencies = [
  "axum-server",
  "base64",
  "clap",
+ "http-body-util",
  "include_dir",
  "jsonwebtoken",
  "mime_guess",

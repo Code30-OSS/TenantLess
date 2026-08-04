@@ -249,6 +249,31 @@ pub fn bind_addr(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
+/// Apply a schema-migration batch with the runtime `statement_timeout` DISABLED for its
+/// duration. The startup preflight runs on the SAME pool the request handlers use, whose
+/// connections carry the server-wide session `statement_timeout` (`DB_STATEMENT_TIMEOUT_MS`)
+/// — so a legitimate first-run upgrade over a large estate (index or future constraint
+/// creation) could otherwise be CANCELLED after that budget elapses and prevent the server
+/// from starting. Running the DDL inside a transaction that first issues
+/// `SET LOCAL statement_timeout = 0` exempts ONLY this migration batch: the setting is
+/// transaction-scoped and reverts on commit, so the connection returns to the pool with the
+/// runtime budget intact (no leak to later request handlers).
+///
+/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + any guarded
+/// `DO $$ … $$` blocks execute as one unsplit batch inside the transaction — we never
+/// parse/split the SQL ourselves (mirrors the Python twins in `writer`).
+pub async fn apply_schema_batch(pool: &sqlx::PgPool, sql: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    // LOCAL ⇒ transaction-scoped: it disables the timeout only for this migration batch and
+    // reverts on commit, never leaking a disabled timeout back onto the pooled connection.
+    sqlx::query("SET LOCAL statement_timeout = 0")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::raw_sql(sql).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Idempotently provision the Phase-10 identity tables (`synthetic.principals`,
 /// `synthetic.role_assignments`) by applying `sql/005_identity.sql`. Safe to run on
 /// every boot: the migration is `CREATE ... IF NOT EXISTS` + a guarded-FK `DO` block,
@@ -257,13 +282,11 @@ pub fn bind_addr(host: &str, port: u16) -> String {
 /// identity-less tenant — it never masks a missing relation as empty business data.
 /// Requires the `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + the
-/// guarded `DO $$ … $$` block execute as one unsplit batch — we never parse/split the
-/// SQL ourselves (mirrors the Python twin `writer.ensure_identity_schema`).
+/// Applied via [`apply_schema_batch`], so the DDL runs with the runtime `statement_timeout`
+/// disabled (a first-run index/constraint build cannot be cancelled by the request budget).
 pub async fn ensure_identity_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_005: &str = include_str!("../../sql/005_identity.sql");
-    sqlx::raw_sql(SQL_005).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_005).await
 }
 
 /// Idempotently provision the Phase-11 drift tables (`synthetic.drift_batches`,
@@ -277,14 +300,11 @@ pub async fn ensure_identity_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
 /// column as empty business data. Requires the `synthetic` schema to already exist
 /// (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + the
-/// guarded `DO $$ … $$` block execute as one unsplit batch — we never parse/split the
-/// SQL ourselves (mirrors the Python twin `writer.ensure_drift_schema` and the
-/// identity twin [`ensure_identity_schema`]).
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// mirroring the Python twin `writer.ensure_drift_schema` and [`ensure_identity_schema`].
 pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_006: &str = include_str!("../../sql/006_drift.sql");
-    sqlx::raw_sql(SQL_006).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_006).await
 }
 
 /// Idempotently provision the Phase-14 Web Console metadata column
@@ -296,13 +316,11 @@ pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error>
 /// simply reads NULL (⇒ `profile: null`), it never masks a missing column as empty data.
 /// Requires the `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the DDL executes as one unsplit
-/// batch — we never parse/split the SQL ourselves (mirrors the Python twin
-/// `writer.ensure_web_metadata_schema` and the drift twin [`ensure_drift_schema`]).
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// mirroring the Python twin `writer.ensure_web_metadata_schema` and [`ensure_drift_schema`].
 pub async fn ensure_web_metadata_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_007: &str = include_str!("../../sql/007_web_metadata.sql");
-    sqlx::raw_sql(SQL_007).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_007).await
 }
 
 pub async fn serve_dual(

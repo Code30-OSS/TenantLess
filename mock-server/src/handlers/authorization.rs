@@ -392,8 +392,17 @@ mod ra_filter {
     /// Parse the supported roleAssignments `$filter` forms into a [`RaFilter`]. Returns the
     /// fixed-string 400 for any unsupported/malformed input — it NEVER falls through to a
     /// silent no-op. Never panics.
+    ///
+    /// The SAME byte/token execution budget the resource-list `$filter` enforces
+    /// ([`crate::filter::MAX_FILTER_BYTES`] / [`crate::filter::MAX_FILTER_TOKENS`]) is
+    /// applied here too — a long `atScope() and atScope() and …` chain is bounded at the
+    /// source rather than being processed up to the HTTP request-line ceiling.
     pub(super) fn parse(input: &str) -> Result<RaFilter, ApiError> {
+        // Byte cap BEFORE tokenizing (never build a huge token vec from an oversized value).
+        crate::filter::check_filter_byte_budget(input)?;
         let tokens = tokenize(input).map_err(|_| bad())?;
+        // Token cap AFTER tokenizing (bounds the number of clauses / conjuncts).
+        crate::filter::check_filter_token_budget(tokens.len())?;
         let mut pos = 0;
         let mut out = RaFilter::default();
 
@@ -702,6 +711,37 @@ mod tests {
                 }
                 other => panic!("expected a 400 for {bad:?}, got {other:?}"),
             }
+        }
+    }
+
+    /// The roleAssignments `$filter` shares the resource-list byte budget: an over-byte
+    /// filter (a syntactically-valid but enormous `atScope() and …` chain, so ONLY the size
+    /// cap can reject it) is the fixed no-leak 400, rejected BEFORE tokenizing.
+    #[test]
+    fn ra_filter_rejects_over_byte_budget() {
+        // `atScope() and ` is 14 bytes; ~200 of them clears the 2 KiB byte cap.
+        let huge = format!("{}atScope()", "atScope() and ".repeat(200));
+        assert!(huge.len() > crate::filter::MAX_FILTER_BYTES);
+        match ra_filter::parse(&huge) {
+            Err(ApiError::BadRequest { message }) => assert_eq!(message, "invalid $filter"),
+            other => panic!("expected an over-byte 400, got {other:?}"),
+        }
+    }
+
+    /// The roleAssignments `$filter` shares the resource-list token budget: a filter UNDER
+    /// the byte cap but OVER the token cap is still the fixed no-leak 400. `atScope()` is 3
+    /// tokens + `and` = 4 per clause, so ~60 clauses clears the 200-token cap while staying
+    /// well under 2 KiB — proving the TOKEN axis, not the byte axis.
+    #[test]
+    fn ra_filter_rejects_over_token_budget() {
+        let input = format!("atScope(){}", " and atScope()".repeat(60));
+        assert!(
+            input.len() <= crate::filter::MAX_FILTER_BYTES,
+            "must exercise the TOKEN cap, not bytes"
+        );
+        match ra_filter::parse(&input) {
+            Err(ApiError::BadRequest { message }) => assert_eq!(message, "invalid $filter"),
+            other => panic!("expected an over-token 400, got {other:?}"),
         }
     }
 

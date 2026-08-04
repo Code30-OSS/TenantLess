@@ -65,12 +65,46 @@ pub enum Filter {
 /// `And`/`Or`) risks stack growth and emits a pathologically large `WHERE` clause. 2 KiB
 /// is far beyond any real ARM scanner filter. A fixed const (not env): the parser is a
 /// pure, DB-free, config-free module so its unit tests stay hermetic.
-const MAX_FILTER_BYTES: usize = 2048;
+///
+/// SHARED across BOTH `$filter` surfaces (this resource-list parser AND the roleAssignments
+/// parser in `authorization::ra_filter`) via [`check_filter_byte_budget`], so neither can be
+/// driven past the same ceiling — the roleAssignments `$filter` has its own tokenizer and
+/// would otherwise be uncapped.
+pub const MAX_FILTER_BYTES: usize = 2048;
 
 /// Execution budget: max lexical tokens accepted, checked AFTER tokenizing. Bounds the AST
 /// size (hence the `to_sql` recursion depth and the emitted SQL fan-out) independently of
-/// the byte cap — ~200 tokens is dozens of conjuncts, far beyond any real filter.
-const MAX_FILTER_TOKENS: usize = 200;
+/// the byte cap — ~200 tokens is dozens of conjuncts, far beyond any real filter. SHARED
+/// across both `$filter` surfaces via [`check_filter_token_budget`].
+pub const MAX_FILTER_TOKENS: usize = 200;
+
+/// The fixed-string 400 shared by BOTH `$filter` surfaces (this module and
+/// `authorization::ra_filter`) for any budget/parse/validation failure — one message so
+/// neither surface leaks internals or diverges (T-04-04).
+pub fn invalid_filter() -> ApiError {
+    ApiError::BadRequest {
+        message: "invalid $filter".to_string(),
+    }
+}
+
+/// Reject a `$filter` whose raw length exceeds [`MAX_FILTER_BYTES`] BEFORE tokenizing (byte
+/// axis) — so an oversized value never builds a huge token vec / AST. Applied by BOTH
+/// `$filter` parsers.
+pub fn check_filter_byte_budget(input: &str) -> Result<(), ApiError> {
+    if input.len() > MAX_FILTER_BYTES {
+        return Err(invalid_filter());
+    }
+    Ok(())
+}
+
+/// Reject a `$filter` whose token count exceeds [`MAX_FILTER_TOKENS`] AFTER tokenizing
+/// (token/AST axis), independent of the byte cap. Applied by BOTH `$filter` parsers.
+pub fn check_filter_token_budget(token_count: usize) -> Result<(), ApiError> {
+    if token_count > MAX_FILTER_TOKENS {
+        return Err(invalid_filter());
+    }
+    Ok(())
+}
 
 /// Parse a `$filter` string into a [`Filter`] AST.
 ///
@@ -82,13 +116,10 @@ const MAX_FILTER_TOKENS: usize = 200;
 pub fn parse(input: &str) -> Result<Filter, ApiError> {
     // Execution budget (fail closed BEFORE building the token vec / AST): an oversized
     // filter is rejected with the same fixed no-leak 400 as any other malformed input.
-    if input.len() > MAX_FILTER_BYTES {
-        return Err(bad_filter());
-    }
+    // The byte/token caps are shared with the roleAssignments `$filter` parser.
+    check_filter_byte_budget(input)?;
     let tokens = tokenize(input).map_err(|_| bad_filter())?;
-    if tokens.len() > MAX_FILTER_TOKENS {
-        return Err(bad_filter());
-    }
+    check_filter_token_budget(tokens.len())?;
     let mut p = Parser {
         tokens: &tokens,
         pos: 0,
@@ -101,11 +132,10 @@ pub fn parse(input: &str) -> Result<Filter, ApiError> {
     Ok(filter)
 }
 
-/// The fixed-string 400 used for EVERY parse/validation failure (T-04-04 no-leak).
+/// The fixed-string 400 used for EVERY parse/validation failure (T-04-04 no-leak) — the
+/// shared [`invalid_filter`] message, so both `$filter` surfaces stay byte-identical.
 fn bad_filter() -> ApiError {
-    ApiError::BadRequest {
-        message: "invalid $filter".to_string(),
-    }
+    invalid_filter()
 }
 
 impl Filter {

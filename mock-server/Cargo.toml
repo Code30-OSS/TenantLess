@@ -70,6 +70,12 @@ sha2 = "0.10"
 # `timeout`/`limit`/`load-shed` layers (plus `util`, which the integration tests' `oneshot`
 # driver also uses). Pinned to the 0.5 line already resolved.
 tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"] }
+# `Limited` body reader + its `LengthLimitError` for the cost body-size extractor: bounds a
+# chunked / unknown-Content-Length body WHILE streaming and lets the extractor tell a
+# size-budget rejection (413) apart from any other body-stream failure (500). ALREADY in
+# Cargo.lock (transitive via axum), so this direct dep adds ZERO new lock entries — same
+# rationale as `tower`/`subtle`/`sha2` above.
+http-body-util = "0.1"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

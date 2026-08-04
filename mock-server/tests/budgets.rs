@@ -271,6 +271,53 @@ async fn small_malformed_cost_body_is_400() {
     assert_eq!(json["error"]["code"], "InvalidRequestContent");
 }
 
+/// A JSON body posted with a non-JSON `Content-Type` is rejected with a 415 — the media-type
+/// contract of the stock `Json` extractor the bounded reader replaced. The body itself is
+/// small and valid; only its declared type is wrong (distinct from the 400 malformed case).
+#[tokio::test]
+async fn wrong_content_type_cost_body_is_415() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.CostManagement/query")
+        .header("Authorization", "Bearer health")
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(r#"{"timeframe":"MonthToDate"}"#))
+        .unwrap();
+    let (status, ct, _retry, json) = parts(real_app().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "a non-JSON Content-Type must be a 415"
+    );
+    assert_arm_error(&ct, &json, "UnsupportedMediaType");
+}
+
+/// A body that FAILS mid-stream (a transport fault, not an over-limit) is a generic 500 —
+/// NOT a 413. The extractor distinguishes a `LengthLimitError` (413) from any other body
+/// failure, so a broken transfer is never silently reported as "too large".
+#[tokio::test]
+async fn body_stream_error_is_500_not_413() {
+    // One small chunk (well under the 64 KiB cap) then a hard stream error.
+    let stream = tokio_stream::iter(vec![
+        Ok::<_, std::io::Error>(Bytes::from_static(b"{")),
+        Err(std::io::Error::other("simulated transport fault")),
+    ]);
+    let (status, ct, _retry, json) = parts(
+        real_app()
+            .oneshot(cost_req(Body::from_stream(stream)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a body-stream transport fault (not over-limit) must be a 500, not a 413"
+    );
+    // Generic ARM body — the underlying error detail is logged, never serialized.
+    assert_arm_error(&ct, &json, "InternalServerError");
+}
+
 /// An over-long `/_sim` search term is rejected up front with a 400 — BEFORE the tenant-wide
 /// `ILIKE` scan runs (so the lazy pool is never queried). The search-term cap is a fixed
 /// structural bound, and the rejection stays inside the ARM `CloudError` shape.
