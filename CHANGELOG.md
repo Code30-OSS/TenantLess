@@ -9,6 +9,27 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.9 — Fix: bound the control-plane job store's memory
+
+Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is
+unchanged. Affects only the in-memory control-plane job registry (present when the control
+plane is armed).
+
+### Fixed
+
+- **The job registry no longer grows without bound.** Every armed control-plane job
+  (generate / analyze / reset / snapshot / restore) was inserted into an in-memory map and
+  never removed, so a long-running server accumulated job history for the life of the
+  process. A fresh job now first evicts the oldest already-**terminal** jobs down to a
+  retention bound (100), so completed history stays bounded; in-flight (queued/running)
+  jobs are never evicted.
+- **A single captured log line can no longer grow memory without bound.** The per-job log
+  kept only the last N *lines*, but each line was read with an unbounded reader
+  (`next_line()` reads the whole physical line into memory first), so a child emitting an
+  enormous newline-free line could allocate it in full. Captured lines are now byte-capped
+  (8 KiB retained per line, with a truncation marker) and the physical remainder is drained
+  without being retained, so total per-job log memory is bounded.
+
 ## 1.1.8 — Fix: match resource-group names case-insensitively across ARM endpoints
 
 Bug-fix patch. No API, CLI-flag, or profile-schema changes — the `1.x` public surface is

@@ -20,7 +20,7 @@ use std::time::Duration;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::OwnedSemaphorePermit;
 use uuid::Uuid;
@@ -28,6 +28,20 @@ use uuid::Uuid;
 /// Bounded per-job log tail cap (D-06): keep only the last `LOG_CAP` captured lines so
 /// a 500K-resource generate cannot grow the in-memory log without bound.
 pub const LOG_CAP: usize = 200;
+
+/// Per-line byte cap for a captured log line — the companion to [`LOG_CAP`] (which bounds
+/// the line COUNT). `LOG_CAP` alone leaves each individual line unbounded, so a child that
+/// emits an enormous newline-free line could still grow the in-memory log without limit.
+/// [`read_capped_line`] retains at most this many bytes per line and drains the physical
+/// remainder, so total per-job log memory is bounded by `LOG_CAP * LOG_LINE_CAP`.
+pub const LOG_LINE_CAP: usize = 8 * 1024;
+
+/// Maximum number of jobs retained in the in-memory registry. The registry otherwise grows
+/// one entry per control job for the life of the process (a slow unbounded leak); a fresh
+/// insert first evicts the oldest already-terminal jobs down to this bound (see
+/// [`evict_terminal`]). In-flight jobs are never evicted, so this is a floor on how much
+/// completed history is kept, not a hard cap on live jobs.
+pub const JOB_RETENTION: usize = 100;
 
 /// Server-only secret env vars that must NEVER be inherited by a spawned child (WR-03/T-17-05).
 /// The control token arms the server via `TENANTLESS_CONTROL_TOKEN` (the recommended env path),
@@ -128,6 +142,35 @@ impl Job {
             phase: self.phase.clone(),
             log: self.log.iter().cloned().collect(),
             result: self.result.clone(),
+        }
+    }
+
+    /// True once the job has reached a terminal state (`Succeeded`/`Failed`) — only
+    /// terminal jobs are eligible for retention eviction.
+    fn is_terminal(&self) -> bool {
+        matches!(self.status, JobStatus::Succeeded | JobStatus::Failed)
+    }
+}
+
+/// Bound the in-memory job registry to [`JOB_RETENTION`] (companion to the per-job
+/// [`LOG_CAP`]/[`LOG_LINE_CAP`] bounds): evict the OLDEST already-terminal jobs (by
+/// `started_at`) until at most `retention - 1` remain, so the caller's subsequent insert
+/// lands at or below `retention`. In-flight (`Queued`/`Running`) jobs are NEVER evicted —
+/// if every remaining entry is in-flight the registry is left as-is (a transient overshoot
+/// bounded by the single-writer gate, not a leak). Called under the registry lock by the
+/// single insert seam (`control::register_job`), so history never grows without bound.
+pub(crate) fn evict_terminal(reg: &mut HashMap<Uuid, Job>, retention: usize) {
+    while reg.len() >= retention.max(1) {
+        let oldest_terminal = reg
+            .values()
+            .filter(|j| j.is_terminal())
+            .min_by_key(|j| j.started_at)
+            .map(|j| j.id);
+        match oldest_terminal {
+            Some(id) => {
+                reg.remove(&id);
+            }
+            None => break, // nothing terminal to evict — keep the in-flight jobs
         }
     }
 }
@@ -392,6 +435,70 @@ pub(crate) struct RunOutcome {
     pub last_stdout: String,
 }
 
+/// Read one `\n`-delimited line from `reader`, retaining at most [`LOG_LINE_CAP`] bytes so a
+/// child that emits an enormous newline-free line cannot grow memory without bound. This is
+/// the per-line byte bound the plain `AsyncBufReadExt::lines()`/`next_line()` reader lacks:
+/// `next_line` reads the WHOLE physical line into a `String` before returning, so a
+/// megabytes-long line allocates megabytes. Here the first `LOG_LINE_CAP` bytes are kept and
+/// the remainder up to the newline is drained via `fill_buf`/`consume` WITHOUT retaining it;
+/// an over-long line is marked with a trailing ` …[truncated]`.
+///
+/// Returns `Ok(None)` only at EOF with no pending bytes (loop terminator); a final line with
+/// no trailing newline is returned once, then the next call yields `None`. A trailing `\r` is
+/// stripped (parity with `next_line`), and invalid UTF-8 is replaced lossily (the log is
+/// display-only). Uses only `AsyncBufRead` so any `BufReader` over the child pipe works.
+pub(crate) async fn read_capped_line<R>(reader: &mut R) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut saw_any = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            break; // EOF
+        }
+        saw_any = true;
+        match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => {
+                append_capped(&mut buf, &available[..pos], &mut truncated);
+                reader.consume(pos + 1); // consume through the newline
+                break;
+            }
+            None => {
+                let len = available.len();
+                append_capped(&mut buf, available, &mut truncated);
+                reader.consume(len);
+            }
+        }
+    }
+    if !saw_any {
+        return Ok(None); // clean EOF, nothing pending
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    let mut line = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        line.push_str(" …[truncated]");
+    }
+    Ok(Some(line))
+}
+
+/// Append `chunk` to `buf` but never past [`LOG_LINE_CAP`] retained bytes; set `truncated`
+/// once any bytes are dropped. Overflow bytes are discarded here (the caller still `consume`s
+/// them from the reader) so the physical line is drained without being retained.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], truncated: &mut bool) {
+    let room = LOG_LINE_CAP.saturating_sub(buf.len());
+    if chunk.len() <= room {
+        buf.extend_from_slice(chunk);
+    } else {
+        buf.extend_from_slice(&chunk[..room]);
+        *truncated = true;
+    }
+}
+
 /// Drive `cmd` to a terminal exit as a tracked job, WITHOUT owning/dropping a permit and WITHOUT
 /// setting `JobStatus::Succeeded` — the permit-retaining core shared by the generate/analyze
 /// runner and the snapshot save/restore runners (P1-A/P1-B). It sets `Running` on entry; on a
@@ -436,8 +543,8 @@ pub(crate) async fn run_command_keep_permit(
         let cp = cp.clone();
         tokio::spawn(async move {
             let mut last = String::new();
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            while let Ok(Some(line)) = read_capped_line(&mut reader).await {
                 with_job(&cp, job_id, |j| j.push_log(line.clone()));
                 last = line;
             }
@@ -447,8 +554,8 @@ pub(crate) async fn run_command_keep_permit(
     let err_task = {
         let cp = cp.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            while let Ok(Some(line)) = read_capped_line(&mut reader).await {
                 let label = phase_label(&line);
                 with_job(&cp, job_id, |j| {
                     if let Some(lbl) = label {
@@ -661,6 +768,153 @@ mod tests {
         assert!(
             gate.try_acquire_owned().is_ok(),
             "dropping the caller's permit releases the gate"
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // read_capped_line — the per-line byte bound (companion to LOG_CAP).
+    // ----------------------------------------------------------------------- //
+
+    /// Ordinary newline-delimited lines are returned verbatim (no marker), split on `\n`,
+    /// and EOF yields `None`.
+    #[tokio::test]
+    async fn read_capped_line_splits_normal_lines() {
+        let data = b"first\nsecond\nthird\n";
+        let mut reader = BufReader::new(&data[..]);
+        let mut got = Vec::new();
+        while let Some(line) = read_capped_line(&mut reader).await.unwrap() {
+            got.push(line);
+        }
+        assert_eq!(got, vec!["first", "second", "third"]);
+    }
+
+    /// A final line with no trailing newline is still returned once, then `None`. A trailing
+    /// `\r` is stripped (CRLF parity with `next_line`).
+    #[tokio::test]
+    async fn read_capped_line_handles_no_trailing_newline_and_crlf() {
+        let data = b"windows\r\ntail-no-newline";
+        let mut reader = BufReader::new(&data[..]);
+        assert_eq!(
+            read_capped_line(&mut reader).await.unwrap().as_deref(),
+            Some("windows"),
+            "CRLF line strips the trailing \\r"
+        );
+        assert_eq!(
+            read_capped_line(&mut reader).await.unwrap().as_deref(),
+            Some("tail-no-newline"),
+            "a newline-less final line is returned"
+        );
+        assert_eq!(
+            read_capped_line(&mut reader).await.unwrap(),
+            None,
+            "EOF after the final line"
+        );
+    }
+
+    /// THE bound: an enormous newline-free line is retained at exactly `LOG_LINE_CAP` bytes
+    /// (plus a truncation marker) — never the whole line — and the physical remainder is
+    /// drained so the FOLLOWING line is read intact. This is what `next_line()` failed to do.
+    #[tokio::test]
+    async fn read_capped_line_caps_and_drains_an_overlong_line() {
+        let huge = "a".repeat(LOG_LINE_CAP * 4); // 4× the cap, no newline until the end
+        let data = format!("{huge}\nafter\n");
+        let mut reader = BufReader::new(data.as_bytes());
+
+        let first = read_capped_line(&mut reader).await.unwrap().unwrap();
+        assert!(
+            first.ends_with(" …[truncated]"),
+            "an over-long line is marked truncated"
+        );
+        let retained = first.trim_end_matches(" …[truncated]");
+        assert_eq!(
+            retained.len(),
+            LOG_LINE_CAP,
+            "exactly LOG_LINE_CAP bytes retained, not the whole {}-byte line",
+            huge.len()
+        );
+
+        // The remainder of the huge line was drained (not misread as content), so the next
+        // read returns the following line intact.
+        assert_eq!(
+            read_capped_line(&mut reader).await.unwrap().as_deref(),
+            Some("after"),
+            "the physical remainder was drained, so the next line is intact"
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // evict_terminal — the registry retention bound.
+    // ----------------------------------------------------------------------- //
+
+    /// Build a job in a given terminal/in-flight state with a distinct, strictly increasing
+    /// `started_at` (a tiny sleep guarantees monotonic ordering for the oldest-first check).
+    fn aged_job(status: JobStatus) -> Job {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut j = Job::new(JobKind::Generate);
+        j.status = status;
+        j
+    }
+
+    /// Retention evicts the OLDEST terminal jobs first, bounding the registry so a fresh
+    /// insert lands at `retention`.
+    #[test]
+    fn evict_terminal_drops_oldest_first_to_bound() {
+        let mut reg: HashMap<Uuid, Job> = HashMap::new();
+        // Five terminal jobs, inserted oldest → newest.
+        let jobs: Vec<Job> = (0..5).map(|_| aged_job(JobStatus::Succeeded)).collect();
+        let ids: Vec<Uuid> = jobs.iter().map(|j| j.id).collect();
+        for j in jobs {
+            reg.insert(j.id, j);
+        }
+
+        // Retention 3 → evict down to 2 so the caller's next insert makes 3.
+        evict_terminal(&mut reg, 3);
+        assert_eq!(reg.len(), 2, "bounded to retention - 1 before insert");
+        assert!(
+            !reg.contains_key(&ids[0]) && !reg.contains_key(&ids[1]) && !reg.contains_key(&ids[2]),
+            "the three OLDEST terminal jobs were evicted"
+        );
+        assert!(
+            reg.contains_key(&ids[3]) && reg.contains_key(&ids[4]),
+            "the two newest survive"
+        );
+    }
+
+    /// In-flight (queued/running) jobs are NEVER evicted, even when that leaves the registry
+    /// above the retention bound — only completed history is dropped.
+    #[test]
+    fn evict_terminal_never_drops_in_flight_jobs() {
+        let mut reg: HashMap<Uuid, Job> = HashMap::new();
+        let running: Vec<Uuid> = (0..3)
+            .map(|_| {
+                let j = aged_job(JobStatus::Running);
+                let id = j.id;
+                reg.insert(id, j);
+                id
+            })
+            .collect();
+
+        // All in-flight, at the bound: nothing terminal to evict → registry left intact.
+        evict_terminal(&mut reg, 3);
+        assert_eq!(reg.len(), 3, "no terminal job to evict → in-flight kept");
+        assert!(
+            running.iter().all(|id| reg.contains_key(id)),
+            "every in-flight job survives"
+        );
+
+        // Mix in two terminal jobs: only those are evicted, the running ones stay.
+        let t0 = aged_job(JobStatus::Succeeded);
+        let t1 = aged_job(JobStatus::Failed);
+        reg.insert(t0.id, t0);
+        reg.insert(t1.id, t1);
+        evict_terminal(&mut reg, 3);
+        assert!(
+            running.iter().all(|id| reg.contains_key(id)),
+            "in-flight jobs still survive after terminal eviction"
+        );
+        assert!(
+            reg.values().all(|j| !j.is_terminal()),
+            "all terminal jobs were evicted, leaving only in-flight"
         );
     }
 }
