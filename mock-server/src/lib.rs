@@ -24,12 +24,18 @@ pub mod ui;
 
 use axum::{
     Router,
+    error_handling::HandleErrorLayer,
     middleware::from_fn_with_state,
     routing::{get, post},
 };
 use state::AppState;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tower::{
+    BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer, load_shed::LoadShedLayer,
+    timeout::TimeoutLayer,
+};
 
 /// Build the axum router. Registers `GET /subscriptions` (Wave 1), the
 /// `/subscriptions/{sub}/resourceGroups` and `/subscriptions/{sub}/resources`
@@ -66,6 +72,59 @@ pub fn build_router(state: AppState) -> Router {
         r = r.merge(control::router(cp));
     }
     r
+}
+
+/// Execution-budget knobs applied to the whole router by [`apply_execution_budgets`].
+/// Constructed from [`config::Cli`] in `main`. The DB budgets (`statement_timeout` /
+/// `acquire_timeout`) are applied at pool-build time in `main`, so they are baked into the
+/// pool rather than carried here.
+#[derive(Clone, Copy, Debug)]
+pub struct Budgets {
+    /// Global per-request wall-clock deadline (elapsed → ARM 504 GatewayTimeout).
+    pub request_timeout: Duration,
+    /// Max concurrent in-flight requests; excess is SHED (not queued) → ARM 503 + Retry-After.
+    pub concurrency_limit: usize,
+}
+
+/// Wrap `router` with the execution-budget middleware stack (resource-exhaustion guards).
+///
+/// Layer order (outermost → innermost), per the load-shed contract:
+///   * `HandleErrorLayer` (error mapper) — OUTSIDE both limiters, so it catches the errors
+///     they raise and turns them into ARM `CloudError` responses (never a bare status).
+///   * `LoadShed` — IMMEDIATELY outside the concurrency limiter, with NO `Buffer` between
+///     them, so a full limiter sheds INSTANTLY (503) instead of queueing the request.
+///   * `GlobalConcurrencyLimit` — a GENUINELY server-wide cap: the `Global` variant shares
+///     ONE semaphore across every cloned service (per-connection clones included), unlike
+///     the plain `ConcurrencyLimitLayer`, whose per-clone permit pool would NOT bound total
+///     in-flight requests.
+///   * `Timeout` — innermost, so a timed-out request still RELEASES its concurrency permit
+///     as its future resolves (permits release on completion, handler error, AND timeout).
+///
+/// Applied inside the shared serve path ([`serve_dual`]) AND directly by the budget tests,
+/// so the guards are always exercised through the real middleware.
+pub fn apply_execution_budgets(router: Router, budgets: Budgets) -> Router {
+    router.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(map_budget_error))
+            .layer(LoadShedLayer::new())
+            .layer(GlobalConcurrencyLimitLayer::new(budgets.concurrency_limit))
+            .layer(TimeoutLayer::new(budgets.request_timeout)),
+    )
+}
+
+/// Map the `BoxError` the budget middleware raises into an ARM `CloudError` response: a shed
+/// request (`LoadShed` `Overloaded`) → 503 ServiceUnavailable (+ `Retry-After: 1`); an
+/// elapsed request timeout (`Elapsed`) → 504 GatewayTimeout; anything else → a generic 500.
+/// Never leaks internals — the shaped variants carry fixed messages.
+async fn map_budget_error(err: BoxError) -> error::ApiError {
+    use error::ApiError;
+    if err.is::<tower::load_shed::error::Overloaded>() {
+        ApiError::ServiceUnavailable
+    } else if err.is::<tower::timeout::error::Elapsed>() {
+        ApiError::GatewayTimeout
+    } else {
+        ApiError::Internal(format!("budget middleware error: {err}"))
+    }
 }
 
 /// The pre-merge ARM baseline (WAPI-04 test seam, D-17): the FULL runtime router MINUS the
@@ -248,12 +307,15 @@ pub async fn ensure_web_metadata_schema(pool: &sqlx::PgPool) -> Result<(), sqlx:
 
 pub async fn serve_dual(
     state: AppState,
+    budgets: Budgets,
     tls: bool,
     host: &str,
     http_port: u16,
     tls_port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = build_router(state);
+    // Wrap the shared router in the execution-budget middleware (request timeout +
+    // concurrency shed). The DB budgets are already baked into `state.pool`.
+    let app = apply_execution_budgets(build_router(state), budgets);
 
     let http_addr = bind_addr(host, http_port);
     tracing::info!(addr = %http_addr, tls, "tenantless-server listening (HTTP)");

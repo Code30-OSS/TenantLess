@@ -1054,6 +1054,13 @@ pub struct SearchResourceGroupDto {
 /// [`SEARCH_SUBSCRIPTIONS_CAP`]: bounded, name-ASC) — the `LIMIT` on the RG-name query.
 const SEARCH_RESOURCE_GROUPS_CAP: i64 = 50;
 
+/// Execution budget: max characters accepted for the search term `q`. The search is a
+/// tenant-wide, non-sargable `ILIKE '%term%'` (leading `%` ⇒ sequential scan), so a
+/// pathologically long term inflates every row comparison; this caps the input at the
+/// source, complementing the server-wide `statement_timeout`. 200 chars is far beyond any
+/// real search. A fixed const (mirrors the other hardcoded search caps above).
+const MAX_SEARCH_TERM_CHARS: usize = 200;
+
 /// `GET /_sim/resources/search` envelope — a keyset-paginated page of search hits. `count` is
 /// the FULL filtered total (D-13), NOT the page size. `subscriptions` is a BOUNDED, name-ASC
 /// list of subscriptions whose name matches the term (EXPL-GAP-01b; `[]` when none match).
@@ -1090,10 +1097,18 @@ pub async fn search_resources(
     // Fail-closed parse (D-16): documented set = the pagination trio + `q`/`subscription`.
     let qs = SimQuery::parse(raw, &["q", "subscription"])?;
 
+    // Execution budget: cap the RAW term length BEFORE normalizing (escaping inflates
+    // length, so bound what the caller actually sent). A tenant-wide `ILIKE '%term%'` is a
+    // sequential scan, so an over-long term is rejected up front with a fixed 400.
+    let raw_term = qs.filter("q").unwrap_or_default();
+    if raw_term.chars().count() > MAX_SEARCH_TERM_CHARS {
+        return Err(ApiError::bad_request("search term too long"));
+    }
+
     // Normalize the literal `*` (plain-substring marker) BEFORE the empty-term guard so an
     // all-`*` term collapses to empty and fails-closed to the same fixed 400 (T-15G-03/04).
     // Require `q`: absent or all-whitespace → fixed 400 (T-15-24, no `%%` whole-table scan).
-    let q = normalize_search_term(qs.filter("q").unwrap_or_default());
+    let q = normalize_search_term(raw_term);
     if q.trim().is_empty() {
         return Err(ApiError::bad_request("missing search term"));
     }

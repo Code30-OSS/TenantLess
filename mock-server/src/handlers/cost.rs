@@ -22,8 +22,8 @@
 
 use crate::{error::ApiError, state::AppState};
 use axum::{
-    Json,
-    extract::{Path, State},
+    body::to_bytes,
+    extract::{FromRequest, Path, Request, State},
     http::header,
     response::{IntoResponse, Response},
 };
@@ -584,11 +584,37 @@ fn fold_rows(pairs: Vec<(Vec<Option<String>>, f64)>) -> Vec<(Vec<Option<String>>
 // cost route inherits the any-Bearer scanner contract (presence-only auth). Route wiring lands in 09-05.
 // ---------------------------------------------------------------------------------
 
+/// Max inbound cost-query body bytes (execution budget). A legitimate Cost Management
+/// query body is well under 1 KiB; 64 KiB is a generous structural ceiling. A fixed const
+/// (a structural safety bound, not an operational knob).
+const MAX_COST_BODY_BYTES: usize = 64 * 1024;
+
+/// Body-size-bounded JSON extractor for the cost queries. Reads at most
+/// [`MAX_COST_BODY_BYTES`] via [`to_bytes`], which consumes the request STREAM — so it
+/// bounds a chunked / unknown-`Content-Length` body too, not just a declared length (the
+/// gate cannot be bypassed by omitting `Content-Length`). An over-limit body → ARM **413**
+/// (a server-side budget, NOT malformed content); a within-limit body that is not valid
+/// `QueryRequest` JSON → ARM **400**. Body-consuming, so it must be the LAST handler arg.
+pub struct BoundedCostJson(pub QueryRequest);
+
+impl<S: Send + Sync> FromRequest<S> for BoundedCostJson {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = to_bytes(req.into_body(), MAX_COST_BODY_BYTES)
+            .await
+            .map_err(|_| ApiError::PayloadTooLarge)?;
+        let value = serde_json::from_slice::<QueryRequest>(&bytes)
+            .map_err(|_| ApiError::bad_request("invalid cost query body"))?;
+        Ok(BoundedCostJson(value))
+    }
+}
+
 /// `POST /subscriptions/{sub}/providers/Microsoft.CostManagement/query` (sub scope).
 pub async fn cost_query(
     State(state): State<AppState>,
     Path(sub): Path<Uuid>,
-    Json(req): Json<QueryRequest>,
+    BoundedCostJson(req): BoundedCostJson,
 ) -> Result<Response, ApiError> {
     let scope = format!("/subscriptions/{sub}");
     run_cost_query(&state, &scope, sub, None, req).await
@@ -600,7 +626,7 @@ pub async fn cost_query(
 pub async fn cost_query_scoped(
     State(state): State<AppState>,
     Path((sub, rg, tail)): Path<(Uuid, String, String)>,
-    Json(req): Json<QueryRequest>,
+    BoundedCostJson(req): BoundedCostJson,
 ) -> Result<Response, ApiError> {
     if tail != "Microsoft.CostManagement/query" {
         return Err(ApiError::NotFound { what: tail });

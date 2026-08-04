@@ -34,6 +34,19 @@ pub enum ApiError {
     /// 409 ControlBusy — another destructive control job already holds the single-writer
     /// gate; at most one generate/reset/restore is in flight (D-11).
     Busy,
+    /// 413 RequestEntityTooLarge — the inbound request body exceeded the size budget
+    /// (execution budgets). Enforced at extraction time, chunked-safe (T-BUDGET). A
+    /// server-side limit, NOT malformed content, so it is distinct from `BadRequest`.
+    PayloadTooLarge,
+    /// 503 ServiceUnavailable — the server is at its concurrency limit and shed this
+    /// request rather than queueing it (execution budgets, load-shed). Carries a
+    /// `Retry-After: 1` header. Capacity exhaustion, NOT a client error.
+    ServiceUnavailable,
+    /// 504 GatewayTimeout — a server-side execution deadline elapsed (the global request
+    /// timeout, or a Postgres `statement_timeout`/`57014` on a non-cost query). A
+    /// server-side timeout is NOT malformed client input, so it is a 504, never a 400.
+    /// (The cost endpoint keeps its own "query too expensive" 400 via its app deadline.)
+    GatewayTimeout,
     /// 500 InternalServerError — generic; wrapped detail is logged, never serialized.
     Internal(String),
 }
@@ -74,6 +87,9 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Load-shed 503s carry `Retry-After: 1` (the client should retry shortly, not
+        // give up). Captured before the match moves `self`.
+        let retry_after = matches!(self, ApiError::ServiceUnavailable);
         let (status, code, message): (StatusCode, &str, String) = match self {
             ApiError::NotFound { what } => (
                 StatusCode::NOT_FOUND,
@@ -103,6 +119,21 @@ impl IntoResponse for ApiError {
                 "ControlBusy",
                 "Another job is still running. Try again when it finishes.".to_string(),
             ),
+            ApiError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "RequestEntityTooLarge",
+                "The request body is too large.".to_string(),
+            ),
+            ApiError::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ServiceUnavailable",
+                "The server is temporarily at its concurrency limit. Retry shortly.".to_string(),
+            ),
+            ApiError::GatewayTimeout => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "GatewayTimeout",
+                "The request exceeded the server execution deadline.".to_string(),
+            ),
             ApiError::Internal(detail) => {
                 // Log the real cause server-side; NEVER put it in the response body.
                 tracing::error!(error = %detail, "internal server error");
@@ -113,17 +144,34 @@ impl IntoResponse for ApiError {
                 )
             }
         };
-        (
+        let mut response = (
             status,
             Json(serde_json::json!({ "error": { "code": code, "message": message } })),
         )
-            .into_response()
+            .into_response();
+        if retry_after {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        response
     }
 }
 
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
-        // Wrap for server-side logging only; the body stays generic.
+        // A cancelled statement (Postgres SQLSTATE 57014 `query_canceled`) means a
+        // server-side `statement_timeout` fired — a server execution deadline, mapped to
+        // 504 (NOT a 400: it is not malformed client input). The cost handler never reaches
+        // here for its own deadline — its app-owned `tokio::time::timeout` returns a 400
+        // first — so this maps only the server-wide statement_timeout on the other reads.
+        if let sqlx::Error::Database(db) = &err
+            && db.code().as_deref() == Some("57014")
+        {
+            return ApiError::GatewayTimeout;
+        }
+        // Otherwise wrap for server-side logging only; the body stays generic.
         ApiError::Internal(err.to_string())
     }
 }

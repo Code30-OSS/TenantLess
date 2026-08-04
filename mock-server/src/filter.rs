@@ -59,14 +59,36 @@ pub enum Filter {
     Or(Box<Filter>, Box<Filter>),
 }
 
+/// Execution budget: max UTF-8 bytes accepted for a `$filter` value, checked BEFORE
+/// tokenizing. A `$filter` arrives from the query string and is otherwise unbounded; a
+/// multi-KB value would tokenize into a huge AST whose `to_sql` (which recurses on
+/// `And`/`Or`) risks stack growth and emits a pathologically large `WHERE` clause. 2 KiB
+/// is far beyond any real ARM scanner filter. A fixed const (not env): the parser is a
+/// pure, DB-free, config-free module so its unit tests stay hermetic.
+const MAX_FILTER_BYTES: usize = 2048;
+
+/// Execution budget: max lexical tokens accepted, checked AFTER tokenizing. Bounds the AST
+/// size (hence the `to_sql` recursion depth and the emitted SQL fan-out) independently of
+/// the byte cap — ~200 tokens is dozens of conjuncts, far beyond any real filter.
+const MAX_FILTER_TOKENS: usize = 200;
+
 /// Parse a `$filter` string into a [`Filter`] AST.
 ///
 /// Returns `ApiError::BadRequest { message: "invalid $filter" }` (fixed string) for
-/// any malformed input, unknown field, unknown operator, unbalanced quotes, or a lone
-/// `tagValue` with no `tagName`. A lone `tagName eq 'K'` is valid (tag-key existence).
-/// Never panics.
+/// any malformed input, unknown field, unknown operator, unbalanced quotes, a lone
+/// `tagValue` with no `tagName`, or an input exceeding the size budget
+/// ([`MAX_FILTER_BYTES`] / [`MAX_FILTER_TOKENS`]). A lone `tagName eq 'K'` is valid
+/// (tag-key existence). Never panics.
 pub fn parse(input: &str) -> Result<Filter, ApiError> {
+    // Execution budget (fail closed BEFORE building the token vec / AST): an oversized
+    // filter is rejected with the same fixed no-leak 400 as any other malformed input.
+    if input.len() > MAX_FILTER_BYTES {
+        return Err(bad_filter());
+    }
     let tokens = tokenize(input).map_err(|_| bad_filter())?;
+    if tokens.len() > MAX_FILTER_TOKENS {
+        return Err(bad_filter());
+    }
     let mut p = Parser {
         tokens: &tokens,
         pos: 0,
@@ -680,5 +702,42 @@ mod tests {
         );
         // Sanity: 1 (location) + 2 (tag pair) + 1 (resourceType) = 4 binds.
         assert_eq!(args.len(), 4);
+    }
+
+    // ---- execution budget: size caps -------------------------------------
+
+    /// A `$filter` longer than the byte budget is rejected with the fixed no-leak 400,
+    /// BEFORE tokenizing — so an oversized value never builds a huge token vec / AST.
+    #[test]
+    fn rejects_filter_over_byte_budget() {
+        // A syntactically-VALID but enormous OR-chain (so only the size cap can reject it).
+        let clause = "location eq 'x' or ";
+        let huge = format!("{}location eq 'x'", clause.repeat(200)); // well over 2 KiB
+        assert!(huge.len() > super::MAX_FILTER_BYTES);
+        assert_rejected(&huge);
+    }
+
+    /// A `$filter` within the byte budget but exceeding the token budget is rejected. Uses
+    /// single-char literals so many conjuncts fit under 2 KiB yet blow the token cap.
+    #[test]
+    fn rejects_filter_over_token_budget() {
+        // Each `or location eq 'x'` is 5 tokens; ~60 of them clears the 200-token cap while
+        // staying well under MAX_FILTER_BYTES.
+        let tail = " or location eq 'x'".repeat(60);
+        let input = format!("location eq 'x'{tail}");
+        assert!(
+            input.len() <= super::MAX_FILTER_BYTES,
+            "must exercise the TOKEN cap, not bytes"
+        );
+        assert_rejected(&input);
+    }
+
+    /// A filter comfortably under both budgets still parses — the caps do not reject
+    /// ordinary compound filters.
+    #[test]
+    fn accepts_filter_within_budget() {
+        let f = ok("location eq 'eastus' or location eq 'westus' or location eq 'centralus'");
+        // Three-way OR folds into nested Or nodes; just prove it parsed.
+        assert!(matches!(f, Filter::Or(_, _)));
     }
 }

@@ -9,6 +9,42 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.2.0 — Execution budgets: bound request time, concurrency, DB time, and inbound size
+
+Minor release. Adds resource-exhaustion guards across the server so an any-Bearer caller
+cannot force unbounded memory/CPU/time. No breaking changes: ARM response shapes are
+unchanged, the new CLI flags are all additive (with defaults), and the profile schema is
+untouched. Every new failure is returned in the ARM `CloudError` JSON envelope
+(`{error:{code,message}}`) with a fixed, non-leaking message, so existing ARM clients parse
+them without special handling.
+
+### Added
+
+- **Global request timeout** — `REQUEST_TIMEOUT_SECS` (default 30). Every request runs under
+  a wall-clock deadline; an elapsed request returns `504 GatewayTimeout`. A server-side
+  timeout is not malformed client input, so it is a 504, never a 400.
+- **Server-wide concurrency limit with load-shedding** — `CONCURRENCY_LIMIT` (default 64). At
+  capacity the server SHEDS excess requests immediately with `503 ServiceUnavailable` and a
+  `Retry-After: 1` header, rather than queueing them (queueing under overload only grows
+  memory and latency). The limit is genuinely shared across every connection. An invalid
+  value fails startup.
+- **Server-wide database timeouts** — `DB_STATEMENT_TIMEOUT_MS` (default 10000) sets a
+  `statement_timeout` on every pooled connection, and `DB_ACQUIRE_TIMEOUT_SECS` (default 5)
+  bounds the wait for a free connection. A cancelled statement (Postgres `57014`) on any read
+  returns `504`. The cost query keeps its own tighter app-level deadline (still a `400`
+  "query too expensive") layered on top.
+- **`$filter` size cap** — a `$filter` over 2 KiB or 200 tokens is rejected with the fixed
+  `400 "invalid $filter"` before parsing, bounding the AST size, the emitted SQL, and the
+  parser's recursion depth.
+- **`/_sim` search-term cap** — a search term over 200 characters is rejected `400` before the
+  tenant-wide `ILIKE` scan runs.
+- **Cost query body-size cap** — the Cost Management query body is bounded at 64 KiB, enforced
+  while streaming so a chunked / unknown-`Content-Length` body cannot bypass it; an oversized
+  body returns `413 RequestEntityTooLarge`.
+
+The operational budgets (request/DB timeouts, concurrency) are environment-tunable; the
+structural caps (`$filter`, search-term, and body sizes) are fixed safety bounds.
+
 ## 1.1.12 — Hardening: run the mock-server container as a non-root user
 
 Security-hardening patch. No API, CLI-flag, or profile-schema changes — only the
