@@ -42,10 +42,23 @@ CREATE TABLE IF NOT EXISTS synthetic.role_assignments (
     scope              TEXT NOT NULL         -- sub | RG | resource id (all real)
 );
 
--- Backs the per-subscription roleAssignments read (handlers/authorization.rs:
--- WHERE subscription_id = $1 ORDER BY assignment_id).
+-- Backs the per-subscription roleAssignments read (handlers/authorization.rs). The
+-- listing is KEYSET-paginated (v1.1.11): the query is
+--   WHERE subscription_id = $1 AND assignment_id > $2 ORDER BY assignment_id LIMIT $3.
+-- The single-key idx_ra_sub can serve only the subscription equality prefix, leaving
+-- Postgres to sort/scan the subscription's whole assignment set on every page; the
+-- composite idx_ra_sub_assignment (subscription_id, assignment_id) turns the seek +
+-- ORDER BY into an index range scan (the assignment_id keyset rides the second key).
+-- idx_ra_sub is retained (harmless prefix subset) rather than dropped, to keep this an
+-- additive migration. Both are CREATE INDEX IF NOT EXISTS, so re-applying sql/005
+-- (writer.ensure_identity_schema, run UNCONDITIONALLY by generate/init-db) UPGRADES an
+-- existing database automatically — a DB provisioned before v1.1.11 gains the composite
+-- index on its next run, with no manual step and no re-provision.
 CREATE INDEX IF NOT EXISTS idx_ra_sub
     ON synthetic.role_assignments (subscription_id);
+
+CREATE INDEX IF NOT EXISTS idx_ra_sub_assignment
+    ON synthetic.role_assignments (subscription_id, assignment_id);
 
 -- Safe FK: every assignment references a real principal (IAM-02/D-07, the
 -- 0-dangling gate / XSUB-06 analogue). Idempotent via a guarded DO block so a

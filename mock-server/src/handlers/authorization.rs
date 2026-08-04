@@ -16,10 +16,14 @@
 //! response DTOs are OWN `#[derive(Serialize)]` shapes (the deliberate non-reuse of
 //! `arm::ListResponse` where the shape differs, RESEARCH Q3 / cost.rs precedent).
 
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    pagination::{PageParams, clamp_top, cursor_uuid_from_token, encode_token, next_link},
+    state::AppState,
+};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use serde::Serialize;
 use sqlx::Row;
@@ -283,6 +287,203 @@ fn to_role_definition(role: &BuiltinRole, sub: &Uuid) -> RoleDefinition {
 }
 
 // ---------------------------------------------------------------------------------
+// roleAssignments `$filter` — a tiny dedicated parser for the two ARM forms this mock
+// honors (`atScope()` and `principalId eq '{guid}'`) plus their `and`-composition. Any
+// OTHER form (`assignedTo(...)`, `roleDefinitionId eq ...`, an unknown field/operator, a
+// non-GUID principalId, or malformed input) is REJECTED with a fixed-string 400 — the
+// endpoint never SILENTLY ignores a filter it cannot honor (the misleading behavior this
+// closes). This is a SEPARATE grammar from the resource-list `$filter` (`filter.rs`),
+// which keys on `resourceType`/`location`/tags — those fields have no meaning here.
+// ---------------------------------------------------------------------------------
+mod ra_filter {
+    use crate::error::ApiError;
+    use uuid::Uuid;
+
+    /// The parsed roleAssignments `$filter`. A successful parse always sets at least one
+    /// predicate (an empty filter is rejected), so it always contributes a `WHERE` conjunct.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub(super) struct RaFilter {
+        /// `atScope()` — Azure defines this as "assignments AT OR ABOVE the given scope"
+        /// (i.e. this scope plus any inherited from parent management groups / the tenant
+        /// root), which excludes the RG/resource-scoped assignments BELOW it. TenantLess
+        /// models no management-group or tenant-root assignments, so at a subscription scope
+        /// "at or above" reduces to EXACTLY `/subscriptions/{sub}` — [`to_conjunct`] filters
+        /// on `scope = '/subscriptions/{sub}'`, which is the correct reduction of the Azure
+        /// contract for the modeled subset, NOT the general "exactly this scope" rule.
+        ///
+        /// [`to_conjunct`]: RaFilter::to_conjunct
+        pub at_scope: bool,
+        /// `principalId eq '{guid}'` — restrict to one principal. The literal is validated
+        /// as a GUID at parse time (a non-GUID is a 400), mirroring real ARM's GUID
+        /// `principalId`; carrying a `Uuid` also means the bound value can never be a SQL
+        /// metacharacter.
+        pub principal_id: Option<Uuid>,
+    }
+
+    /// A lexical token: an identifier (`principalId`/`atScope`/`eq`/`and`), a single-quoted
+    /// literal, or a paren (for the `atScope()` call form).
+    #[derive(Debug, PartialEq, Eq)]
+    enum Token {
+        Ident(String),
+        Literal(String),
+        LParen,
+        RParen,
+    }
+
+    /// The fixed-string 400 used for EVERY parse/validation failure — byte-identical to
+    /// `filter.rs` so both `$filter` surfaces reject uniformly and leak nothing (T-04-04).
+    fn bad() -> ApiError {
+        ApiError::BadRequest {
+            message: "invalid $filter".to_string(),
+        }
+    }
+
+    /// Lex the filter into idents / single-quoted literals / parens. `''` inside a literal
+    /// is one escaped quote (OData). Any other byte is a lex error → fixed 400.
+    fn tokenize(input: &str) -> Result<Vec<Token>, ()> {
+        let bytes = input.as_bytes();
+        let mut tokens = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c.is_ascii_whitespace() {
+                i += 1;
+            } else if c == b'(' {
+                tokens.push(Token::LParen);
+                i += 1;
+            } else if c == b')' {
+                tokens.push(Token::RParen);
+                i += 1;
+            } else if c == b'\'' {
+                i += 1;
+                let mut value = String::new();
+                loop {
+                    if i >= bytes.len() {
+                        return Err(()); // unterminated literal (unbalanced quote)
+                    }
+                    if bytes[i] == b'\'' {
+                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                            value.push('\'');
+                            i += 2;
+                        } else {
+                            i += 1; // closing quote
+                            break;
+                        }
+                    } else {
+                        let ch = input[i..].chars().next().ok_or(())?;
+                        value.push(ch);
+                        i += ch.len_utf8();
+                    }
+                }
+                tokens.push(Token::Literal(value));
+            } else if c.is_ascii_alphanumeric() {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+                    i += 1;
+                }
+                tokens.push(Token::Ident(input[start..i].to_string()));
+            } else {
+                return Err(()); // stray punctuation outside the grammar
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// Parse the supported roleAssignments `$filter` forms into a [`RaFilter`]. Returns the
+    /// fixed-string 400 for any unsupported/malformed input — it NEVER falls through to a
+    /// silent no-op. Never panics.
+    pub(super) fn parse(input: &str) -> Result<RaFilter, ApiError> {
+        let tokens = tokenize(input).map_err(|_| bad())?;
+        let mut pos = 0;
+        let mut out = RaFilter::default();
+
+        loop {
+            // ---- one clause: `atScope()` | `principalId eq '{guid}'` ----
+            match tokens.get(pos) {
+                Some(Token::Ident(kw)) if kw == "atScope" => {
+                    pos += 1;
+                    if tokens.get(pos) != Some(&Token::LParen)
+                        || tokens.get(pos + 1) != Some(&Token::RParen)
+                    {
+                        return Err(bad());
+                    }
+                    pos += 2;
+                    out.at_scope = true;
+                }
+                Some(Token::Ident(kw)) if kw == "principalId" => {
+                    pos += 1;
+                    match tokens.get(pos) {
+                        Some(Token::Ident(op)) if op == "eq" => pos += 1,
+                        _ => return Err(bad()), // missing/unknown operator
+                    }
+                    let lit = match tokens.get(pos) {
+                        Some(Token::Literal(v)) => v,
+                        _ => return Err(bad()), // missing literal
+                    };
+                    pos += 1;
+                    let guid = Uuid::parse_str(lit).map_err(|_| bad())?; // GUID-only
+                    if out.principal_id.is_some() {
+                        return Err(bad()); // two principalId clauses in one filter
+                    }
+                    out.principal_id = Some(guid);
+                }
+                // empty, an unknown field, `assignedTo(...)`, `roleDefinitionId`, a bare
+                // literal where a clause was expected — all rejected here.
+                _ => return Err(bad()),
+            }
+
+            // ---- `and` continues the filter; anything else must be EOF ----
+            match tokens.get(pos) {
+                Some(Token::Ident(kw)) if kw == "and" => {
+                    pos += 1;
+                    continue;
+                }
+                None => break,
+                _ => return Err(bad()), // trailing junk (e.g. two clauses without `and`)
+            }
+        }
+
+        Ok(out)
+    }
+
+    impl RaFilter {
+        /// Build the placeholders-only `WHERE` conjunct (`" AND (...)"`) for this filter,
+        /// pushing each literal into `args` in bind order. `next` is the next free `$N`
+        /// index, seeded PAST the handler's fixed binds; it advances as args are pushed so
+        /// `#($N) == args.len()`.
+        ///
+        /// INVARIANT (the injection guard): the returned string carries ONLY column names,
+        /// `$N` placeholders, a `::uuid` cast, parens, and `AND` — never a user literal. The
+        /// principal GUID and the server-built scope BOTH flow through `args`.
+        pub(super) fn to_conjunct(
+            &self,
+            sub: &Uuid,
+            next: &mut i32,
+            args: &mut Vec<String>,
+        ) -> String {
+            let mut parts = Vec::new();
+            if self.at_scope {
+                let idx = *next;
+                *next += 1;
+                args.push(format!("/subscriptions/{sub}"));
+                parts.push(format!("scope = ${idx}"));
+            }
+            if let Some(pid) = self.principal_id {
+                let idx = *next;
+                *next += 1;
+                args.push(pid.to_string());
+                parts.push(format!("principal_oid = ${idx}::uuid"));
+            }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!(" AND ({})", parts.join(" AND "))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------
 // Handlers — register INSIDE the `arm` router (any-Bearer + enforce swap inherited).
 // ---------------------------------------------------------------------------------
 
@@ -313,24 +514,66 @@ pub async fn get_role_definition(
 }
 
 /// `GET /subscriptions/{sub}/providers/Microsoft.Authorization/roleAssignments` — a
-/// `$1`-bound sqlx read of `synthetic.role_assignments` (the subscription id is bound,
-/// NEVER spliced — project SQL bar / cost.rs precedent), mapped into the verified item
-/// shape. The stored `role_definition_id` is already tenant-scoped (writer contract), so
-/// it is emitted verbatim.
+/// keyset-paginated sqlx read of `synthetic.role_assignments`, mapped into the verified
+/// item shape. The stored `role_definition_id` is already tenant-scoped (writer contract),
+/// so it is emitted verbatim.
+///
+/// Pagination mirrors the resource list (MOCK-03/08): keyset over the UUID PK
+/// `assignment_id` with a `$top` clamp, an opaque `$skiptoken` continuation, and an
+/// absolute `nextLink`. The subscription id and decoded cursor are `.bind()`-bound, never
+/// spliced (project SQL bar / cost.rs precedent).
+///
+/// `$filter` (2022-04-01) is HONORED, not silently ignored: `atScope()` and
+/// `principalId eq '{guid}'` (and their `and`-composition) map to a placeholders-only
+/// `WHERE` conjunct via [`ra_filter`]; every other/malformed form short-circuits to a
+/// fixed-string 400 via `?` BEFORE any SQL is built.
 pub async fn list_role_assignments(
     State(state): State<AppState>,
     Path(sub): Path<Uuid>,
+    Query(params): Query<PageParams>,
 ) -> Result<Json<RoleAssignmentList>, ApiError> {
-    let rows = sqlx::query(
-        "SELECT assignment_id, principal_oid, principal_type, role_definition_id, scope \
-         FROM synthetic.role_assignments WHERE subscription_id = $1 ORDER BY assignment_id",
-    )
-    .bind(sub)
-    .fetch_all(&state.pool)
-    .await?;
+    let top = clamp_top(params.top);
+    let cursor = cursor_uuid_from_token(params.skiptoken.as_deref())?;
 
-    let mut value = Vec::with_capacity(rows.len());
-    for row in &rows {
+    // Parse `$filter` BEFORE building any SQL: an unsupported or malformed filter is an
+    // explicit 400 (never a silent-ignore 200 — the misleading behavior this closes).
+    // Fixed binds are $1 sub, $2 cursor, $3 top+1, so filter placeholders seed at $4.
+    let parsed = params.filter.as_deref().map(ra_filter::parse).transpose()?;
+    let mut next_param = 4;
+    let mut filter_args = Vec::<String>::new();
+    let where_extra = match &parsed {
+        Some(f) => f.to_conjunct(&sub, &mut next_param, &mut filter_args),
+        None => String::new(),
+    };
+
+    // `$3 = top + 1` fetches one surplus row to decide whether another page (and thus a
+    // `nextLink`) is due — the same `LIMIT top+1` keyset trick the resource list uses.
+    let sql = format!(
+        "SELECT assignment_id, principal_oid, principal_type, role_definition_id, scope \
+         FROM synthetic.role_assignments \
+         WHERE subscription_id = $1 AND ($2::uuid IS NULL OR assignment_id > $2){where_extra} \
+         ORDER BY assignment_id \
+         LIMIT $3"
+    );
+
+    let mut q = sqlx::query(&sql).bind(sub).bind(cursor).bind(top + 1);
+    // Dynamic bind loop — the SQL text contains only $N tokens; every literal is bound.
+    for a in filter_args {
+        q = q.bind(a);
+    }
+    let rows = q.fetch_all(&state.pool).await?;
+
+    // `LIMIT top+1` split: a surplus row means another page exists (Pitfall 4).
+    let has_more = rows.len() as i64 > top;
+    let page = if has_more {
+        &rows[..top as usize]
+    } else {
+        &rows[..]
+    };
+
+    let mut value = Vec::with_capacity(page.len());
+    let mut last_assignment_id: Option<Uuid> = None;
+    for row in page {
         let assignment_id: Uuid = row.try_get("assignment_id")?;
         let principal_oid: Uuid = row.try_get("principal_oid")?;
         let principal_type: String = row.try_get("principal_type")?;
@@ -356,18 +599,133 @@ pub async fn list_role_assignments(
                 scope,
             },
         });
+        last_assignment_id = Some(assignment_id);
     }
+
+    // Emit an absolute `nextLink` (echoing `$top`/`api-version`/`$filter`) ONLY when a
+    // surplus row proved another page exists — so a filtered/paged traversal replays the
+    // same predicate on page 2+ (mirrors the resource list).
+    let link = if has_more {
+        last_assignment_id.map(|id| {
+            let tok = encode_token(&id.to_string());
+            let path =
+                format!("/subscriptions/{sub}/providers/Microsoft.Authorization/roleAssignments");
+            next_link(
+                &state.base_url,
+                &path,
+                top,
+                &tok,
+                params.api_version.as_deref(),
+                params.filter.as_deref(),
+            )
+        })
+    } else {
+        None
+    };
 
     Ok(Json(RoleAssignmentList {
         value,
-        next_link: None,
+        next_link: link,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ra_filter::RaFilter;
     use serde_json::Value;
+
+    // ---- roleAssignments `$filter` parser (DB-free) ------------------------
+
+    /// `atScope()` parses to the at-scope-only filter.
+    #[test]
+    fn ra_filter_parses_at_scope() {
+        assert_eq!(
+            ra_filter::parse("atScope()").unwrap(),
+            RaFilter {
+                at_scope: true,
+                principal_id: None,
+            }
+        );
+    }
+
+    /// `principalId eq '{guid}'` parses to the principal-only filter (GUID validated).
+    #[test]
+    fn ra_filter_parses_principal_id() {
+        let g = Uuid::from_u128(0x0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a);
+        assert_eq!(
+            ra_filter::parse(&format!("principalId eq '{g}'")).unwrap(),
+            RaFilter {
+                at_scope: false,
+                principal_id: Some(g),
+            }
+        );
+    }
+
+    /// The two clauses compose with `and`, in either order (AND is commutative).
+    #[test]
+    fn ra_filter_parses_combined_and() {
+        let g = Uuid::from_u128(0x0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c);
+        let expected = RaFilter {
+            at_scope: true,
+            principal_id: Some(g),
+        };
+        assert_eq!(
+            ra_filter::parse(&format!("atScope() and principalId eq '{g}'")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            ra_filter::parse(&format!("principalId eq '{g}' and atScope()")).unwrap(),
+            expected
+        );
+    }
+
+    /// Every unsupported or malformed form is the fixed-string 400 — NEVER a silent no-op.
+    #[test]
+    fn ra_filter_rejects_unsupported_and_malformed() {
+        for bad in [
+            "",
+            "   ",
+            "assignedTo('0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a')", // unsupported form
+            "roleDefinitionId eq '8e3af657-bb00-4899-acbc-f0f7f5db61aa'", // unsupported field
+            "principalId eq 'not-a-guid'",                        // non-GUID literal
+            "principalId eq",                                     // missing literal
+            "principalId 'x'",                                    // missing operator
+            "atScope(",                                           // unbalanced paren
+            "atScope() and",                                      // trailing `and`
+            "foo eq 'x'",                                         // unknown field
+            "atScope() atScope()",                                // two clauses, no `and`
+        ] {
+            match ra_filter::parse(bad) {
+                Err(ApiError::BadRequest { message }) => {
+                    assert_eq!(message, "invalid $filter", "wrong message for {bad:?}");
+                }
+                other => panic!("expected a 400 for {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
+    /// The conjunct is placeholders-only: a combined filter seeds at `$4` (past the
+    /// handler's fixed `$1..$3`); the fragment carries ONLY columns, `$N`, a `::uuid`
+    /// cast, and `AND` — the GUID + server-built scope flow through `args`.
+    #[test]
+    fn ra_filter_conjunct_is_placeholders_only() {
+        let g = Uuid::from_u128(0x0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c);
+        let sub = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+        let f = ra_filter::parse(&format!("atScope() and principalId eq '{g}'")).unwrap();
+
+        let mut next = 4;
+        let mut args = Vec::new();
+        let frag = f.to_conjunct(&sub, &mut next, &mut args);
+
+        assert_eq!(frag, " AND (scope = $4 AND principal_oid = $5::uuid)");
+        assert_eq!(args, vec![format!("/subscriptions/{sub}"), g.to_string()]);
+        assert_eq!(next, 6, "two placeholders consumed");
+        // Every `$N` has exactly one bound arg (no orphan placeholders).
+        assert_eq!(frag.matches('$').count(), args.len());
+        // The GUID literal never appears spliced in the fragment (data, not code).
+        assert!(!frag.contains(&g.to_string()));
+    }
 
     /// catalogue_is_constant: the static catalogue holds exactly the eight built-in
     /// GUID+roleName tuples; Owner/Contributor/Reader GUIDs are present; every entry is

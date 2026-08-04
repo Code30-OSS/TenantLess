@@ -9,6 +9,42 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.11 — Fix: paginate role assignments and honor (or reject) their `$filter`
+
+Bug-fix patch. No CLI-flag or profile-schema changes, and no change to the shape of a
+`roleAssignments` item — the `1.x` public surface is unchanged. Brings the
+`Microsoft.Authorization/roleAssignments` list endpoint in line with the other ARM list
+endpoints.
+
+### Fixed
+
+- **The role-assignment listing is now keyset-paginated.** It previously fetched every
+  assignment for a subscription into memory and returned them in one unbounded response,
+  unlike every other ARM list endpoint. It now honors `$top` (clamped to `1..=1000`), an
+  opaque `$skiptoken` continuation over the assignment id, and emits an absolute `nextLink`
+  when another page exists — the same mechanism the resource list uses.
+- **`$filter` is now honored instead of silently ignored.** A `$filter` was previously
+  accepted and then quietly dropped, so a caller narrowing the list received the full
+  unfiltered set with a `200` — misleading. The endpoint now applies the ARM `atScope()`
+  and `principalId eq '{guid}'` forms (and their `and`-composition), and rejects any other
+  or malformed form — including a non-GUID `principalId` — with an explicit
+  `400 InvalidRequestContent` (`"invalid $filter"`, a fixed non-leaking message). Azure
+  defines `atScope()` as "assignments at or above the given scope"; because this simulator
+  models no management-group or tenant-root assignments, at a subscription scope that
+  reduces to exactly `/subscriptions/{sub}` (the assignments below it, at resource-group or
+  resource scope, are excluded). `principalId eq` returns only that principal's assignments.
+  The `$filter` is echoed in `nextLink`, so a filtered traversal replays the same predicate
+  on later pages. The principal id and the scope are bound as `$N` parameters, never spliced
+  into SQL.
+- **The keyset pagination is index-backed.** The role-assignments table previously carried
+  only `idx_ra_sub (subscription_id)`, which serves the subscription equality prefix but
+  leaves Postgres to sort or scan the subscription's whole assignment set on every page. A
+  composite `idx_ra_sub_assignment (subscription_id, assignment_id)` turns the keyset seek
+  and `ORDER BY assignment_id` into an index range scan. It ships in the existing idempotent
+  `sql/005_identity.sql` migration (applied unconditionally by `generate`/`init-db`), so a
+  database provisioned before this release gains the index automatically on its next run,
+  with no manual step and no re-provision.
+
 ## 1.1.10 — Perf: index the case-insensitive resource-group predicate
 
 Bug-fix patch (performance). No API, CLI-flag, or profile-schema changes. Follow-up to

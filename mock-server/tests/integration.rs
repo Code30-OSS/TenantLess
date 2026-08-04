@@ -1215,6 +1215,46 @@ async fn rg_lower_functional_index_exists() {
     );
 }
 
+/// The composite keyset index `idx_ra_sub_assignment (subscription_id, assignment_id)`
+/// exists on `synthetic.role_assignments` — it backs the paginated roleAssignments read
+/// (`WHERE subscription_id = $1 AND assignment_id > $2 ORDER BY assignment_id LIMIT $3`).
+/// The single-key `idx_ra_sub` serves only the equality prefix, so this composite index is
+/// what turns the seek + `ORDER BY` into an index range scan instead of a per-page sort of
+/// the subscription's whole assignment set. It ships in sql/005 (idempotent), so an
+/// existing DB gains it on the next `ensure_identity_schema` — hence seeding the identity
+/// schema (which applies sql/005) is the precondition here.
+#[tokio::test]
+async fn ra_sub_assignment_composite_index_exists() {
+    let (pool, _container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    common::seed_identity_rows(&pool).await; // applies sql/005 → creates the index
+
+    let indexdef: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes \
+         WHERE schemaname = 'synthetic' AND tablename = 'role_assignments' \
+           AND indexname = 'idx_ra_sub_assignment' \
+         LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("query pg_indexes");
+
+    let def = indexdef
+        .expect("expected the composite idx_ra_sub_assignment over synthetic.role_assignments");
+    // Must cover both keys, with subscription_id (the equality prefix) LEADING
+    // assignment_id (the keyset seek + ORDER BY), so the paginated read is a range scan.
+    let sub_pos = def
+        .find("subscription_id")
+        .expect("index must reference subscription_id");
+    let asg_pos = def
+        .find("assignment_id")
+        .expect("index must reference assignment_id");
+    assert!(
+        sub_pos < asg_pos,
+        "composite index must lead with subscription_id then assignment_id: {def}"
+    );
+}
+
 /// The safe FK from synthetic.resources(subscription_id) -> synthetic.subscriptions
 /// exists after sql/003 (validity holds: every resource is minted under a seeded
 /// subscription; the fixture seeds all resources under SUB_A).
@@ -2047,6 +2087,21 @@ mod identity {
         format!("/subscriptions/{sub}/providers/Microsoft.Authorization/roleAssignments")
     }
 
+    /// Percent-encode the chars our `$filter` values use (space, quote, parens) so the raw
+    /// value survives `Request::builder().uri(...)` parsing.
+    fn q(filter: &str) -> String {
+        filter
+            .chars()
+            .map(|c| match c {
+                ' ' => "%20".to_string(),
+                '\'' => "%27".to_string(),
+                '(' => "%28".to_string(),
+                ')' => "%29".to_string(),
+                other => other.to_string(),
+            })
+            .collect()
+    }
+
     /// Build a router + identity-seeded pool. Returns the app, the container guard, a
     /// pool clone (for direct SQL anti-joins), and the identity ground truth.
     async fn identity_app() -> (
@@ -2229,6 +2284,176 @@ mod identity {
             "fixture must seed at least one RG/resource-scoped assignment so the \
              scope-rooted id assertion is meaningful"
         );
+    }
+
+    /// roleAssignments pagination: a small `$top` returns exactly that many items plus an
+    /// absolute `nextLink`; following the continuation collects EVERY seeded assignment
+    /// exactly once, and the final page carries no `nextLink`.
+    #[tokio::test]
+    async fn role_assignments_paginated() {
+        let (app, _c, _pool, seed) = identity_app().await;
+        let base = role_assignments_path(&common::SUB_A);
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut uri = format!("{base}?$top=2");
+        let mut pages = 0;
+        loop {
+            let (status, body) = common::request(app.clone(), "GET", &uri, Some("x")).await;
+            assert_eq!(status, 200);
+            let value = body["value"].as_array().expect("value array");
+            assert!(value.len() <= 2, "a page must not exceed $top");
+            for item in value {
+                assert!(
+                    seen.insert(item["name"].as_str().unwrap().to_string()),
+                    "no assignment may repeat across pages"
+                );
+            }
+            pages += 1;
+            assert!(pages < 10, "pagination must terminate");
+            match body["nextLink"].as_str() {
+                // nextLink is absolute against the configured base_url; drive its path+query.
+                Some(link) => {
+                    uri = link
+                        .strip_prefix("http://test")
+                        .expect("nextLink is absolute against base_url")
+                        .to_string();
+                }
+                None => break,
+            }
+        }
+        assert_eq!(
+            seen.len() as i64,
+            seed.assignment_count,
+            "the paginated traversal must cover every seeded assignment exactly once"
+        );
+        assert!(
+            pages >= 3,
+            "{} rows at $top=2 must require >= 3 pages, got {pages}",
+            seed.assignment_count
+        );
+    }
+
+    /// #4 (roleAssignments `$filter=principalId eq`): only the target principal's
+    /// assignments are returned — the filter is HONORED, not silently ignored.
+    #[tokio::test]
+    async fn role_assignments_filter_principal_id() {
+        let (app, _c, _pool, _seed) = identity_app().await;
+        let uri = format!(
+            "{}?$filter={}",
+            role_assignments_path(&common::SUB_A),
+            q(&format!("principalId eq '{}'", common::PRINCIPAL_USER))
+        );
+        let (status, body) = common::request(app, "GET", &uri, Some("x")).await;
+        assert_eq!(status, 200);
+
+        let value = body["value"].as_array().expect("value array");
+        assert_eq!(
+            value.len(),
+            2,
+            "PRINCIPAL_USER holds exactly two seeded assignments"
+        );
+        for item in value {
+            assert_eq!(
+                item["properties"]["principalId"].as_str().unwrap(),
+                common::PRINCIPAL_USER.to_string(),
+                "every returned assignment must belong to the filtered principal"
+            );
+        }
+    }
+
+    /// roleAssignments `$filter=atScope()`: Azure defines `atScope()` as "assignments at or
+    /// above the given scope". TenantLess models no management-group/tenant-root
+    /// assignments, so at a subscription scope that reduces to exactly `/subscriptions/{sub}`
+    /// — the two Owner-at-subscription grants — and the RG/resource-scoped assignments BELOW
+    /// it are excluded. This asserts that modeled reduction, not the general Azure contract.
+    #[tokio::test]
+    async fn role_assignments_filter_at_scope() {
+        let (app, _c, _pool, _seed) = identity_app().await;
+        let uri = format!(
+            "{}?$filter={}",
+            role_assignments_path(&common::SUB_A),
+            q("atScope()")
+        );
+        let (status, body) = common::request(app, "GET", &uri, Some("x")).await;
+        assert_eq!(status, 200);
+
+        let value = body["value"].as_array().expect("value array");
+        let sub_scope = format!("/subscriptions/{}", common::SUB_A);
+        assert_eq!(
+            value.len(),
+            2,
+            "two seeded assignments live at the subscription scope (no mgmt-group/root \
+             assignments are modeled, so 'at or above' reduces to exactly this scope)"
+        );
+        for item in value {
+            assert_eq!(
+                item["properties"]["scope"].as_str().unwrap(),
+                sub_scope,
+                "with no scopes above the subscription modeled, atScope() returns only \
+                 assignments at /subscriptions/{{sub}} (never the RG/resource ones below)"
+            );
+        }
+    }
+
+    /// #4 (composed `atScope() and principalId eq`): both predicates apply — only the SP's
+    /// subscription-scope Owner grant matches.
+    #[tokio::test]
+    async fn role_assignments_filter_combined() {
+        let (app, _c, _pool, _seed) = identity_app().await;
+        let uri = format!(
+            "{}?$filter={}",
+            role_assignments_path(&common::SUB_A),
+            q(&format!(
+                "atScope() and principalId eq '{}'",
+                common::PRINCIPAL_SP
+            ))
+        );
+        let (status, body) = common::request(app, "GET", &uri, Some("x")).await;
+        assert_eq!(status, 200);
+
+        let value = body["value"].as_array().expect("value array");
+        assert_eq!(
+            value.len(),
+            1,
+            "only the SP's subscription-scope Owner grant matches both predicates"
+        );
+        let p = &value[0]["properties"];
+        assert_eq!(
+            p["principalId"].as_str().unwrap(),
+            common::PRINCIPAL_SP.to_string()
+        );
+        assert_eq!(
+            p["scope"].as_str().unwrap(),
+            format!("/subscriptions/{}", common::SUB_A)
+        );
+    }
+
+    /// #4 (no silent-ignore): an unsupported or malformed `$filter` is an EXPLICIT 400
+    /// with the fixed non-leaking message — never a silent-ignore 200.
+    #[tokio::test]
+    async fn role_assignments_unsupported_filter_is_400() {
+        let (app, _c, _pool, _seed) = identity_app().await;
+        for filter in [
+            "assignedTo('0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a')",
+            "roleDefinitionId eq '8e3af657-bb00-4899-acbc-f0f7f5db61aa'",
+            "principalId eq 'not-a-guid'",
+        ] {
+            let uri = format!(
+                "{}?$filter={}",
+                role_assignments_path(&common::SUB_A),
+                q(filter)
+            );
+            let (status, body) = common::request(app.clone(), "GET", &uri, Some("x")).await;
+            assert_eq!(
+                status, 400,
+                "unsupported/malformed $filter {filter:?} must be an explicit 400, not a silent-ignore 200"
+            );
+            assert_eq!(
+                body["error"]["message"].as_str().unwrap_or_default(),
+                "invalid $filter",
+                "the 400 must carry the fixed non-leaking message for {filter:?}: {body}"
+            );
+        }
     }
 
     /// IAM-02/D-07 (the three-way 0-dangling chain): every seeded role_assignment
