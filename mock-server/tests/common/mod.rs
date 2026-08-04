@@ -523,6 +523,16 @@ pub const ROLE_OWNER_GUID: &str = "8e3af657-bb00-4899-acbc-f0f7f5db61aa";
 pub const ROLE_CONTRIBUTOR_GUID: &str = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 pub const ROLE_READER_GUID: &str = "acdd72a7-3385-48ef-bd42-f606fba81ae7";
 
+/// The three seeded principal oids, exported so the `$filter=principalId eq` tests can
+/// target a known principal. Values are byte-identical to the original inline literals
+/// `seed_identity_rows` used — the seed now references these consts (single source).
+/// `PRINCIPAL_USER` holds 2 assignments (Reader@resource, Contributor@RG); `PRINCIPAL_GROUP`
+/// holds 2 (Reader@RG, Owner@subscription); `PRINCIPAL_SP` holds 2 (Reader@resource,
+/// Owner@subscription).
+pub const PRINCIPAL_USER: Uuid = Uuid::from_u128(0x0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a);
+pub const PRINCIPAL_GROUP: Uuid = Uuid::from_u128(0x0b0b_0b0b_0b0b_0b0b_0b0b_0b0b_0b0b_0b0b);
+pub const PRINCIPAL_SP: Uuid = Uuid::from_u128(0x0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c);
+
 /// What `seed_identity_rows` established, so the integration assertions have a known
 /// ground truth. `role_definition_ids` is the DISTINCT set of tenant-scoped
 /// roleDefinition ids seeded (for the catalogue-agreement assertion).
@@ -551,10 +561,12 @@ pub async fn seed_identity_rows(pool: &PgPool) -> IdentitySeed {
     pool.execute_unchecked(sql_005).await;
 
     // 3 principals: a User, a Group, and a ServicePrincipal (the SP carries an app_id;
-    // display_name stays NULL — principals are ARM-opaque GUIDs, IAM-01/Pitfall 5).
-    let p_user = Uuid::from_u128(0x0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a);
-    let p_group = Uuid::from_u128(0x0b0b_0b0b_0b0b_0b0b_0b0b_0b0b_0b0b_0b0b);
-    let p_sp = Uuid::from_u128(0x0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c_0c0c);
+    // display_name stays NULL — principals are ARM-opaque GUIDs, IAM-01/Pitfall 5). The
+    // oids are the exported `PRINCIPAL_*` consts (single source — the `$filter` tests
+    // target the same values).
+    let p_user = PRINCIPAL_USER;
+    let p_group = PRINCIPAL_GROUP;
+    let p_sp = PRINCIPAL_SP;
     let sp_app_id = Uuid::from_u128(0x0d0d_0d0d_0d0d_0d0d_0d0d_0d0d_0d0d_0d0d);
 
     let principals: [(Uuid, &str, Option<Uuid>); 3] = [

@@ -24,4 +24,4 @@ def test_version_option_reports_package_version() -> None:
 
 def test_version_matches_distribution_metadata() -> None:
     # The version the CLI prints must be the one packaging ships, not a hardcoded string.
-    assert metadata.version("tenantless") == "1.1.10"
+    assert metadata.version("tenantless") == "1.1.11"
