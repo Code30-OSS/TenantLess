@@ -296,12 +296,22 @@
           "distribution": { "type": "string", "enum": ["lognormal", "gamma"] },
           "mu": { "type": "number" },
           "sigma": { "type": "number", "minimum": 0 },
-          "shape": { "type": "number" },
-          "scale": { "type": "number" },
+          "shape": { "type": "number", "exclusiveMinimum": 0 },
+          "scale": { "type": "number", "exclusiveMinimum": 0 },
           "loc": { "type": "number" },
           "sample_count": { "type": "integer", "minimum": 0 }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": { "properties": { "distribution": { "const": "gamma" } } },
+            "then": { "required": ["shape", "scale"] }
+          },
+          {
+            "if": { "properties": { "distribution": { "const": "lognormal" } } },
+            "then": { "required": ["mu", "sigma"] }
+          }
+        ]
       }
     }
   },

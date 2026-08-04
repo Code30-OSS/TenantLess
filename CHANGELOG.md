@@ -9,6 +9,24 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.7 — Fix: reject cost distributions that would crash the generator
+
+Bug-fix patch. No API, CLI-flag, or command changes; the profile schema is tightened within
+`1.2` (no version bump) — only cost distributions that would have crashed generation, or that
+were internally inconsistent, are now rejected.
+
+### Fixed
+
+- **A schema-valid profile can no longer crash the generator with a cost distribution.** The
+  `cost_distributions` schema left the gamma `shape`/`scale` unbounded, so a profile with a
+  non-positive `shape` (or `scale`) passed validation and then raised an opaque numpy
+  `ValueError` at draw time (`rng.gamma(shape, scale)` requires strictly-positive parameters).
+  Both now require `exclusiveMinimum: 0`, so `generate` rejects such a profile up front (it
+  validates the profile before generating) with a clear schema error. Additionally, a `gamma`
+  distribution must now carry `shape` and `scale`, and a `lognormal` distribution must carry
+  `mu` and `sigma`, instead of silently falling back to defaults. All bundled profiles are
+  unaffected.
+
 ## 1.1.6 — Fix: ship a functional Python wheel; fail-fast `serve`; atomic `init-db`
 
 Bug-fix patch. No new commands or flags; the `1.x` public surface is unchanged.
