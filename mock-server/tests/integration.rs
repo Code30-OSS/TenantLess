@@ -579,6 +579,57 @@ async fn rg_scoped_resources() {
     assert!(b.get("nextLink").is_none());
 }
 
+/// P2 (ARM contract): the RG-scoped resource list matches `{rg}` case-insensitively — a
+/// lowercased request for a mixed-case stored RG returns the SAME resources as the
+/// canonical-case request, mirroring the case-insensitive resource-detail id lookup.
+/// Before the fix the exact `resource_group_name = $4` compare read an empty list for
+/// any casing but the one stored, so the same ARM path resolved in `.../providers/...`
+/// (detail) yet 200-empty in `.../resources` (list).
+#[tokio::test]
+async fn rg_scoped_resources_case_insensitive() {
+    let (app, _c) = seeded_app().await;
+
+    // The fixture stores exactly one resource under the mixed-case RG `Rg-Filter-Mixed`.
+    let canonical = rg_scoped_res_path(&common::SUB_A, common::FILTER_MIXED_RG_NAME);
+    let flipped = rg_scoped_res_path(&common::SUB_A, &common::FILTER_MIXED_RG_NAME.to_lowercase());
+    assert_ne!(
+        canonical, flipped,
+        "the fixture RG must be mixed-case for this test to be meaningful"
+    );
+
+    // Canonical-case request → the mixed-case RG's resource(s).
+    let (st_c, body_c) = common::request(app.clone(), "GET", &canonical, Some("x")).await;
+    assert_eq!(st_c, 200);
+    let canon_ids: Vec<String> = body_c["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        canon_ids.contains(&common::MIXED_CASE_RESOURCE_ID.to_string()),
+        "canonical-case request must return the mixed-case RG's resource"
+    );
+
+    // Lowercased `{rg}` → the SAME resources (case-insensitive match).
+    let (st_f, body_f) = common::request(app, "GET", &flipped, Some("x")).await;
+    assert_eq!(st_f, 200, "a case-mismatched {{rg}} must still resolve");
+    let flipped_ids: Vec<String> = body_f["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        flipped_ids, canon_ids,
+        "a lowercased {{rg}} must return the SAME resources as the canonical case"
+    );
+    assert!(
+        !flipped_ids.is_empty(),
+        "the case-insensitive scope must not read empty"
+    );
+}
+
 /// The resource-detail (catch-all) path: provider-onward tail under {sub}/{rg}.
 fn detail_path(sub: &uuid::Uuid, rg: &str, tail: &str) -> String {
     format!("/subscriptions/{sub}/resourceGroups/{rg}/providers/{tail}")
@@ -1461,6 +1512,51 @@ mod cost {
         assert!(
             rg_total < sub_total,
             "RG scope ({rg_total}) must be a strict subset of sub scope ({sub_total})"
+        );
+    }
+
+    /// P2 (ARM contract): an RG-scoped cost query matches `{rg}` case-insensitively — a
+    /// lowercased scope over a mixed-case-stored RG sums the SAME cost rows as the
+    /// canonical case, the same rule the resource endpoints apply. Before the fix the
+    /// exact `r.resource_group_name = $4` compare summed zero rows for any casing but
+    /// the stored one, so a differently-cased scope silently read $0.
+    #[tokio::test]
+    async fn rg_scope_case_insensitive() {
+        let (app, _c, _pool, _seed) = cost_app().await;
+
+        // Canonical mixed-case scope → the single cost row under `Rg-Filter-Mixed`.
+        let (s_canon, canon) = common::request_json(
+            app.clone(),
+            "POST",
+            &rg_scope_path(&common::SUB_A, common::FILTER_MIXED_RG_NAME),
+            Some("x"),
+            &cost_body(None, "ActualCost"),
+        )
+        .await;
+        assert_eq!(s_canon, 200);
+        let canon_total = sum_cost(&canon);
+        assert!(
+            canon_total > 0.0,
+            "the mixed-case RG must carry a non-zero cost total"
+        );
+
+        // Lowercased scope over the SAME (mixed-case-stored) RG → the SAME total.
+        let (s_flip, flip) = common::request_json(
+            app,
+            "POST",
+            &rg_scope_path(&common::SUB_A, &common::FILTER_MIXED_RG_NAME.to_lowercase()),
+            Some("x"),
+            &cost_body(None, "ActualCost"),
+        )
+        .await;
+        assert_eq!(
+            s_flip, 200,
+            "a case-mismatched {{rg}} scope must still resolve"
+        );
+        let flip_total = sum_cost(&flip);
+        assert!(
+            (flip_total - canon_total).abs() < 1e-9,
+            "lowercased RG scope total {flip_total} must equal the canonical {canon_total}"
         );
     }
 

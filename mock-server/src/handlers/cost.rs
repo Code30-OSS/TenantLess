@@ -687,8 +687,12 @@ async fn run_cost_query(
     } else {
         format!(" ORDER BY {}", bounded_keys.join(", "))
     };
+    // The RG-name match is case-insensitive (`lower()=lower()`) so an RG-scoped cost
+    // query resolves a differently-cased `{rg}` to the same group the resource-detail
+    // and resource-listing endpoints do — otherwise the same ARM path could bill under
+    // one endpoint and read empty under another.
     let scope_pred = if rg.is_some() {
-        " AND c.subscription_id = $3 AND r.resource_group_name = $4"
+        " AND c.subscription_id = $3 AND lower(r.resource_group_name) = lower($4)"
     } else {
         " AND c.subscription_id = $3"
     };
