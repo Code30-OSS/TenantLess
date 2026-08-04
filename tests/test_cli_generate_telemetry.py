@@ -67,6 +67,7 @@ def mocked_writer(monkeypatch):
     # (the profile_name column preflight) before write — stub the idempotent-migration
     # seam so it stays DB-free on the _FakeConn (mirrors the identity/cost stubs above).
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
 
 
 def _run_generate(extra=None):
@@ -177,6 +178,7 @@ def test_no_identity_still_provisions_identity_schema(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_base_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_cost_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(
         writer_mod,
         "ensure_identity_schema",
@@ -237,6 +239,11 @@ def test_generate_ensures_base_schema_first(monkeypatch):
         writer_mod,
         "ensure_web_metadata_schema",
         lambda conn: (calls.append("web_metadata"), True)[1],
+    )
+    monkeypatch.setattr(
+        writer_mod,
+        "ensure_rg_index_schema",
+        lambda conn: (calls.append("rg_index"), True)[1],
     )
 
     result = _run_generate()

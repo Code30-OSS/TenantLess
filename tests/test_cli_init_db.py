@@ -1,7 +1,7 @@
 """``tenantless init-db`` — the provision-without-generating subcommand (260709-blf).
 
 ``init-db`` is a thin wrapper over the existing idempotent ``ensure_*`` seams: it
-applies the full sql/001..007 chain (base -> cost -> identity -> drift ->
+applies the full sql/001..008 chain (base -> cost -> identity -> drift ->
 web_metadata) against ``DATABASE_URL`` WITHOUT generating any data — the serve-only
 / empty-DB path on a bare bring-your-own Postgres.
 
@@ -37,8 +37,8 @@ def test_init_db_help_documents_database_url():
 
 
 def test_init_db_applies_full_chain_in_order(monkeypatch):
-    """A DB-free init-db invocation calls the five ensure_* seams IN ORDER:
-    base -> cost -> identity -> drift -> web_metadata (sql/001..007)."""
+    """A DB-free init-db invocation calls the six ensure_* seams IN ORDER:
+    base -> cost -> identity -> drift -> web_metadata -> rg_index (sql/001..008)."""
     calls: list[str] = []
 
     class _FakeConn:
@@ -68,13 +68,23 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "ensure_web_metadata_schema",
         lambda conn: (calls.append("web_metadata"), True)[1],
     )
+    monkeypatch.setattr(
+        writer_mod,
+        "ensure_rg_index_schema",
+        lambda conn: (calls.append("rg_index"), True)[1],
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["init-db"])
     assert result.exit_code == 0, result.output + (result.stderr or "")
-    assert calls == ["base", "cost", "identity", "drift", "web_metadata"], (
-        f"init-db must apply 001..007 in order; got {calls}"
-    )
+    assert calls == [
+        "base",
+        "cost",
+        "identity",
+        "drift",
+        "web_metadata",
+        "rg_index",
+    ], f"init-db must apply 001..008 in order; got {calls}"
 
 
 # --------------------------------------------------------------------------- #
@@ -112,12 +122,12 @@ def test_init_db_missing_file_never_opens_db(monkeypatch, tmp_path):
         yield object()
 
     monkeypatch.setattr(writer_mod, "open_writer", sentinel_open_writer)
-    # Report the 007 migration ABSENT (a non-existent tmp path); the other six real.
+    # Report the 008 migration ABSENT (a non-existent tmp path); the other seven real.
     real = writer_mod._all_migration_sql_files()
     monkeypatch.setattr(
         writer_mod,
         "_all_migration_sql_files",
-        lambda: real[:6] + [tmp_path / "007_web_metadata.sql"],
+        lambda: real[:7] + [tmp_path / "008_rg_lower_index.sql"],
     )
 
     runner = CliRunner()
@@ -125,7 +135,7 @@ def test_init_db_missing_file_never_opens_db(monkeypatch, tmp_path):
 
     assert result.exit_code != 0, "a missing bundled file must exit nonzero"
     combined = (result.output or "") + (result.stderr or "")
-    assert "007_web_metadata.sql" in combined, f"missing file not named: {combined!r}"
+    assert "008_rg_lower_index.sql" in combined, f"missing file not named: {combined!r}"
     assert entered["opened"] is False, (
         "open_writer must NOT be entered when a migration file is missing (DB untouched)"
     )
@@ -142,6 +152,7 @@ def test_init_db_rolls_back_on_apply_failure(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_identity_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_drift_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
 
     runner = CliRunner()
     result = runner.invoke(main, ["init-db"])
@@ -151,7 +162,7 @@ def test_init_db_rolls_back_on_apply_failure(monkeypatch):
     assert "004" in combined, f"the failing migration must be named: {combined!r}"
     assert spies["rollback"] == 1, "a mid-apply failure must roll back"
     assert spies["commit"] == 0, "no commit may happen on a mid-apply failure"
-    assert "Provisioned schema 001..007" not in combined, (
+    assert "Provisioned schema 001..008" not in combined, (
         "no false-success line on a rolled-back apply"
     )
 
@@ -166,6 +177,7 @@ def test_init_db_all_present_commits(monkeypatch):
         "ensure_identity_schema",
         "ensure_drift_schema",
         "ensure_web_metadata_schema",
+        "ensure_rg_index_schema",
     ):
         monkeypatch.setattr(writer_mod, fn, lambda conn: True)
 
@@ -180,4 +192,4 @@ def test_init_db_all_present_commits(monkeypatch):
     out = result.output or ""
     assert "example-host" in out, "host-only status line must name the host"
     assert "secretpw" not in out, "password must never be echoed (T-07-02)"
-    assert "Provisioned schema 001..007" in out
+    assert "Provisioned schema 001..008" in out

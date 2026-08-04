@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenantless"
-version = "1.1.9"
+version = "1.1.10"
 description = "Azure Tenant Simulator - local ARM API mock server backed by synthetic data"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -59,7 +59,7 @@ artifacts = ["src/tenantless/profiles/*.json"]
 # do NOT move them. force-include COPIES them into the wheel package tree so
 # importlib.resources (via tenantless._resources.resource_path) resolves them
 # post-install; without this an installed wheel raised FileNotFoundError on every
-# schema load and every sql/001..007 migration lookup. Key = source path relative
+# schema load and every sql/001..008 migration lookup. Key = source path relative
 # to project root, value = destination path inside the wheel.
 [tool.hatch.build.targets.wheel.force-include]
 "sql" = "tenantless/sql"

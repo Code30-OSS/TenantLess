@@ -83,6 +83,7 @@ def event_log(monkeypatch):
     )
     monkeypatch.setattr(writer_mod, "ensure_identity_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(
         writer_mod, "schema_is_empty",
         lambda conn: log.append(("gate", "schema_is_empty")) or True,
