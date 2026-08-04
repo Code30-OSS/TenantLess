@@ -18,9 +18,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let cli = Cli::parse();
 
-    // Cap connections as a DoS guard (Security Domain, RESEARCH L565).
+    // Cap connections as a DoS guard (Security Domain, RESEARCH L565) and apply the
+    // server-wide DB execution budgets: a session-level `statement_timeout` on EVERY pooled
+    // connection (so a runaway query on any handler — not just cost — is cancelled, ⇒ a 504
+    // via the SQLSTATE-57014 mapping), and an `acquire_timeout` so pool exhaustion fails
+    // fast instead of hanging. The timeout value is a validated config integer, bound as
+    // `$1` into `set_config` (never spliced). `false` ⇒ session scope, so it persists for
+    // the connection's life; the cost query still sets its own tighter LOCAL override.
+    let stmt_timeout_ms = cli.db_statement_timeout_ms;
     let pool = PgPoolOptions::new()
         .max_connections(15)
+        .acquire_timeout(std::time::Duration::from_secs(cli.db_acquire_timeout_secs))
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SELECT set_config('statement_timeout', $1, false)")
+                    .bind(stmt_timeout_ms.to_string())
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&cli.database_url)
         .await?;
 
@@ -117,9 +134,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         control,
     };
 
+    // Execution budgets applied to the router (request timeout + concurrency shed). The DB
+    // budgets are already baked into `state.pool` above.
+    let budgets = tenantless_server::Budgets {
+        request_timeout: std::time::Duration::from_secs(cli.request_timeout_secs),
+        concurrency_limit: cli.concurrency_limit as usize,
+    };
+
     // Default (--tls absent): byte-identical single plain-HTTP bind on cli.port.
     // --tls: ALSO bind HTTPS on cli.tls_port (ephemeral self-signed cert).
-    serve_dual(state, cli.tls, &cli.host, cli.port, cli.tls_port).await?;
+    serve_dual(state, budgets, cli.tls, &cli.host, cli.port, cli.tls_port).await?;
 
     Ok(())
 }

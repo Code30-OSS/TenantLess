@@ -22,11 +22,11 @@
 
 use crate::{error::ApiError, state::AppState};
 use axum::{
-    Json,
-    extract::{Path, State},
-    http::header,
+    extract::{FromRequest, Path, Request, State},
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
+use http_body_util::{BodyExt, LengthLimitError, Limited};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -407,15 +407,15 @@ const MAX_COST_QUERY_ROWS: usize = 1000;
 /// App-owned cost-query deadline (milliseconds) — the AUTHORITATIVE timeout. The whole
 /// streaming read runs inside a `tokio::time::timeout`, so an over-long query fails closed
 /// with a DETERMINISTIC 400 without parsing Postgres error text (a message match breaks
-/// under non-English `lc_messages`). See [`COST_QUERY_DB_BACKSTOP_MS`] for the server-side
-/// safety net.
+/// under non-English `lc_messages`).
+///
+/// The server-side DB backstop is the SERVER-WIDE session `statement_timeout`
+/// (`DB_STATEMENT_TIMEOUT_MS`) applied to every pooled connection in `main` — the cost query
+/// no longer sets its own LOCAL override. A fixed local override would LOOSEN an operator's
+/// tighter global (e.g. `DB_STATEMENT_TIMEOUT_MS=100` would still let a cost query run for
+/// seconds); inheriting the session budget means a tighter global is always respected, while
+/// the app deadline above stays the one that normally fires for the "too expensive" 400.
 const COST_QUERY_TIMEOUT_MS: u64 = 3000;
-
-/// Postgres `statement_timeout` (milliseconds) — the server-side BACKSTOP, set LOCAL in the
-/// cost-query transaction and deliberately LONGER than [`COST_QUERY_TIMEOUT_MS`] so the app
-/// deadline is the one that normally fires. Stops a runaway server-side query if the app
-/// future is somehow not cancelled promptly. Bound as `$1` into `set_config` — never spliced.
-const COST_QUERY_DB_BACKSTOP_MS: i32 = 5000;
 
 /// Max UTF-8 bytes for a SINGLE response cell (a grouping key — resource id or JSONB tag
 /// value). Row count bounds the number of cells, but a cell's size is otherwise unbounded
@@ -584,11 +584,74 @@ fn fold_rows(pairs: Vec<(Vec<Option<String>>, f64)>) -> Vec<(Vec<Option<String>>
 // cost route inherits the any-Bearer scanner contract (presence-only auth). Route wiring lands in 09-05.
 // ---------------------------------------------------------------------------------
 
+/// Max inbound cost-query body bytes (execution budget). A legitimate Cost Management
+/// query body is well under 1 KiB; 64 KiB is a generous structural ceiling. A fixed const
+/// (a structural safety bound, not an operational knob).
+const MAX_COST_BODY_BYTES: usize = 64 * 1024;
+
+/// True iff `Content-Type` is a JSON media type (`application/json` or
+/// `application/<subtype>+json`), case-insensitively and ignoring parameters like
+/// `; charset=utf-8`. A missing or non-JSON type is false. This preserves the media-type
+/// contract of the stock axum `Json` extractor that [`BoundedCostJson`] replaced (which the
+/// bare `to_bytes` reader had silently dropped).
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let Some(essence) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    essence == "application/json"
+        || (essence.starts_with("application/") && essence.ends_with("+json"))
+}
+
+/// Body-size-bounded JSON extractor for the cost queries. In order, it: requires a JSON
+/// `Content-Type` ([`is_json_content_type`]) — else ARM **415** (the media-type contract of
+/// the stock `Json` extractor it replaced); reads at most [`MAX_COST_BODY_BYTES`] via
+/// [`Limited`], which consumes the request STREAM so it bounds a chunked /
+/// unknown-`Content-Length` body too (the gate cannot be bypassed by omitting
+/// `Content-Length`), where a body OVER the limit is a [`LengthLimitError`] → ARM **413**
+/// while any OTHER body-stream failure (a broken/aborted transfer) → a generic **500**
+/// (logged, never a 413); and finally parses the bytes as [`QueryRequest`], where invalid
+/// JSON is ARM **400**. Body-consuming, so it must be the LAST handler arg.
+pub struct BoundedCostJson(pub QueryRequest);
+
+impl<S: Send + Sync> FromRequest<S> for BoundedCostJson {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        if !is_json_content_type(req.headers()) {
+            return Err(ApiError::UnsupportedMediaType);
+        }
+        let bytes = match Limited::new(req.into_body(), MAX_COST_BODY_BYTES)
+            .collect()
+            .await
+        {
+            Ok(collected) => collected.to_bytes(),
+            // Distinguish the size-budget rejection (413) from any other body-read failure:
+            // only a LengthLimitError means "too large"; a transport fault is a generic 500,
+            // never silently reported as a 413.
+            Err(e) => {
+                return Err(if e.downcast_ref::<LengthLimitError>().is_some() {
+                    ApiError::PayloadTooLarge
+                } else {
+                    ApiError::Internal(format!("cost query body read failed: {e}"))
+                });
+            }
+        };
+        let value = serde_json::from_slice::<QueryRequest>(&bytes)
+            .map_err(|_| ApiError::bad_request("invalid cost query body"))?;
+        Ok(BoundedCostJson(value))
+    }
+}
+
 /// `POST /subscriptions/{sub}/providers/Microsoft.CostManagement/query` (sub scope).
 pub async fn cost_query(
     State(state): State<AppState>,
     Path(sub): Path<Uuid>,
-    Json(req): Json<QueryRequest>,
+    BoundedCostJson(req): BoundedCostJson,
 ) -> Result<Response, ApiError> {
     let scope = format!("/subscriptions/{sub}");
     run_cost_query(&state, &scope, sub, None, req).await
@@ -600,7 +663,7 @@ pub async fn cost_query(
 pub async fn cost_query_scoped(
     State(state): State<AppState>,
     Path((sub, rg, tail)): Path<(Uuid, String, String)>,
-    Json(req): Json<QueryRequest>,
+    BoundedCostJson(req): BoundedCostJson,
 ) -> Result<Response, ApiError> {
     if tail != "Microsoft.CostManagement/query" {
         return Err(ApiError::NotFound { what: tail });
@@ -718,16 +781,14 @@ async fn run_cost_query(
         q = q.bind(a);
     }
 
-    // bound Postgres compute with a LOCAL statement_timeout — the server-side
-    // BACKSTOP (LIMIT bounds our memory but Postgres may compute all groups before applying
-    // it). The ms value is BOUND as $1 (never spliced); set_config's 3rd arg `true` scopes it
-    // LOCAL to this txn. The AUTHORITATIVE deadline is the app-owned tokio::time::timeout
-    // below — locale-independent, no Postgres error-text parsing.
+    // Open a read-only transaction to scope the streaming read below (the row stream borrows
+    // it, and it is committed once fully drained). It deliberately sets NO local
+    // statement_timeout: the server-wide session `statement_timeout` (DB_STATEMENT_TIMEOUT_MS,
+    // applied to every pooled connection in `main`) is the DB backstop, so a cost query can
+    // never LOOSEN a tighter operator-configured global. The AUTHORITATIVE deadline remains
+    // the app-owned tokio::time::timeout below — locale-independent, no Postgres error-text
+    // parsing.
     let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
-        .bind(COST_QUERY_DB_BACKSTOP_MS.to_string())
-        .execute(&mut *tx)
-        .await?;
 
     // Precompute per-grouping "is this a ServiceName fold?" so the streaming future captures
     // only `group_meta` + the count (not `req`) — `req`/`group_sql` stay owned for the column
@@ -745,9 +806,9 @@ async fn run_cost_query(
     // length, so nothing huge is decoded in Rust), and cumulative SERIALIZED bytes — failing
     // closed BEFORE materializing a large result. The whole read runs inside an app-owned
     // deadline: on elapse we return a DETERMINISTIC 400 without parsing Postgres error text
-    // (locale-safe). Any DB error (including a backstop statement_timeout or an admin cancel)
-    // maps to a 500 via `?` — the client-facing "too expensive" signal is the app timer, not
-    // a fragile SQLSTATE + message match.
+    // (locale-safe) — the client-facing "too expensive" signal is the app timer. A DB error
+    // maps via `?` (`From<sqlx::Error>`): a server-wide `statement_timeout` cancel (57014) →
+    // 504 GatewayTimeout, any other DB fault → 500, neither leaking internals.
     //
     // The row-count cap is on RAW fetched rows (pre-fold): a query whose raw cardinality
     // exceeds the cap is rejected even if the rows would fold to fewer service groups —
@@ -759,7 +820,7 @@ async fn run_cost_query(
         let mut pairs: Vec<(Vec<Option<String>>, f64)> = Vec::new();
         let mut serialized_bytes: usize = RESPONSE_BASE_OVERHEAD_BYTES;
         while let Some(item) = stream.next().await {
-            let row = item?; // any DB error → ApiError::Internal (500)
+            let row = item?; // DB error → From<sqlx::Error> (57014 → 504, else 500)
 
             // Row-count cap on RAW rows: LIMIT is CAP+1, so a (CAP+1)th row exceeds the cap.
             cost_rows_within_cap(pairs.len() + 1)?;
@@ -1263,6 +1324,45 @@ mod tests {
         // Year zero is calendar-shaped but PostgreSQL rejects it → must 400 here.
         assert!(parse_iso_date("0000-01-01").is_err());
         assert!(parse_iso_date("0001-01-01").is_ok()); // year 1 is the lower bound
+    }
+
+    /// The cost extractor's media-type gate accepts `application/json` (with or without
+    /// parameters and casing) and `application/*+json`, and rejects a missing or non-JSON
+    /// `Content-Type` — the media-type contract of the stock `Json` extractor.
+    #[test]
+    fn json_content_type_gate() {
+        use axum::http::{HeaderMap, HeaderValue, header};
+        let with = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_str(v).unwrap());
+            h
+        };
+        // Accepted.
+        for ok in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "APPLICATION/JSON",
+            "application/merge-patch+json",
+        ] {
+            assert!(is_json_content_type(&with(ok)), "{ok:?} must be accepted");
+        }
+        // Rejected.
+        for bad in [
+            "text/plain",
+            "application/xml",
+            "application/octet-stream",
+            "",
+        ] {
+            assert!(
+                !is_json_content_type(&with(bad)),
+                "{bad:?} must be rejected"
+            );
+        }
+        // A missing Content-Type is rejected (no header at all).
+        assert!(
+            !is_json_content_type(&HeaderMap::new()),
+            "a missing Content-Type must be rejected"
+        );
     }
 
     /// P2 helper: leap-year day counts are correct.

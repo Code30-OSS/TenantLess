@@ -26,7 +26,16 @@ use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use sqlx::PgPool;
-use tenantless_server::{metrics::Metrics, serve_dual, state::AppState};
+use tenantless_server::{Budgets, metrics::Metrics, serve_dual, state::AppState};
+
+/// A generous budget for the TLS bind tests — these exercise the dual HTTP/HTTPS listener,
+/// not the budget limits, so the timeout is long and the concurrency ceiling is high.
+fn test_budgets() -> Budgets {
+    Budgets {
+        request_timeout: std::time::Duration::from_secs(30),
+        concurrency_limit: 1024,
+    }
+}
 use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
 use tokio::net::TcpListener;
 
@@ -155,10 +164,17 @@ async fn tls_dual_bind_serves_identical_arm_json() {
 
     // Spawn the PRODUCTION dual-bind seam with TLS enabled. This is the function
     // Task 3 extracts from main.rs; until then this test does not compile (RED).
-    let server =
-        tokio::spawn(
-            async move { serve_dual(state, true, "127.0.0.1", http_port, https_port).await },
-        );
+    let server = tokio::spawn(async move {
+        serve_dual(
+            state,
+            test_budgets(),
+            true,
+            "127.0.0.1",
+            http_port,
+            https_port,
+        )
+        .await
+    });
 
     // Give both listeners a moment to bind.
     tokio::time::sleep(Duration::from_millis(750)).await;
@@ -222,10 +238,17 @@ async fn no_tls_binds_http_only() {
     };
 
     // tls == false → only the plain-HTTP listener binds; https_port stays free.
-    let server =
-        tokio::spawn(
-            async move { serve_dual(state, false, "127.0.0.1", http_port, https_port).await },
-        );
+    let server = tokio::spawn(async move {
+        serve_dual(
+            state,
+            test_budgets(),
+            false,
+            "127.0.0.1",
+            http_port,
+            https_port,
+        )
+        .await
+    });
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let client = trusting_client();

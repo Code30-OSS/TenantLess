@@ -1,6 +1,6 @@
 [package]
 name = "tenantless-server"
-version = "1.1.12"
+version = "1.2.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -63,6 +63,19 @@ mime_guess = "2.0.5"
 # the fixed 32-byte digest the compare runs over. Never hand-roll the compare.
 subtle = "2.6"
 sha2 = "0.10"
+# Execution-budget middleware (resource-exhaustion guards): the request-timeout + shared
+# concurrency-limit + load-shed layers that `lib.rs::apply_execution_budgets` wraps the
+# router in. `tower` is ALREADY in Cargo.lock (transitive via axum / tower-http), so
+# promoting it to a DIRECT dep adds ZERO new lock entries — it only enables the
+# `timeout`/`limit`/`load-shed` layers (plus `util`, which the integration tests' `oneshot`
+# driver also uses). Pinned to the 0.5 line already resolved.
+tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"] }
+# `Limited` body reader + its `LengthLimitError` for the cost body-size extractor: bounds a
+# chunked / unknown-Content-Length body WHILE streaming and lets the extractor tell a
+# size-budget rejection (413) apart from any other body-stream failure (500). ALREADY in
+# Cargo.lock (transitive via axum), so this direct dep adds ZERO new lock entries — same
+# rationale as `tower`/`subtle`/`sha2` above.
+http-body-util = "0.1"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -74,4 +87,3 @@ jsonwebtoken = { version = "10", features = ["use_pem", "rust_crypto"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio-test = "0.4"
-tower = { version = "0.5", features = ["util"] }

@@ -9,9 +9,10 @@ use sqlx::PgPool;
 use tenantless_server::{build_router, metrics::Metrics, state::AppState};
 use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
 
-/// Start an ephemeral Postgres container and return a connected pool plus the
-/// container guard (kept alive for the test's duration).
-async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgres>) {
+/// Start an ephemeral Postgres container and return its connection URL plus the container
+/// guard (kept alive for the test's duration). Lets a test build a CUSTOM pool (a tight
+/// `statement_timeout`, a single-connection pool, …) against the same container.
+async fn start_pg_url() -> (String, testcontainers::ContainerAsync<postgres::Postgres>) {
     let container = postgres::Postgres::default()
         .start()
         .await
@@ -22,6 +23,13 @@ async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgre
         .await
         .expect("container port");
     let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    (url, container)
+}
+
+/// Start an ephemeral Postgres container and return a connected pool plus the
+/// container guard (kept alive for the test's duration).
+async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgres>) {
+    let (url, container) = start_pg_url().await;
     let pool = PgPool::connect(&url).await.expect("connect pool");
     (pool, container)
 }
@@ -1872,6 +1880,64 @@ mod cost {
         );
     }
 
+    /// Regression: a cost query must NOT loosen a tighter operator-configured global
+    /// `statement_timeout`. Served over a pool whose connections carry a punishing 1ms
+    /// session timeout (DB_STATEMENT_TIMEOUT_MS=1, far tighter than the cost query's OLD fixed
+    /// 5000ms local override), a real ResourceId aggregate over many rows is cancelled by that
+    /// global (SQLSTATE 57014 → 504). Under the removed override it would have run to a 200 —
+    /// so a 504 here proves the tight global now survives entry into the cost transaction.
+    #[tokio::test]
+    async fn cost_query_respects_tight_global_statement_timeout() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let (url, _container) = super::start_pg_url().await;
+
+        // Seed via a normal (unbounded) pool: base schema/tenant + the cost schema + a
+        // dedicated sub with enough distinct resources that the aggregate reliably takes far
+        // longer than 1ms (mirrors `cost_app`'s seeding before `seed_over_cap_scope`).
+        let seed_pool = PgPool::connect(&url).await.expect("seed pool");
+        common::seed_fixture(&seed_pool).await;
+        common::seed_cost_rows(&seed_pool).await;
+        let sub = uuid::Uuid::from_u128(0x0CA9_0000_0000_0000_0000_0000_0000_0001);
+        seed_over_cap_scope(&seed_pool, sub, 5000).await;
+
+        // Serve over a pool with a 1ms session statement_timeout on every connection.
+        let tight_pool = PgPoolOptions::new()
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET statement_timeout = '1ms'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("tight-timeout pool");
+        let app = build_router(AppState {
+            pool: tight_pool,
+            base_url: "http://test".to_string(),
+            metrics: Metrics::new(),
+            signer: common::test_signer(),
+            enforce_auth: false,
+            control: None,
+        });
+
+        let (status, body) = common::request_json(
+            app,
+            "POST",
+            &sub_scope_path(&sub),
+            Some("x"),
+            &cost_body(Some(("Dimension", "ResourceId")), "ActualCost"),
+        )
+        .await;
+        assert_eq!(
+            status, 504,
+            "a tight global statement_timeout must govern the cost query (57014 → 504); the \
+             cost transaction must not loosen it — got {status} / {body}"
+        );
+    }
+
     /// Seed a dedicated subscription with ONE resource carrying a tag whose VALUE is
     /// `tag_bytes` long, plus one cost row — so a `Tag:{tag_key}` grouping yields a single
     /// row whose cell is that large value. Built in SQL (`repeat`) to avoid shipping the
@@ -2925,4 +2991,125 @@ mod identity {
             "an identity-less tenant serves an EMPTY roleAssignments list, got {value:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------
+// Execution-budget DB guards: preflight-timeout exemption and pool-exhaustion → 503.
+// Both drive a REAL pool against the testcontainer, so they
+// require Docker (CI-run / local-via-Docker), same posture as the cost-cap tests.
+// ---------------------------------------------------------------------------------
+
+/// The startup schema preflight must be EXEMPT from the runtime `statement_timeout`: a
+/// legitimate first-run upgrade over a large estate could otherwise be cancelled and prevent
+/// startup. `apply_schema_batch` runs the DDL under `SET LOCAL statement_timeout = 0`, and the
+/// exemption must not leak back onto the pooled connection.
+#[tokio::test]
+async fn schema_preflight_exempt_from_runtime_statement_timeout() {
+    use sqlx::postgres::PgPoolOptions;
+
+    let (url, _container) = start_pg_url().await;
+    // A pool whose connections carry a tight 50ms session statement_timeout — the stand-in
+    // for DB_STATEMENT_TIMEOUT_MS during a slow first-run migration.
+    let pool = PgPoolOptions::new()
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET statement_timeout = '50ms'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .expect("tight-timeout pool");
+
+    // Control: a bare 200ms statement IS cancelled by the 50ms budget (SQLSTATE 57014) —
+    // proving the pool's runtime timeout is genuinely active.
+    match sqlx::raw_sql("SELECT pg_sleep(0.2)").execute(&pool).await {
+        Err(sqlx::Error::Database(db)) => assert_eq!(
+            db.code().as_deref(),
+            Some("57014"),
+            "control statement must be a statement_timeout cancel"
+        ),
+        other => panic!("expected a 57014 cancel on the tight pool, got {other:?}"),
+    }
+
+    // Fixed: the SAME 200ms batch applied via apply_schema_batch runs to COMPLETION — the
+    // preflight is exempt from the runtime timeout.
+    tenantless_server::apply_schema_batch(&pool, "SELECT pg_sleep(0.2)")
+        .await
+        .expect("apply_schema_batch must exempt the migration from the runtime statement_timeout");
+
+    // No leak: a fresh statement on the pool is bounded again (the LOCAL=0 reverted on commit).
+    assert!(
+        sqlx::raw_sql("SELECT pg_sleep(0.2)")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "the LOCAL statement_timeout exemption must not leak past the migration batch"
+    );
+}
+
+/// Pool exhaustion (the `acquire_timeout` elapses with no free connection → `PoolTimedOut`)
+/// must map to a 503 ServiceUnavailable + `Retry-After: 1`, NOT a 500 — capacity exhaustion,
+/// not a hard fault. Proven through a REAL single-connection pool with its sole connection
+/// held.
+#[tokio::test]
+async fn pool_exhaustion_maps_to_503() {
+    use axum::response::IntoResponse;
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
+
+    let (url, _container) = start_pg_url().await;
+
+    // Warm the container with a default-timeout connection first, so the tight pool below
+    // doesn't race first-connection readiness (that would be a spurious PoolTimedOut on the
+    // pool's own establishing acquire, before it is ever saturated).
+    let warm = PgPool::connect(&url).await.expect("warm the container");
+    warm.close().await;
+
+    // A generous acquire_timeout: it bounds BOTH the pool's establishing connect (slow through
+    // Docker Desktop's port proxy on Windows) AND the saturation wait below. It only needs to
+    // be long enough that first-connection setup never races it — the saturation acquire still
+    // fails closed once the sole connection is held.
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(8))
+        .connect(&url)
+        .await
+        .expect("single-connection pool");
+
+    // Pre-warm so the sole connection is established and returned to the pool as idle.
+    sqlx::query("SELECT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("pre-warm the sole connection");
+
+    // Hold the ONLY connection so the next acquire must time out.
+    let _held = pool.acquire().await.expect("hold the sole connection");
+
+    // A query needing a second connection times out acquiring → PoolTimedOut.
+    let err = sqlx::query("SELECT 1")
+        .fetch_one(&pool)
+        .await
+        .expect_err("acquire must time out while the sole connection is held");
+    assert!(
+        matches!(err, sqlx::Error::PoolTimedOut),
+        "an exhausted acquire must be PoolTimedOut, got {err:?}"
+    );
+
+    // The From<sqlx::Error> mapping turns it into a 503 ServiceUnavailable + Retry-After: 1.
+    let resp = tenantless_server::error::ApiError::from(err).into_response();
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "pool exhaustion must surface as a 503, not a 500"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "a capacity 503 must carry Retry-After: 1"
+    );
 }

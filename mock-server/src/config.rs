@@ -78,4 +78,70 @@ pub struct Cli {
     /// DuckDB analyze sources into `sources/` out-of-band. Only used when armed.
     #[arg(long, env = "CONTROL_DATA_DIR", default_value = "./control-data")]
     pub control_data_dir: std::path::PathBuf,
+
+    // ---- Execution budgets (resource-exhaustion guards) --------------------
+    // Operational knobs — env-tunable. The structural caps ($filter size, search-term
+    // length, cost body size) are fixed consts in their modules, not exposed here.
+    /// Global per-request wall-clock deadline, in seconds. Every request runs under a
+    /// `tower` timeout; an elapsed deadline surfaces an ARM 504 GatewayTimeout. The
+    /// `value_parser` range makes an out-of-range value FAIL STARTUP (never a silent 0).
+    #[arg(long, env = "REQUEST_TIMEOUT_SECS", default_value_t = 30,
+          value_parser = clap::value_parser!(u64).range(1..=3600))]
+    pub request_timeout_secs: u64,
+
+    /// Maximum concurrent in-flight requests. At capacity the server SHEDS (does not queue)
+    /// with an ARM 503 ServiceUnavailable + `Retry-After: 1`. Validated at startup: a
+    /// non-positive or absurd value fails to start (never admits 0 or an unbounded fleet).
+    #[arg(long, env = "CONCURRENCY_LIMIT", default_value_t = 64,
+          value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
+    pub concurrency_limit: u32,
+
+    /// Postgres `statement_timeout` applied to EVERY pooled connection (session-level), in
+    /// milliseconds — the server-wide DB execution deadline. A cancelled statement
+    /// (SQLSTATE 57014) surfaces an ARM 504. The cost query keeps its own tighter app
+    /// deadline on top of this.
+    #[arg(long, env = "DB_STATEMENT_TIMEOUT_MS", default_value_t = 10_000,
+          value_parser = clap::value_parser!(u64).range(100..=600_000))]
+    pub db_statement_timeout_ms: u64,
+
+    /// Max seconds to wait for a free pooled connection before failing, so pool exhaustion
+    /// fails fast instead of hanging. Bounds the queue behind the 15-connection pool cap.
+    #[arg(long, env = "DB_ACQUIRE_TIMEOUT_SECS", default_value_t = 5,
+          value_parser = clap::value_parser!(u64).range(1..=300))]
+    pub db_acquire_timeout_secs: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    /// An invalid execution-budget value must FAIL STARTUP (clap parse error), never be
+    /// silently accepted — a 0 concurrency limit would admit no requests, an absurd one
+    /// would defeat the guard. The `value_parser` range enforces this at parse time.
+    #[test]
+    fn rejects_out_of_range_budgets() {
+        for args in [
+            ["tenantless-server", "--concurrency-limit", "0"],
+            ["tenantless-server", "--concurrency-limit", "100000000"],
+            ["tenantless-server", "--request-timeout-secs", "0"],
+            ["tenantless-server", "--db-statement-timeout-ms", "0"],
+            ["tenantless-server", "--db-acquire-timeout-secs", "0"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be rejected at startup"
+            );
+        }
+    }
+
+    /// The defaults parse and carry the documented budget values.
+    #[test]
+    fn defaults_carry_budget_values() {
+        let cli = Cli::try_parse_from(["tenantless-server"]).expect("defaults must parse");
+        assert_eq!(cli.concurrency_limit, 64);
+        assert_eq!(cli.request_timeout_secs, 30);
+        assert_eq!(cli.db_statement_timeout_ms, 10_000);
+        assert_eq!(cli.db_acquire_timeout_secs, 5);
+    }
 }

@@ -3289,12 +3289,13 @@ dependencies = [
 
 [[package]]
 name = "tenantless-server"
-version = "1.1.12"
+version = "1.2.0"
 dependencies = [
  "axum",
  "axum-server",
  "base64",
  "clap",
+ "http-body-util",
  "include_dir",
  "jsonwebtoken",
  "mime_guess",

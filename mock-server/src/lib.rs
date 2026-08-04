@@ -24,12 +24,18 @@ pub mod ui;
 
 use axum::{
     Router,
+    error_handling::HandleErrorLayer,
     middleware::from_fn_with_state,
     routing::{get, post},
 };
 use state::AppState;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tower::{
+    BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer, load_shed::LoadShedLayer,
+    timeout::TimeoutLayer,
+};
 
 /// Build the axum router. Registers `GET /subscriptions` (Wave 1), the
 /// `/subscriptions/{sub}/resourceGroups` and `/subscriptions/{sub}/resources`
@@ -66,6 +72,59 @@ pub fn build_router(state: AppState) -> Router {
         r = r.merge(control::router(cp));
     }
     r
+}
+
+/// Execution-budget knobs applied to the whole router by [`apply_execution_budgets`].
+/// Constructed from [`config::Cli`] in `main`. The DB budgets (`statement_timeout` /
+/// `acquire_timeout`) are applied at pool-build time in `main`, so they are baked into the
+/// pool rather than carried here.
+#[derive(Clone, Copy, Debug)]
+pub struct Budgets {
+    /// Global per-request wall-clock deadline (elapsed → ARM 504 GatewayTimeout).
+    pub request_timeout: Duration,
+    /// Max concurrent in-flight requests; excess is SHED (not queued) → ARM 503 + Retry-After.
+    pub concurrency_limit: usize,
+}
+
+/// Wrap `router` with the execution-budget middleware stack (resource-exhaustion guards).
+///
+/// Layer order (outermost → innermost), per the load-shed contract:
+///   * `HandleErrorLayer` (error mapper) — OUTSIDE both limiters, so it catches the errors
+///     they raise and turns them into ARM `CloudError` responses (never a bare status).
+///   * `LoadShed` — IMMEDIATELY outside the concurrency limiter, with NO `Buffer` between
+///     them, so a full limiter sheds INSTANTLY (503) instead of queueing the request.
+///   * `GlobalConcurrencyLimit` — a GENUINELY server-wide cap: the `Global` variant shares
+///     ONE semaphore across every cloned service (per-connection clones included), unlike
+///     the plain `ConcurrencyLimitLayer`, whose per-clone permit pool would NOT bound total
+///     in-flight requests.
+///   * `Timeout` — innermost, so a timed-out request still RELEASES its concurrency permit
+///     as its future resolves (permits release on completion, handler error, AND timeout).
+///
+/// Applied inside the shared serve path ([`serve_dual`]) AND directly by the budget tests,
+/// so the guards are always exercised through the real middleware.
+pub fn apply_execution_budgets(router: Router, budgets: Budgets) -> Router {
+    router.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(map_budget_error))
+            .layer(LoadShedLayer::new())
+            .layer(GlobalConcurrencyLimitLayer::new(budgets.concurrency_limit))
+            .layer(TimeoutLayer::new(budgets.request_timeout)),
+    )
+}
+
+/// Map the `BoxError` the budget middleware raises into an ARM `CloudError` response: a shed
+/// request (`LoadShed` `Overloaded`) → 503 ServiceUnavailable (+ `Retry-After: 1`); an
+/// elapsed request timeout (`Elapsed`) → 504 GatewayTimeout; anything else → a generic 500.
+/// Never leaks internals — the shaped variants carry fixed messages.
+async fn map_budget_error(err: BoxError) -> error::ApiError {
+    use error::ApiError;
+    if err.is::<tower::load_shed::error::Overloaded>() {
+        ApiError::ServiceUnavailable
+    } else if err.is::<tower::timeout::error::Elapsed>() {
+        ApiError::GatewayTimeout
+    } else {
+        ApiError::Internal(format!("budget middleware error: {err}"))
+    }
 }
 
 /// The pre-merge ARM baseline (WAPI-04 test seam, D-17): the FULL runtime router MINUS the
@@ -190,6 +249,31 @@ pub fn bind_addr(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
 
+/// Apply a schema-migration batch with the runtime `statement_timeout` DISABLED for its
+/// duration. The startup preflight runs on the SAME pool the request handlers use, whose
+/// connections carry the server-wide session `statement_timeout` (`DB_STATEMENT_TIMEOUT_MS`)
+/// — so a legitimate first-run upgrade over a large estate (index or future constraint
+/// creation) could otherwise be CANCELLED after that budget elapses and prevent the server
+/// from starting. Running the DDL inside a transaction that first issues
+/// `SET LOCAL statement_timeout = 0` exempts ONLY this migration batch: the setting is
+/// transaction-scoped and reverts on commit, so the connection returns to the pool with the
+/// runtime budget intact (no leak to later request handlers).
+///
+/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + any guarded
+/// `DO $$ … $$` blocks execute as one unsplit batch inside the transaction — we never
+/// parse/split the SQL ourselves (mirrors the Python twins in `writer`).
+pub async fn apply_schema_batch(pool: &sqlx::PgPool, sql: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    // LOCAL ⇒ transaction-scoped: it disables the timeout only for this migration batch and
+    // reverts on commit, never leaking a disabled timeout back onto the pooled connection.
+    sqlx::query("SET LOCAL statement_timeout = 0")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::raw_sql(sql).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Idempotently provision the Phase-10 identity tables (`synthetic.principals`,
 /// `synthetic.role_assignments`) by applying `sql/005_identity.sql`. Safe to run on
 /// every boot: the migration is `CREATE ... IF NOT EXISTS` + a guarded-FK `DO` block,
@@ -198,13 +282,11 @@ pub fn bind_addr(host: &str, port: u16) -> String {
 /// identity-less tenant — it never masks a missing relation as empty business data.
 /// Requires the `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + the
-/// guarded `DO $$ … $$` block execute as one unsplit batch — we never parse/split the
-/// SQL ourselves (mirrors the Python twin `writer.ensure_identity_schema`).
+/// Applied via [`apply_schema_batch`], so the DDL runs with the runtime `statement_timeout`
+/// disabled (a first-run index/constraint build cannot be cancelled by the request budget).
 pub async fn ensure_identity_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_005: &str = include_str!("../../sql/005_identity.sql");
-    sqlx::raw_sql(SQL_005).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_005).await
 }
 
 /// Idempotently provision the Phase-11 drift tables (`synthetic.drift_batches`,
@@ -218,14 +300,11 @@ pub async fn ensure_identity_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
 /// column as empty business data. Requires the `synthetic` schema to already exist
 /// (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the multi-statement DDL + the
-/// guarded `DO $$ … $$` block execute as one unsplit batch — we never parse/split the
-/// SQL ourselves (mirrors the Python twin `writer.ensure_drift_schema` and the
-/// identity twin [`ensure_identity_schema`]).
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// mirroring the Python twin `writer.ensure_drift_schema` and [`ensure_identity_schema`].
 pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_006: &str = include_str!("../../sql/006_drift.sql");
-    sqlx::raw_sql(SQL_006).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_006).await
 }
 
 /// Idempotently provision the Phase-14 Web Console metadata column
@@ -237,23 +316,24 @@ pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error>
 /// simply reads NULL (⇒ `profile: null`), it never masks a missing column as empty data.
 /// Requires the `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
-/// Uses `sqlx::raw_sql` (the simple-query protocol) so the DDL executes as one unsplit
-/// batch — we never parse/split the SQL ourselves (mirrors the Python twin
-/// `writer.ensure_web_metadata_schema` and the drift twin [`ensure_drift_schema`]).
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// mirroring the Python twin `writer.ensure_web_metadata_schema` and [`ensure_drift_schema`].
 pub async fn ensure_web_metadata_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_007: &str = include_str!("../../sql/007_web_metadata.sql");
-    sqlx::raw_sql(SQL_007).execute(pool).await?;
-    Ok(())
+    apply_schema_batch(pool, SQL_007).await
 }
 
 pub async fn serve_dual(
     state: AppState,
+    budgets: Budgets,
     tls: bool,
     host: &str,
     http_port: u16,
     tls_port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = build_router(state);
+    // Wrap the shared router in the execution-budget middleware (request timeout +
+    // concurrency shed). The DB budgets are already baked into `state.pool`.
+    let app = apply_execution_budgets(build_router(state), budgets);
 
     let http_addr = bind_addr(host, http_port);
     tracing::info!(addr = %http_addr, tls, "tenantless-server listening (HTTP)");
