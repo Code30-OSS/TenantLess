@@ -254,3 +254,12 @@ jobs:
       - name: Smoke-test the image
         run: |
           docker run --rm tenantless-mock-server:ci --help
+
+      - name: Assert the image runs as a non-root user
+        run: |
+          # `--entrypoint id` overrides the server ENTRYPOINT so `id -u` reports the
+          # image's configured runtime UID (the Dockerfile `USER` directive). A root
+          # image prints 0 and fails here; the non-root runtime prints 10001.
+          uid="$(docker run --rm --entrypoint id tenantless-mock-server:ci -u)"
+          echo "runtime uid=$uid"
+          test "$uid" != "0"

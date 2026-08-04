@@ -48,7 +48,17 @@ COPY --from=frontend /fe/dist frontend/dist
 RUN cargo build --release -p tenantless-server --bin tenantless-server
 
 # ---------------------------------------------------------------------------
-# Stage 3 — runtime (unchanged).
+# Stage 3 — runtime.
+#
+# SCOPE (known limitation, deliberate): this slim image carries ONLY the compiled
+# Rust binary, so it serves the ARM API but CANNOT run the control plane. The
+# control-plane jobs (generate / analyze / snapshot / restore) shell out to
+# `uv run tenantless …` (the Python layer — see generator.Dockerfile) and to
+# `pg_dump`/`pg_restore`, none of which are installed here. Arming control against
+# this image (setting the control token) therefore fails when a job spawns its
+# child process; run generation via the generator image and snapshots from a host
+# that has the Postgres client tools. Keeping this image toolchain-free is what
+# keeps the served-API attack surface minimal.
 # ---------------------------------------------------------------------------
 # debian:bookworm-slim  resolved 2026-07-28 (W3-6: pin by digest)
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
@@ -57,6 +67,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/tenantless-server /usr/local/bin/tenantless-server
+# Run as a NON-ROOT user (mirrors generator.Dockerfile's uid 10001). The binary is
+# world-executable and binds 8080 (> 1024, so no privileged-port capability is
+# needed); serving reads only env + the embedded SPA/SQL and writes nothing to the
+# filesystem, so an unprivileged UID is sufficient for the ARM-serving role. A
+# `nologin` shell + no home directory keeps the account inert.
+RUN useradd --system --uid 10001 --shell /usr/sbin/nologin tenantless
+USER tenantless
 EXPOSE 8080
 # PORT / BASE_URL / DATABASE_URL are read from env (clap `#[arg(env = ...)]`).
 ENTRYPOINT ["tenantless-server"]
