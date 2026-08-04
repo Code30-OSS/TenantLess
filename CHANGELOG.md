@@ -9,6 +9,32 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.1.12 — Hardening: run the mock-server container as a non-root user
+
+Security-hardening patch. No API, CLI-flag, or profile-schema changes — only the
+published `mock-server` container image changes. Completes the container-hardening work:
+base images were already digest-pinned, and the generator/demo-builder images already run
+non-root; this closes the last gap.
+
+### Changed
+
+- **The `mock-server` runtime image now runs as a non-root user** (`uid 10001`, `nologin`
+  shell), mirroring the generator image. The binary is world-executable and binds port
+  `8080` (> 1024, so no privileged-port capability is needed); serving the ARM API reads
+  only environment variables plus the embedded SPA/SQL and writes nothing to the
+  filesystem, so an unprivileged UID is sufficient. A CI step asserts the image's runtime
+  UID is non-zero so a regression to root fails the build.
+
+### Documented
+
+- **The slim runtime image cannot run the control plane** — this is a deliberate, now
+  explicitly documented limitation. The image carries only the compiled Rust binary, so
+  the control-plane jobs (`generate` / `analyze` / `snapshot` / `restore`), which shell
+  out to `uv run tenantless …` and `pg_dump`/`pg_restore`, are unavailable in it. Run
+  generation via the generator image and snapshots from a host with the Postgres client
+  tools. Keeping the served-API image toolchain-free is what keeps its attack surface
+  minimal.
+
 ## 1.1.11 — Fix: paginate role assignments and honor (or reject) their `$filter`
 
 Bug-fix patch. No CLI-flag or profile-schema changes, and no change to the shape of a
