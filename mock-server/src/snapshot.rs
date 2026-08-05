@@ -381,8 +381,19 @@ pub async fn restore_with_timeout(
     };
     let outcome = job::run_command_keep_permit(&cp, job_id, &mut cmd, timeout).await;
     if outcome.succeeded {
-        // Succeeded only AFTER psql committed the single TRUNCATE+load transaction.
-        job::with_job(&cp, job_id, |j| j.status = JobStatus::Succeeded);
+        // Succeeded only AFTER psql committed the single TRUNCATE+load transaction. Restore
+        // REPLACES the tenant → refresh the served identity to the restored tenant BEFORE
+        // publishing `Succeeded` (never report a successful restore while the pre-restore
+        // signer is still active). A refresh failure fails the job.
+        match job::refresh_signer_for_current_tenant(&cp).await {
+            Ok(()) => job::with_job(&cp, job_id, |j| j.status = JobStatus::Succeeded),
+            Err(e) => job::with_job(&cp, job_id, |j| {
+                j.push_log(format!(
+                    "snapshot restored but identity refresh failed: {e}"
+                ));
+                j.status = JobStatus::Failed;
+            }),
+        }
     }
     // `temp` drops here (cleaned on every path); `_permit` drops → the write gate is released.
 }
@@ -660,6 +671,9 @@ mod tests {
             write_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             pipeline_cmd: Vec::new(),
             pool,
+            signer: crate::jwt::SharedSigner::new(
+                crate::jwt::JwtSigner::ephemeral(&uuid::Uuid::nil()).expect("test_cp signer"),
+            ),
         }
     }
 

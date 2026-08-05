@@ -28,6 +28,15 @@ use jsonwebtoken::jwk::{Jwk, JwkSet, PublicKeyUse};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use std::sync::{Arc, RwLock};
+
+/// The v1.0 ARM issuer for a served tenant — `https://sts.windows.net/{tenant_id}/`
+/// (RESEARCH Q2). The SINGLE source of truth for the issuer format: [`JwtSigner::ephemeral`]
+/// builds the signer's `issuer` from it, and the hot-swap change-guard
+/// ([`SharedSigner::serves_tenant`]) compares against it — so the two can never drift.
+pub fn issuer_for(tenant_id: &uuid::Uuid) -> String {
+    format!("https://sts.windows.net/{tenant_id}/")
+}
 
 /// The run-scoped RS256 signer: the in-memory keypair, its JWKS export, the
 /// per-run `kid`, and the v1.0 ARM `iss`/`aud` bound to the served tenant.
@@ -77,7 +86,7 @@ impl JwtSigner {
         let jwks = JwkSet { keys: vec![jwk] };
 
         // v1.0 ARM identity tied to the served tenant (RESEARCH Q2).
-        let issuer = format!("https://sts.windows.net/{tenant_id}/");
+        let issuer = issuer_for(tenant_id);
         let audience = "https://management.azure.com/".to_string();
 
         Ok(Self {
@@ -95,6 +104,52 @@ impl JwtSigner {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone()); // matches the single JWKS entry
         encode(&header, claims, &self.encoding)
+    }
+}
+
+/// A hot-swappable handle to the run's [`JwtSigner`], shared by `AppState` and the
+/// control-plane job runner ([`crate::job::ControlPlane`]).
+///
+/// Reads are frequent and tiny — every `--enforce-auth` request validates against it, and
+/// every `/token`, JWKS, and OIDC-discovery call reads it. Writes are extremely rare: only a
+/// tenant-mutating control job (generate / restore / reset) rebuilds it, once, on success. A
+/// `RwLock<Arc<JwtSigner>>` fits that read-heavy / write-rare shape without a new dependency.
+///
+/// The contract (kept centralized here so handlers never scatter `.read().unwrap()`):
+///   * [`load`](Self::load) clones the `Arc` under a briefly-held READ lock and releases it
+///     immediately — callers hold the returned `Arc`, never the lock, so nothing is held
+///     across an `.await`.
+///   * [`store`](Self::store) takes the WRITE lock ONLY to swap the pointer; the caller
+///     builds the whole new signer OUTSIDE the lock first.
+///   * Lock poisoning is recovered here (`into_inner`): the only critical sections clone or
+///     replace an `Arc`, so a poisoned lock still guards a valid signer — there is no torn
+///     state to propagate.
+#[derive(Clone)]
+pub struct SharedSigner(Arc<RwLock<Arc<JwtSigner>>>);
+
+impl SharedSigner {
+    /// Wrap an initial signer.
+    pub fn new(signer: JwtSigner) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(signer))))
+    }
+
+    /// The current signer: clone the `Arc` under a short read lock, release immediately.
+    pub fn load(&self) -> Arc<JwtSigner> {
+        self.0.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Replace the signer with `next` (built by the caller OUTSIDE the lock). Only the
+    /// pointer swap runs under the write lock.
+    pub fn store(&self, next: JwtSigner) {
+        let mut guard = self.0.write().unwrap_or_else(|p| p.into_inner());
+        *guard = Arc::new(next);
+    }
+
+    /// True iff the current signer already serves `tenant_id` (its issuer matches). The
+    /// change-guard: a refresh rebuilds ONLY when this is false, so a mutation that leaves
+    /// the effective tenant unchanged never rotates the key or invalidates live tokens.
+    pub fn serves_tenant(&self, tenant_id: &uuid::Uuid) -> bool {
+        self.load().issuer == issuer_for(tenant_id)
     }
 }
 
@@ -207,6 +262,51 @@ mod tests {
             _ => panic!("JWK is not RSA"),
         };
         assert_ne!(n(&a), n(&b), "per-run public moduli must differ (D-08)");
+    }
+
+    /// A `SharedSigner` reads back the signer it was built with, and `serves_tenant`
+    /// distinguishes the served tenant from any other.
+    #[test]
+    fn shared_signer_load_and_serves_tenant() {
+        let tid_a = uuid::Uuid::from_u128(0xA);
+        let tid_b = uuid::Uuid::from_u128(0xB);
+        let shared = SharedSigner::new(JwtSigner::ephemeral(&tid_a).expect("signer a"));
+
+        assert_eq!(shared.load().issuer, issuer_for(&tid_a));
+        assert!(
+            shared.serves_tenant(&tid_a),
+            "serves the tenant it was built for"
+        );
+        assert!(
+            !shared.serves_tenant(&tid_b),
+            "does not serve a different tenant"
+        );
+    }
+
+    /// `store` swaps the WHOLE signer atomically: the issuer moves to the new tenant AND the
+    /// per-run key (kid) rotates (full identity epoch). A clone of the handle observes the
+    /// swap (shared state).
+    #[test]
+    fn shared_signer_store_swaps_identity_and_rotates_key() {
+        let tid_a = uuid::Uuid::from_u128(0xA);
+        let tid_b = uuid::Uuid::from_u128(0xB);
+        let shared = SharedSigner::new(JwtSigner::ephemeral(&tid_a).expect("signer a"));
+        let handle = shared.clone(); // a second holder (as AppState + ControlPlane share one)
+
+        let before_kid = shared.load().kid.clone();
+        shared.store(JwtSigner::ephemeral(&tid_b).expect("signer b"));
+
+        let after = handle.load(); // observed through the CLONE
+        assert_eq!(
+            after.issuer,
+            issuer_for(&tid_b),
+            "issuer moved to the new tenant"
+        );
+        assert_ne!(
+            after.kid, before_kid,
+            "the per-run key (kid) rotated on swap"
+        );
+        assert!(handle.serves_tenant(&tid_b) && !handle.serves_tenant(&tid_a));
     }
 
     /// GIVEN the JWKS, THEN its single entry advertises RS256 + use=sig.

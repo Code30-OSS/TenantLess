@@ -17,10 +17,13 @@ pub struct AppState {
     /// In-memory request-activity metrics + live broadcast for the `/_console`
     /// dashboard. Cloned (cheap `Arc`) into every handler/middleware copy of state.
     pub metrics: Metrics,
-    /// The run-scoped ephemeral RS256 signer (IAM-04, D-08): mint, JWKS export, and
-    /// (Plan 10-04) `--enforce-auth` validation all share this one in-memory key.
-    /// Behind an `Arc` so cloning `AppState` into every handler is cheap.
-    pub signer: std::sync::Arc<crate::jwt::JwtSigner>,
+    /// The run-scoped RS256 signer (IAM-04, D-08): mint, JWKS export, and `--enforce-auth`
+    /// validation all read it. A [`SharedSigner`](crate::jwt::SharedSigner) (a
+    /// `RwLock<Arc<JwtSigner>>` handle) rather than a bare `Arc`, because the control plane
+    /// HOT-SWAPS it after a tenant-mutating job (generate/restore/reset) so the served
+    /// identity tracks the current tenant instead of the boot-time one. `AppState` and
+    /// `ControlPlane` hold clones of the SAME handle. Handlers call `.load()` to read.
+    pub signer: crate::jwt::SharedSigner,
     /// Opt-in real-JWT enforcement (IAM-05, D-11). **Default false** — the
     /// presence-only any-Bearer contract is unchanged until Plan 10-04 wires the
     /// validation swap. Sourced from `--enforce-auth` / `ENFORCE_AUTH`.

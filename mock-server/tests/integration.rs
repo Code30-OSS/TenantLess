@@ -2829,6 +2829,9 @@ mod identity {
             enforce_auth: true,
             control: None,
         });
+        // The app holds the shared handle (clone above); this test mints/inspects tokens
+        // against the CURRENT inner signer, so load it once (never swapped in this test).
+        let signer = signer.load();
 
         let ra_path = role_assignments_path(&common::SUB_A);
         let now = std::time::SystemTime::now()
@@ -3112,4 +3115,181 @@ async fn pool_exhaustion_maps_to_503() {
         Some("1"),
         "a capacity 503 must carry Retry-After: 1"
     );
+}
+
+// ---------------------------------------------------------------------------------
+// JWT identity refresh on tenant mutation. The control plane hot-swaps the shared
+// signer after a tenant-mutating job (generate/restore/reset) so the served ARM identity
+// tracks the current tenant. These drive the REAL runners (`run_reset` = a live TRUNCATE;
+// `run_command` = the armed python no-op stub) against a testcontainer, sharing the
+// `ControlPlane.signer` handle so the swap is observable. A dedicated NON-NIL tenant is used
+// (the fixture `TENANT_ID` is the nil UUID, which the empty-estate case also resolves to, so
+// it cannot demonstrate a change). Docker-gated, same posture as the other DB-backed tests.
+// ---------------------------------------------------------------------------------
+mod jwt_identity_refresh {
+    use super::*;
+    use tenantless_server::job::{self, ControlPlane, Job, JobKind, JobStatus};
+    use tenantless_server::jwt::{JwtSigner, SharedSigner, issuer_for};
+    use tokio::process::Command;
+    use uuid::Uuid;
+
+    /// A distinct NON-NIL tenant, so a swap to/from it is observable against the nil estate.
+    const TID: Uuid = Uuid::from_u128(0x5151_5151_5151_5151_5151_5151_5151_5151);
+
+    fn job_status(cp: &ControlPlane, id: Uuid) -> JobStatus {
+        cp.registry
+            .lock()
+            .unwrap()
+            .get(&id)
+            .expect("job present")
+            .status
+    }
+    fn register(cp: &ControlPlane, kind: JobKind) -> Uuid {
+        let job = Job::new(kind);
+        let id = job.id;
+        cp.registry.lock().unwrap().insert(id, job);
+        id
+    }
+    async fn permit(cp: &ControlPlane) -> tokio::sync::OwnedSemaphorePermit {
+        cp.write_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("write permit")
+    }
+    /// The armed test stub (`python -c <STUB>`) with NO args → a pure exit-0 no-op that never
+    /// touches Postgres, so the DB tenant is controlled solely by the test's seeding.
+    fn stub_cmd(cp: &ControlPlane) -> Command {
+        let mut cmd = Command::new(&cp.pipeline_cmd[0]);
+        cmd.args(&cp.pipeline_cmd[1..]);
+        cmd
+    }
+    /// Insert a single tenant row (schema-minimal) so `SELECT tenant_id` resolves to `tid`.
+    async fn insert_tenant(pool: &PgPool, tid: Uuid) {
+        sqlx::query(
+            "INSERT INTO synthetic.tenant (tenant_id, display_name, profile_version, scale_params) \
+             VALUES ($1, 'refresh-test', 'v1', '{}'::jsonb)",
+        )
+        .bind(tid)
+        .execute(pool)
+        .await
+        .expect("insert non-nil tenant");
+    }
+
+    /// Reset (a real TRUNCATE) empties the estate → the signer refreshes from the seeded
+    /// non-nil tenant to the NIL tenant (full key rotation) BEFORE the job is Succeeded.
+    #[tokio::test]
+    async fn reset_refreshes_identity_to_nil() {
+        let (pool, _c) = start_pg().await;
+        common::seed_empty_tenant(&pool).await; // schema only, no tenant row
+        insert_tenant(&pool, TID).await;
+        let mut cp = common::armed_control_plane(&pool, "tok");
+        let signer = SharedSigner::new(JwtSigner::ephemeral(&TID).unwrap());
+        cp.signer = signer.clone();
+        assert!(
+            signer.serves_tenant(&TID),
+            "precondition: serves the seeded tenant"
+        );
+        let before_kid = signer.load().kid.clone();
+
+        let id = register(&cp, JobKind::Reset);
+        let p = permit(&cp).await;
+        job::run_reset(cp.clone(), id, p).await;
+
+        assert_eq!(
+            job_status(&cp, id),
+            JobStatus::Succeeded,
+            "reset must succeed"
+        );
+        assert!(
+            signer.serves_tenant(&Uuid::nil()),
+            "reset → nil-tenant identity"
+        );
+        assert_eq!(signer.load().issuer, issuer_for(&Uuid::nil()));
+        assert_ne!(
+            signer.load().kid,
+            before_kid,
+            "a tenant change is a full key rotation"
+        );
+    }
+
+    /// Generate (a tenant-mutating kind) refreshes the signer from nil to the DB's tenant.
+    #[tokio::test]
+    async fn generate_refreshes_identity_to_current_tenant() {
+        let (pool, _c) = start_pg().await;
+        common::seed_empty_tenant(&pool).await;
+        insert_tenant(&pool, TID).await; // DB tenant = TID
+        let mut cp = common::armed_control_plane(&pool, "tok");
+        let signer = SharedSigner::new(JwtSigner::ephemeral(&Uuid::nil()).unwrap()); // starts nil
+        cp.signer = signer.clone();
+        let before_kid = signer.load().kid.clone();
+
+        let id = register(&cp, JobKind::Generate);
+        let p = permit(&cp).await;
+        job::run_command(cp.clone(), id, stub_cmd(&cp), p).await;
+
+        assert_eq!(
+            job_status(&cp, id),
+            JobStatus::Succeeded,
+            "generate must succeed"
+        );
+        assert!(
+            signer.serves_tenant(&TID),
+            "generate → the served tenant identity"
+        );
+        assert_ne!(signer.load().kid, before_kid, "rotated to the new tenant");
+    }
+
+    /// Change-guard: a generate that leaves the effective tenant UNCHANGED does NOT rotate
+    /// the key — live tokens are not gratuitously invalidated.
+    #[tokio::test]
+    async fn generate_unchanged_tenant_does_not_rotate() {
+        let (pool, _c) = start_pg().await;
+        common::seed_empty_tenant(&pool).await;
+        insert_tenant(&pool, TID).await; // DB tenant = TID
+        let mut cp = common::armed_control_plane(&pool, "tok");
+        let signer = SharedSigner::new(JwtSigner::ephemeral(&TID).unwrap()); // already serves TID
+        cp.signer = signer.clone();
+        let before_kid = signer.load().kid.clone();
+
+        let id = register(&cp, JobKind::Generate);
+        let p = permit(&cp).await;
+        job::run_command(cp.clone(), id, stub_cmd(&cp), p).await;
+
+        assert_eq!(job_status(&cp, id), JobStatus::Succeeded);
+        assert!(signer.serves_tenant(&TID));
+        assert_eq!(
+            signer.load().kid,
+            before_kid,
+            "unchanged tenant must NOT rotate the key"
+        );
+    }
+
+    /// Kind gate: analyze uses the SAME runner but does not touch the tenant, so it never
+    /// refreshes — the identity stays nil even though the DB tenant is TID.
+    #[tokio::test]
+    async fn analyze_does_not_refresh_identity() {
+        let (pool, _c) = start_pg().await;
+        common::seed_empty_tenant(&pool).await;
+        insert_tenant(&pool, TID).await; // DB tenant = TID (differs from the nil signer)
+        let mut cp = common::armed_control_plane(&pool, "tok");
+        let signer = SharedSigner::new(JwtSigner::ephemeral(&Uuid::nil()).unwrap());
+        cp.signer = signer.clone();
+        let before_kid = signer.load().kid.clone();
+
+        let id = register(&cp, JobKind::Analyze);
+        let p = permit(&cp).await;
+        job::run_command(cp.clone(), id, stub_cmd(&cp), p).await;
+
+        assert_eq!(job_status(&cp, id), JobStatus::Succeeded);
+        assert!(
+            signer.serves_tenant(&Uuid::nil()),
+            "analyze must NOT refresh the identity"
+        );
+        assert_eq!(
+            signer.load().kid,
+            before_kid,
+            "analyze leaves the signer untouched"
+        );
+    }
 }

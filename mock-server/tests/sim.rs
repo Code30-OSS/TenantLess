@@ -48,7 +48,7 @@ async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgre
 
 /// Build a `/_sim`-seeded router (enforce OFF) over the given pool. Shares a single
 /// signer so two independently-built routers accept the same any-Bearer identically.
-fn build_app(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>) -> Router {
+fn build_app(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> Router {
     build_router(sim_state(pool, signer))
 }
 
@@ -57,16 +57,13 @@ fn build_app(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSi
 /// composes `arm` + `/_console` + `/token` WITHOUT `.merge(sim::router)`. This is the
 /// baseline `arm_byte_identical` compares against the merged router — it has NO `/_sim`
 /// surface, so the comparison is non-tautological (a real merge regression is detectable).
-fn build_app_without_sim(
-    pool: &PgPool,
-    signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>,
-) -> Router {
+fn build_app_without_sim(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> Router {
     build_router_without_sim(sim_state(pool, signer))
 }
 
 /// The shared `AppState` (enforce OFF, `http://test` base) used by both the merged and
 /// the pre-merge routers so any-Bearer is accepted identically across them.
-fn sim_state(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>) -> AppState {
+fn sim_state(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> AppState {
     AppState {
         pool: pool.clone(),
         base_url: "http://test".to_string(),

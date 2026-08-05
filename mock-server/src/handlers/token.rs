@@ -97,15 +97,18 @@ async fn mint_token(
     Path(_tenant): Path<String>,
 ) -> Result<Json<TokenResponse>, ApiError> {
     let now = now_secs();
-    let tid = served_tid(&state.signer.issuer).to_string();
+    // Snapshot the CURRENT signer once (the control plane may hot-swap it); this whole token
+    // is minted against one coherent identity even if a mutation lands mid-request.
+    let signer = state.signer.load();
+    let tid = served_tid(&signer.issuer).to_string();
     // A run/request service-principal identity. Generated (not seeded) — the token is
     // an auth artifact, never part of the reproducible generator output.
     let sp_oid = uuid::Uuid::new_v4().to_string();
     let sp_appid = uuid::Uuid::new_v4().to_string();
 
     let claims = ArmTokenClaims {
-        iss: state.signer.issuer.clone(),
-        aud: state.signer.audience.clone(),
+        iss: signer.issuer.clone(),
+        aud: signer.audience.clone(),
         tid,
         oid: sp_oid.clone(),
         sub: sp_oid,
@@ -120,8 +123,7 @@ async fn mint_token(
         exp: now + EXPIRES_IN,
     };
 
-    let access_token = state
-        .signer
+    let access_token = signer
         .mint(&claims)
         .map_err(|e| ApiError::Internal(format!("token mint failed: {e}")))?;
 
@@ -135,7 +137,7 @@ async fn mint_token(
 /// `GET /{tenant}/discovery/v2.0/keys` — serve the run's JWKS (public half). `JwkSet`
 /// is `Serialize`; cloned out of the `Arc`-shared signer for an owned response value.
 async fn jwks(State(state): State<AppState>, Path(_tenant): Path<String>) -> Json<Value> {
-    Json(json!(state.signer.jwks))
+    Json(json!(state.signer.load().jwks))
 }
 
 /// `GET /{tenant}/v2.0/.well-known/openid-configuration` — a minimal OIDC discovery
@@ -147,7 +149,7 @@ async fn openid_configuration(
 ) -> Json<Value> {
     let base = &state.base_url;
     Json(json!({
-        "issuer": state.signer.issuer,
+        "issuer": state.signer.load().issuer,
         "token_endpoint": format!("{base}/{tenant}/oauth2/v2.0/token"),
         "jwks_uri": format!("{base}/{tenant}/discovery/v2.0/keys"),
         "response_types_supported": ["token"],

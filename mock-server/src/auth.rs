@@ -90,11 +90,15 @@ pub async fn bearer_auth(
     let token = header
         .and_then(strip_bearer)
         .ok_or_else(ApiError::missing_auth)?;
+    // Snapshot the CURRENT signer (the control plane may hot-swap it on a tenant mutation).
+    // `load()` clones the `Arc` under a brief lock and releases it — nothing is held across
+    // the decode, and this request validates against one coherent identity.
+    let signer = state.signer.load();
     let mut validation = Validation::new(Algorithm::RS256);
-    validation.set_issuer(std::slice::from_ref(&state.signer.issuer));
-    validation.set_audience(std::slice::from_ref(&state.signer.audience));
+    validation.set_issuer(std::slice::from_ref(&signer.issuer));
+    validation.set_audience(std::slice::from_ref(&signer.audience));
     validation.validate_exp = true;
-    decode::<serde_json::Value>(token, &state.signer.decoding, &validation)
+    decode::<serde_json::Value>(token, &signer.decoding, &validation)
         .map_err(|_| ApiError::invalid_token())?;
     Ok(next.run(request).await)
 }

@@ -227,6 +227,12 @@ pub struct ControlPlane {
     pub pipeline_cmd: Vec<String>,
     /// The pool used for `TRUNCATE` on reset/restore (17-02/17-04).
     pub pool: PgPool,
+    /// The hot-swappable signer handle — the SAME [`crate::jwt::SharedSigner`] held by
+    /// `AppState.signer`. After a tenant-mutating job (generate/restore/reset) commits, the
+    /// runner rebuilds the signer here so the served ARM identity (`/token`, JWKS,
+    /// `--enforce-auth`) tracks the current tenant instead of the boot-time one (IAM
+    /// staleness fix). `pub` so integration tests can construct the shared pair.
+    pub signer: crate::jwt::SharedSigner,
 }
 
 /// The fail-closed arming DECISION (D-02), factored out so the security-critical rule is
@@ -259,7 +265,13 @@ impl ControlPlane {
     /// D-02 fail-closed rule via [`arm_decision`]: disabled → `Ok(None)`; enabled + empty
     /// token → `Err`; enabled + non-empty → `Ok(Some(ControlPlane))` after creating the
     /// three server-owned control-data subdirs (`profiles/`, `sources/`, `snapshots/`).
-    pub fn arm(cli: &crate::config::Cli, pool: PgPool) -> Result<Option<ControlPlane>, String> {
+    /// `signer` is the shared handle `AppState` also holds — the control plane rebuilds it
+    /// on a tenant mutation so the two never drift.
+    pub fn arm(
+        cli: &crate::config::Cli,
+        pool: PgPool,
+        signer: crate::jwt::SharedSigner,
+    ) -> Result<Option<ControlPlane>, String> {
         let token_digest =
             match arm_decision(cli.enable_control_plane, cli.control_token.as_deref())? {
                 None => return Ok(None),
@@ -289,8 +301,49 @@ impl ControlPlane {
             write_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             pipeline_cmd: DEFAULT_PIPELINE_CMD.iter().map(|s| s.to_string()).collect(),
             pool,
+            signer,
         }))
     }
+}
+
+/// Re-derive the served tenant identity after a tenant-mutating job's DB changes have
+/// COMMITTED, hot-swapping the run's signer to match — called BEFORE the job is published
+/// `Succeeded`, so a client never observes a successful generate/restore/reset while the OLD
+/// identity is still active.
+///
+/// Reads the effective tenant (an empty estate → the nil tenant, the SAME `SELECT` the server
+/// runs at startup) and rebuilds the WHOLE signer (new key + kid + iss/tid) via
+/// [`crate::jwt::JwtSigner::ephemeral`] — but ONLY when the tenant actually changed, so a
+/// mutation that leaves the effective tenant unchanged never rotates the key or invalidates
+/// live tokens. The new signer is built OUTSIDE the write lock (RSA keygen); only the pointer
+/// swap holds it.
+///
+/// Returns `Err(msg)` if the tenant cannot be re-read or the signer cannot be rebuilt; the
+/// caller fails the job rather than reporting success with a stale/mismatched identity.
+///
+/// `pub(crate)` so the snapshot restore runner ([`crate::snapshot::restore`]) shares the exact
+/// same refresh contract as the generate/reset runners here.
+pub(crate) async fn refresh_signer_for_current_tenant(cp: &ControlPlane) -> Result<(), String> {
+    let tenant_id: Uuid = sqlx::query_scalar("SELECT tenant_id FROM synthetic.tenant LIMIT 1")
+        .fetch_optional(&cp.pool)
+        .await
+        .map_err(|e| format!("could not re-read tenant_id after mutation: {e}"))?
+        .unwrap_or_else(Uuid::nil);
+    // Change-guard: only rotate when the effective tenant differs from the current signer.
+    if cp.signer.serves_tenant(&tenant_id) {
+        return Ok(());
+    }
+    let next = crate::jwt::JwtSigner::ephemeral(&tenant_id)
+        .map_err(|e| format!("could not rebuild signer for tenant {tenant_id}: {e}"))?;
+    cp.signer.store(next);
+    Ok(())
+}
+
+/// Peek a job's [`JobKind`] from the registry (lock-mutate-drop), if it is still present.
+fn job_kind(cp: &ControlPlane, job_id: Uuid) -> Option<JobKind> {
+    let mut kind = None;
+    with_job(cp, job_id, |j| kind = Some(j.kind));
+    kind
 }
 
 // ---------------------------------------------------------------------------
@@ -626,15 +679,31 @@ pub async fn run_command_with_timeout(
     timeout: Duration,
 ) {
     let outcome = run_command_keep_permit(&cp, job_id, &mut cmd, timeout).await;
-    with_job(&cp, job_id, |j| {
-        if outcome.succeeded {
-            j.status = JobStatus::Succeeded;
-            if let Some(result) = parse_generate_summary(&outcome.last_stdout) {
-                j.result = Some(result);
-            }
+    if outcome.succeeded {
+        // Generate MUTATES the tenant → refresh the served identity BEFORE publishing
+        // `Succeeded` (never report a successful generate while the old signer is still
+        // active). Analyze uses this SAME runner but does NOT touch the tenant, so it is
+        // excluded by kind (and the change-guard would no-op it anyway). A refresh failure
+        // fails the job — a tenant/JWT mismatch must never be reported as success.
+        let refresh = if job_kind(&cp, job_id) == Some(JobKind::Generate) {
+            refresh_signer_for_current_tenant(&cp).await
+        } else {
+            Ok(())
+        };
+        match refresh {
+            Ok(()) => with_job(&cp, job_id, |j| {
+                j.status = JobStatus::Succeeded;
+                if let Some(result) = parse_generate_summary(&outcome.last_stdout) {
+                    j.result = Some(result);
+                }
+            }),
+            Err(e) => with_job(&cp, job_id, |j| {
+                j.push_log(format!("tenant generated but identity refresh failed: {e}"));
+                j.status = JobStatus::Failed;
+            }),
         }
-        // Failure already set to `Failed` inside `run_command_keep_permit`.
-    });
+    }
+    // Failure already set to `Failed` inside `run_command_keep_permit`.
     // `_permit` drops here → the single-writer gate is released.
 }
 
@@ -654,7 +723,18 @@ pub async fn run_command_with_timeout(
 pub async fn run_reset(cp: ControlPlane, job_id: Uuid, _permit: OwnedSemaphorePermit) {
     with_job(&cp, job_id, |j| j.status = JobStatus::Running);
     match truncate_synthetic(&cp.pool).await {
-        Ok(_) => with_job(&cp, job_id, |j| j.status = JobStatus::Succeeded),
+        Ok(_) => {
+            // The estate is now empty → refresh the identity to the nil tenant BEFORE
+            // publishing `Succeeded` (a reset that left the pre-reset issuer active would be
+            // a tenant/JWT mismatch). A refresh failure fails the job.
+            match refresh_signer_for_current_tenant(&cp).await {
+                Ok(()) => with_job(&cp, job_id, |j| j.status = JobStatus::Succeeded),
+                Err(e) => with_job(&cp, job_id, |j| {
+                    j.push_log(format!("reset succeeded but identity refresh failed: {e}"));
+                    j.status = JobStatus::Failed;
+                }),
+            }
+        }
         Err(e) => with_job(&cp, job_id, |j| {
             j.push_log(format!("reset TRUNCATE failed: {e}"));
             j.status = JobStatus::Failed;
@@ -721,6 +801,9 @@ mod tests {
             write_gate: Arc::new(Semaphore::new(1)),
             pipeline_cmd: Vec::new(),
             pool,
+            signer: crate::jwt::SharedSigner::new(
+                crate::jwt::JwtSigner::ephemeral(&Uuid::nil()).expect("lazy_cp test signer"),
+            ),
         }
     }
 

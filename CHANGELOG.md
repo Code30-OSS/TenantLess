@@ -9,6 +9,30 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.2.1 — Refresh the served JWT identity after a tenant mutation
+
+Patch release. Fixes a JWT-identity staleness bug. No breaking changes: ARM response shapes,
+CLI flags, and the profile schema are unchanged, and the default (`--enforce-auth` off,
+any-Bearer) posture is unaffected.
+
+### Fixed
+
+- **The served token identity now tracks the current tenant instead of freezing at the one
+  present when the server booted.** The RS256 signer — which backs the `/token` mint, the
+  JWKS and OpenID-discovery documents, and (`--enforce-auth`) token validation — embeds the
+  served tenant in its issuer. It was built once at startup, so after a control-plane
+  **generate** (new tenant), **restore** (the snapshot's tenant), or **reset** (empty → the
+  nil tenant), the mock kept serving the previous (or nil) identity until a restart. A
+  start-empty-then-generate run minted nil-tenant tokens; a restore kept the pre-restore
+  issuer. The control plane now rebuilds the signer to the effective tenant when a
+  tenant-mutating job completes — after the database change commits and **before** the job is
+  reported succeeded, so a client never observes a successful mutation while the old identity
+  is still active. The whole signer (key, `kid`, issuer) rotates as one atomic epoch, and only
+  when the tenant actually changed (an unchanged tenant does not rotate the key or invalidate
+  live tokens). If the tenant cannot be re-read or the signer cannot be rebuilt, the job fails
+  rather than reporting success with a mismatched identity. Analyze and snapshot-save do not
+  touch the tenant and never trigger a refresh.
+
 ## 1.2.0 — Execution budgets: bound request time, concurrency, DB time, and inbound size
 
 Minor release. Adds resource-exhaustion guards across the server so an any-Bearer caller
