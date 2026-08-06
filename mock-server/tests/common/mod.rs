@@ -140,6 +140,13 @@ pub fn armed_control_plane(pool: &PgPool, token: &str) -> tenantless_server::job
         write_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         pipeline_cmd: vec!["python".to_string(), "-c".to_string(), STUB.to_string()],
         pool: pool.clone(),
+        // A NIL-tenant shared signer by default: a refresh test seeds a non-nil tenant and
+        // shares this handle with its AppState (`cp.signer.clone()`), so it can observe the
+        // hot-swap after a mutating job. Existing control tests ignore the signer.
+        signer: tenantless_server::jwt::SharedSigner::new(
+            tenantless_server::jwt::JwtSigner::ephemeral(&Uuid::nil())
+                .expect("armed_control_plane test signer"),
+        ),
     }
 }
 
@@ -1165,11 +1172,12 @@ pub async fn seed_sim_rows(pool: &PgPool) -> SimSeed {
 }
 
 /// Build a fresh ephemeral RS256 signer for the fixture tenant, wrapped in the
-/// `Arc` that `AppState.signer` expects. Each call mints a new in-memory key
-/// (D-08); tests that only exercise the any-Bearer/OFF path don't depend on the
-/// key, so a throwaway per-builder signer is correct and cheap enough.
-pub fn test_signer() -> std::sync::Arc<tenantless_server::jwt::JwtSigner> {
-    std::sync::Arc::new(
+/// [`SharedSigner`](tenantless_server::jwt::SharedSigner) handle that `AppState.signer`
+/// expects. Each call mints a new in-memory key (D-08); tests that only exercise the
+/// any-Bearer/OFF path don't depend on the key, so a throwaway per-builder signer is correct
+/// and cheap enough.
+pub fn test_signer() -> tenantless_server::jwt::SharedSigner {
+    tenantless_server::jwt::SharedSigner::new(
         tenantless_server::jwt::JwtSigner::ephemeral(&TENANT_ID).expect("build test signer"),
     )
 }

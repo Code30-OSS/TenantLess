@@ -9,7 +9,11 @@
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 use tenantless_server::{
-    config::Cli, jwt::JwtSigner, metrics::Metrics, serve_dual, state::AppState,
+    config::Cli,
+    jwt::{JwtSigner, SharedSigner},
+    metrics::Metrics,
+    serve_dual,
+    state::AppState,
 };
 
 #[tokio::main]
@@ -44,16 +48,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read the single served tenant_id once at startup (the sim has one tenant) so
     // the signer's v1.0 `iss` embeds it, then generate the ephemeral RS256 key
     // BEFORE building AppState (mirrors the TLS cert in `serve_dual`). The key lives
-    // only in memory, behind an Arc shared by every handler copy of state (D-08).
+    // only in memory, inside the hot-swappable `SharedSigner` handle below (D-08).
     //
     // Phase 17 (D-09, RESEARCH Pitfall 3): an initialized-but-EMPTY `synthetic` schema
     // (migrations applied, `synthetic.tenant` still empty — the post-`reset` state) must
     // BOOT, not crash. `fetch_optional` tolerates zero rows and we fall back to
     // `Uuid::nil()`; the ARM read handlers already query `synthetic.*` directly and return
     // empty envelopes on an empty tenant, so startup is the sole remaining assertion to
-    // relax. Under the default posture (`--enforce-auth` OFF) the signer's `iss` is
-    // cosmetic, so a nil id is harmless (A3); re-minting the signer on a later generate is
-    // a deferred nicety (the control realm is separate from the ARM bearer realm).
+    // relax. This boot-time id is no longer the LAST word: a later control-plane mutation
+    // (generate/restore/reset) re-derives the tenant and rebuilds the signer (see the
+    // `SharedSigner` below + `ControlPlane`), so the served identity tracks the current
+    // tenant instead of freezing at this one.
     let tenant_id: uuid::Uuid =
         sqlx::query_scalar("SELECT tenant_id FROM synthetic.tenant LIMIT 1")
             .fetch_optional(&pool)
@@ -113,15 +118,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         })?;
 
-    let signer = std::sync::Arc::new(JwtSigner::ephemeral(&tenant_id)?);
+    // The run's signer, wrapped in a HOT-SWAPPABLE shared handle (IAM staleness fix): the
+    // control plane rebuilds it after a tenant-mutating job so the served identity tracks the
+    // current tenant, not this boot-time one. `AppState` and the `ControlPlane` below hold
+    // clones of the SAME handle.
+    let signer = SharedSigner::new(JwtSigner::ephemeral(&tenant_id)?);
 
     // Phase 17 (CTRL-05, D-02): arm the control plane BEFORE moving `cli` fields into
     // AppState. `arm` is FAIL-CLOSED — disabled → `None` (read-only posture unchanged);
     // `--enable-control-plane` WITHOUT a non-empty token → `Err`, propagated here as a
     // clear startup error (the server never arms without a secret). The `String` error
     // converts into the boxed `main` error via `?`. The child job runner needs the DSN by
-    // value, so `arm` takes a `pool.clone()` while `pool` still moves into AppState below.
-    let control = tenantless_server::job::ControlPlane::arm(&cli, pool.clone())?;
+    // value, so `arm` takes a `pool.clone()` while `pool` still moves into AppState below;
+    // it also takes the shared signer handle (cloned) so it can refresh the identity.
+    let control = tenantless_server::job::ControlPlane::arm(&cli, pool.clone(), signer.clone())?;
 
     let state = AppState {
         pool,

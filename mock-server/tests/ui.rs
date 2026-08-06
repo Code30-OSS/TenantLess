@@ -58,7 +58,7 @@ async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgre
 
 /// The shared `AppState` (enforce OFF, `http://test` base) — mirrors `tests/sim.rs::sim_state`
 /// so any-Bearer is accepted identically across the merged and pre-merge routers.
-fn ui_state(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>) -> AppState {
+fn ui_state(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> AppState {
     AppState {
         pool: pool.clone(),
         base_url: "http://test".to_string(),
@@ -70,15 +70,12 @@ fn ui_state(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSig
 }
 
 /// The full merged runtime router (ARM + /_console + /token + /_sim + /ui).
-fn build_app(pool: &PgPool, signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>) -> Router {
+fn build_app(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> Router {
     build_router(ui_state(pool, signer))
 }
 
 /// The GENUINE pre-merge baseline (no `/_sim`, no `/ui`) — the byte-identity reference.
-fn build_app_without_sim(
-    pool: &PgPool,
-    signer: std::sync::Arc<tenantless_server::jwt::JwtSigner>,
-) -> Router {
+fn build_app_without_sim(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> Router {
     build_router_without_sim(ui_state(pool, signer))
 }
 

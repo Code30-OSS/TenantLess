@@ -192,7 +192,12 @@ async fn permit_released_after_timeout() {
 /// happens at extraction, before any query). Any non-empty Bearer passes (enforce off).
 fn real_app() -> Router {
     use sqlx::postgres::PgPoolOptions;
-    use tenantless_server::{build_router, jwt::JwtSigner, metrics::Metrics, state::AppState};
+    use tenantless_server::{
+        build_router,
+        jwt::{JwtSigner, SharedSigner},
+        metrics::Metrics,
+        state::AppState,
+    };
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
         .expect("lazy pool");
@@ -201,7 +206,7 @@ fn real_app() -> Router {
         pool,
         base_url: "http://test".to_string(),
         metrics: Metrics::new(),
-        signer: std::sync::Arc::new(JwtSigner::ephemeral(&tenant).expect("signer")),
+        signer: SharedSigner::new(JwtSigner::ephemeral(&tenant).expect("signer")),
         enforce_auth: false,
         control: None,
     };
