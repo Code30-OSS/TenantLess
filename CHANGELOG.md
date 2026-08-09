@@ -9,6 +9,25 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.3.0 — ARM overlay/tombstone/revision substrate
+
+Minor release. Adds the persistent substrate for the stateful ARM write plane. No breaking
+changes: no reader consults the overlay yet, so ARM response shapes, CLI flags, and the
+profile schema are unchanged and existing responses are byte-identical.
+
+### Added
+
+- **ARM overlay substrate** (`sql/009_arm_overlay.sql`) — a unified `synthetic.arm_overlay`
+  table (one row per normalized resource id; `present=false` is the tombstone), an unowned
+  non-cycling revision sequence, and a `BEFORE` trigger that assigns a fresh,
+  strictly-advancing revision on every write.
+- **Boot provisioning** — idempotent `ensure_arm_overlay_schema` in the mock-server startup
+  preflight and the generator / `init-db` path, applied in a bounded transaction. A deep
+  structural-completeness check fails closed on a corrupt substrate rather than serving on it.
+- **ETag derivation** — versioned derivation of strong, quoted baseline (`b-<hex>`) and
+  overlay (`o-<revision>`) validators from a canonical preimage of the served
+  representation. Derivation only — not yet wired into any handler.
+
 ## 1.2.1 — Refresh the served JWT identity after a tenant mutation
 
 Patch release. Fixes a JWT-identity staleness bug. No breaking changes: ARM response shapes,
