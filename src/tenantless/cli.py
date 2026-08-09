@@ -1475,7 +1475,7 @@ def revert_drift(batch_id_raw, dry_run, database_url):
     help="Postgres DSN (defaults to writer.DATABASE_URL / $DATABASE_URL).",
 )
 def init_db(database_url):
-    """Provision the full sql/001..008 schema against DATABASE_URL — no data.
+    """Provision the full sql/001..009 schema against DATABASE_URL — no data.
 
     The provision-WITHOUT-generating path for a bring-your-own Postgres: a user who
     wants to ``serve`` an (initially empty) tenant, or who prefers to provision the
@@ -1483,25 +1483,25 @@ def init_db(database_url):
     reachable PG16 and runs this. It is a THIN wrapper over the existing idempotent
     ``ensure_*`` seams — no new SQL — applying, IN ORDER:
     base (sql/001..003) -> cost (004) -> identity (005) -> drift (006) ->
-    web_metadata (007).
+    web_metadata (007) -> rg_index (008) -> arm_overlay (009).
 
     Provisioning belongs to the write path (``generate``) or to this explicit
     ``init-db``; the server does not create the base schema at boot, so a
     bring-your-own-Postgres user runs ``generate`` or ``init-db`` before ``serve``.
 
-    All five ensure_* functions are idempotent (base via a to_regclass guard, the
-    rest via CREATE ... IF NOT EXISTS), so re-running ``init-db`` against an
-    already-provisioned database is a harmless no-op.
+    All ensure_* functions are idempotent (base via a to_regclass guard, the
+    rest via CREATE ... IF NOT EXISTS + guarded DO blocks), so re-running
+    ``init-db`` against an already-provisioned database is a harmless no-op.
 
     Reports HONESTLY: if a bundled migration file is absent — for example an
     installed package shipped without its ``sql/`` data files — the command exits
     nonzero and NAMES the missing migration(s) instead of printing a false
-    "Provisioned schema 001..008" success. The host-only status line prints ONLY
+    "Applied migrations 001..009" success. The host-only status line prints ONLY
     on full success.
 
     ATOMIC (all-or-nothing): BEFORE opening any transaction, a pre-flight gate
-    verifies all eight migration files exist — a missing bundled file aborts with
-    the database untouched (no half-open connection). Only if all eight are present
+    verifies all nine migration files exist — a missing bundled file aborts with
+    the database untouched (no half-open connection). Only if all nine are present
     is a single writer transaction opened; ANY failure inside it (a partially
     applied base schema, or a migration whose file vanished at apply time) is raised
     inside the transaction so it rolls the whole thing back — the schema is never
@@ -1511,7 +1511,7 @@ def init_db(database_url):
 
     db_url = database_url or writer.DATABASE_URL
 
-    # Pre-flight file gate (P2a): verify ALL 8 migration files exist BEFORE opening
+    # Pre-flight file gate (P2a): verify ALL 9 migration files exist BEFORE opening
     # any transaction. A missing bundled file (the packaging bug) aborts here — no
     # DB connection is opened, nothing is touched.
     missing = [p for p in writer._all_migration_sql_files() if not p.is_file()]
@@ -1523,7 +1523,7 @@ def init_db(database_url):
             "built with force-include, or run against a repo checkout / docker initdb."
         )
 
-    # All eight present -> apply all-or-nothing inside ONE writer transaction. Any
+    # All nine present -> apply all-or-nothing inside ONE writer transaction. Any
     # exception raised here propagates OUT of the `with`, so open_writer rolls back
     # everything (never a record-then-commit-then-raise partial provision).
     with writer.open_writer(db_url) as conn:
@@ -1531,7 +1531,7 @@ def init_db(database_url):
         # partly-migrated base and rolls back; True/False is applied-vs-already-
         # present (Docker volume / re-run no-op), NOT a failure.
         writer.ensure_base_schema(conn)
-        # Twins (004..008) IN ORDER: a False return means the file vanished between
+        # Twins (004..009) IN ORDER: a False return means the file vanished between
         # the pre-flight gate and apply (should not happen after the gate) — treat
         # it as a hard failure and raise INSIDE the with so the base apply rolls back.
         for name, ensure in (
@@ -1540,6 +1540,7 @@ def init_db(database_url):
             ("006_drift", writer.ensure_drift_schema),
             ("007_web_metadata", writer.ensure_web_metadata_schema),
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
+            ("009_arm_overlay", writer.ensure_arm_overlay_schema),
         ):
             if not ensure(conn):
                 raise click.ClickException(
@@ -1553,4 +1554,10 @@ def init_db(database_url):
     from urllib.parse import urlsplit
 
     host = urlsplit(db_url).hostname or "the configured host"
-    click.echo(f"Provisioned schema 001..008 against {host}.")
+    # Honest status: init-db APPLIES the idempotent migrations; it does not perform
+    # the deep structural inventory the mock-server runs at boot (arm_overlay_inventory). Say so
+    # rather than imply a verification this path did not do.
+    click.echo(
+        f"Applied migrations 001..009 against {host}. "
+        "The mock-server enforces structural verification of the overlay substrate at boot."
+    )

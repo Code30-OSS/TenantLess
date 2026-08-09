@@ -135,10 +135,10 @@ def _base_schema_sql_files() -> list[Path]:
 
 
 def _all_migration_sql_files() -> list[Path]:
-    """Every migration file the full sql/001..008 chain needs, in order — the 3
-    base files (001..003) plus the five twin migrations (004..008).
+    """Every migration file the full sql/001..009 chain needs, in order — the 3
+    base files (001..003) plus the six twin migrations (004..009).
 
-    The pre-flight file gate in ``init-db`` (P2a) checks all eight exist BEFORE
+    The pre-flight file gate in ``init-db`` (P2a) checks all nine exist BEFORE
     opening any DB transaction, so a missing bundled file (the packaging bug)
     aborts without touching the database. Resolves via the shared packaged-or-repo
     resolver; ``parts`` are STATIC filenames, never user input.
@@ -149,6 +149,7 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "006_drift.sql"),
         resource_path("sql", "007_web_metadata.sql"),
         resource_path("sql", "008_rg_lower_index.sql"),
+        resource_path("sql", "009_arm_overlay.sql"),
     ]
 
 
@@ -176,8 +177,8 @@ def ensure_base_schema(conn: psycopg.Connection) -> bool:
 
     This closes the Docker-optional / bring-your-own-Postgres gap. ``docker
     compose up`` does two jobs: it provides Postgres 16 AND auto-applies
-    sql/001..008 via the ``./sql -> /docker-entrypoint-initdb.d`` mount. The
-    runtime already self-provisions sql/004..008 idempotently (the ``ensure_*``
+    sql/001..009 via the ``./sql -> /docker-entrypoint-initdb.d`` mount. The
+    runtime already self-provisions sql/004..009 idempotently (the ``ensure_*``
     twins below), but the BASE tables (sql/001 tenant/subs/RGs/resources, sql/002
     dependencies/violations, sql/003 integrity + indexes) were applied ONLY by the
     Docker initdb mount — so a bare non-Docker PG16 was missing the base schema and
@@ -361,6 +362,37 @@ def ensure_rg_index_schema(conn: psycopg.Connection) -> bool:
     if not sql_path.is_file():
         return False
     conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+def ensure_arm_overlay_schema(conn: psycopg.Connection) -> bool:
+    """Apply the idempotent ``sql/009_arm_overlay.sql`` migration — the ARM
+    overlay/tombstone/revision substrate (``synthetic.arm_overlay`` + the unowned revision
+    sequence + the revision trigger + the NAMED row-model CHECK constraints).
+
+    Verbatim twin of :func:`ensure_rg_index_schema`, swapping ``008_rg_lower_index.sql`` for
+    ``009_arm_overlay.sql``. Applied UNCONDITIONALLY by ``init-db`` (and available for
+    BYO-Postgres completeness) so a database provisioned before the overlay existed gains the overlay
+    substrate automatically on the next ``init-db``. NOT wired into ``generate`` provisioning
+    — ``generate`` writes no overlay data (the overlay is populated only by the
+    write plane), and the Rust server self-provisions it at boot via
+    ``ensure_arm_overlay_schema``. ``sql/009`` is fully idempotent (``CREATE ... IF NOT
+    EXISTS`` + guarded ``DO`` blocks), so applying it here is safe to repeat. The statement
+    text is a STATIC project file, never user/profile input — no injection surface. Returns
+    True if applied, False if the file was not found (installed package with no bundled
+    ``sql/`` — those deployments apply the schema via docker initdb).
+    """
+    sql_path = resource_path("sql", "009_arm_overlay.sql")
+    if not sql_path.is_file():
+        return False
+    # Transaction-scoped preamble RELOCATED from sql/009 so the .sql file stays
+    # honest under Docker initdb autocommit. ``conn.transaction()`` GUARANTEES an explicit
+    # transaction (a savepoint when init-db's outer writer tx is already open), so the bounded
+    # ``lock_timeout`` and the serializing advisory lock actually take effect and cover the DDL.
+    with conn.transaction():
+        conn.execute("SET LOCAL lock_timeout = '3s'")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_overlay:009'))")
+        conn.execute(sql_path.read_text(encoding="utf-8"))
     return True
 
 

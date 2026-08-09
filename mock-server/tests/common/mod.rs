@@ -103,6 +103,34 @@ pub async fn seed_empty_tenant(pool: &PgPool) {
     pool.execute_unchecked(sql_007).await;
 }
 
+/// Model a VALID first boot: provision the base schema WITHOUT the overlay
+/// (sql/001,002,003,005,006,007 — the same six `seed_empty_tenant` applies, MINUS 008 and
+/// MINUS the overlay migration under test), then call `ensure_arm_overlay_schema` twice —
+/// the 1st is the real create, the 2nd proves idempotency. Deliberately does NOT touch
+/// `seed_fixture`/`FixtureCounts` (project memory: fixture coupling) and does NOT pre-apply
+/// sql/009 (a truly bare DB has never seen the overlay). Callers then seed overlay rows.
+pub async fn seed_overlay_first_boot(pool: &PgPool) {
+    let sql_001 = include_str!("../../../sql/001_synthetic_tenant.sql");
+    let sql_002 = include_str!("../../../sql/002_cross_sub_dependencies.sql");
+    let sql_003 = include_str!("../../../sql/003_integrity_and_index.sql");
+    let sql_005 = include_str!("../../../sql/005_identity.sql");
+    let sql_006 = include_str!("../../../sql/006_drift.sql");
+    let sql_007 = include_str!("../../../sql/007_web_metadata.sql");
+    pool.execute_unchecked(sql_001).await;
+    pool.execute_unchecked(sql_002).await;
+    pool.execute_unchecked(sql_003).await;
+    pool.execute_unchecked(sql_005).await;
+    pool.execute_unchecked(sql_006).await;
+    pool.execute_unchecked(sql_007).await;
+    // 1st: the real apply (creates the overlay substrate). 2nd: an idempotent no-op.
+    tenantless_server::ensure_arm_overlay_schema(pool)
+        .await
+        .expect("first real ensure_arm_overlay_schema apply");
+    tenantless_server::ensure_arm_overlay_schema(pool)
+        .await
+        .expect("idempotent re-apply of ensure_arm_overlay_schema");
+}
+
 /// Build an ARMED `ControlPlane` over `pool` with `token` as the control secret, using a
 /// fresh unique tempdir for the three control-data subdirs (`profiles`/`sources`/`snapshots`).
 /// For control-plane integration tests (token gate, validation, armed byte-identical): the

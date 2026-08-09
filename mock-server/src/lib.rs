@@ -11,6 +11,7 @@ pub mod config;
 pub mod console;
 pub mod control;
 pub mod error;
+pub mod etag;
 pub mod filter;
 pub mod handlers;
 pub mod job;
@@ -321,6 +322,619 @@ pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error>
 pub async fn ensure_web_metadata_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_007: &str = include_str!("../../sql/007_web_metadata.sql");
     apply_schema_batch(pool, SQL_007).await
+}
+
+/// Idempotently provision the ARM overlay substrate by applying
+/// `sql/009_arm_overlay.sql`: the `synthetic.arm_overlay` table, the unowned
+/// `arm_overlay_revision_seq` sequence, the `arm_overlay_set_revision` trigger, and the twelve
+/// NAMED row-model CHECK constraints.
+///
+/// Safe to run on every boot. The migration uses `CREATE ... IF NOT EXISTS`, `CREATE OR
+/// REPLACE FUNCTION`, a guarded (existence-checked) `CREATE TRIGGER`, and guarded `DO`
+/// constraint blocks, so it is a no-op on an already-migrated schema; the preamble prepended
+/// by this function takes a transaction-scoped advisory lock so four or more racing boots all
+/// succeed. Requires the `synthetic` schema to already exist (the caller confirms a tenant
+/// first).
+///
+/// Boundary: this only PROVISIONS the substrate. No reader consults it, no drift
+/// path writes it, and no ETag header is emitted.
+///
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// with a transaction-scoped preamble — a bounded `lock_timeout` + the serializing advisory
+/// lock — prepended HERE rather than in the `.sql` file, so `sql/009` stays honest under
+/// Docker initdb autocommit. Mirrors the Python twin
+/// `writer.ensure_arm_overlay_schema`. After the DDL applies, [`arm_overlay_inventory`]
+/// deep-verifies the resulting schema — actual constraint DEFINITIONS **and behavioural
+/// probes** — and fails boot loudly if a malformed pre-existing `arm_overlay` table was left
+/// intact by `CREATE TABLE IF NOT EXISTS`.
+pub async fn ensure_arm_overlay_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    const SQL_009: &str = include_str!("../../sql/009_arm_overlay.sql");
+    // Transaction-scoped preamble RELOCATED here from sql/009. `apply_schema_batch`
+    // wraps the whole batch in ONE explicit transaction, so a bounded `lock_timeout` and the
+    // serializing advisory lock take effect and cover the DDL — while sql/009 stays pure,
+    // idempotent DDL that is honest under Docker's initdb autocommit path (where a
+    // transaction-scoped statement is a silent no-op). The advisory lock serializes concurrent
+    // first-boot applies (>=4 racing tasks all return Ok); `lock_timeout` bounds any
+    // ACCESS-EXCLUSIVE wait. Both revert/release on commit — no leak back to the pooled conn.
+    const PREAMBLE: &str = "SET LOCAL lock_timeout = '3s';\n\
+        SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_overlay:009'));\n";
+    apply_schema_batch(pool, &format!("{PREAMBLE}{SQL_009}")).await?;
+    arm_overlay_inventory(pool)
+        .await
+        .map_err(sqlx::Error::Protocol)
+}
+
+/// Deep structural-completeness inventory for `synthetic.arm_overlay`. Because
+/// `CREATE TABLE IF NOT EXISTS` silently leaves a malformed pre-existing table intact, boot
+/// must independently verify every required element — actual constraint DEFINITIONS (so a
+/// same-named `CHECK (true)` stub is caught), column types + nullability, the sequence's
+/// type / `NO CYCLE` / unowned-ness, the revision trigger (flags AND that it invokes
+/// `arm_overlay_set_revision()` AND that it strictly advances revisions), and the `id_lower`
+/// primary key — and fail LOUDLY (naming the first bad element) rather than serve on a corrupt
+/// substrate.
+///
+/// Returns `Ok(())` on a correctly-provisioned table; `Err(String)` naming the first
+/// missing / stubbed / mistyped element otherwise. All catalog queries are PG11-safe.
+pub async fn arm_overlay_inventory(pool: &sqlx::PgPool) -> Result<(), String> {
+    // --- 1. NAMED CHECK constraint DEFINITIONS (not just names) ---------------------------
+    // Each expected constraint must exist AND its `pg_get_constraintdef` text must contain a
+    // characteristic predicate fragment, so a same-named `CHECK (true)` stub fails.
+    let expected_checks: &[(&str, &str)] = &[
+        ("ck_arm_overlay_id_lower", "lower(id)"),
+        ("ck_arm_overlay_kind", "resource_group"),
+        ("ck_arm_overlay_source", "drift"),
+        ("ck_arm_overlay_revision_pos", "revision > 0"),
+        ("ck_arm_overlay_present_body", "body IS NOT NULL"),
+        ("ck_arm_overlay_body_nonempty", "'{}'"),
+        ("ck_arm_overlay_body_id_agree", "'id'"),
+        ("ck_arm_overlay_envelope", "jsonb_typeof"),
+        (
+            "ck_arm_overlay_kind_shape",
+            "Microsoft.Resources/resourceGroups",
+        ),
+        // minimum-complete-snapshot invariants.
+        ("ck_arm_overlay_tags", "tags"),
+        ("ck_arm_overlay_optional_types", "sku"),
+        ("ck_arm_overlay_rg_provisioning_state", "provisioningState"),
+    ];
+    for (name, needle) in expected_checks {
+        let def: Option<String> = sqlx::query_scalar(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid = 'synthetic.arm_overlay'::regclass \
+               AND contype = 'c' AND conname = $1",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("arm_overlay inventory: probing CHECK {name} failed: {e}"))?;
+        match def {
+            None => {
+                return Err(format!(
+                    "arm_overlay inventory: missing CHECK constraint {name}"
+                ));
+            }
+            Some(d) if !d.contains(needle) => {
+                return Err(format!(
+                    "arm_overlay inventory: CHECK {name} definition is stubbed/wrong \
+                     (expected to contain {needle:?}, got {d:?})"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    // --- 1b. EXACT-definition checks for the two constraints that cannot be behaviourally
+    // isolated. `ck_arm_overlay_revision_pos`: the BEFORE trigger overwrites
+    // any caller `revision` before a probe could force <= 0. `ck_arm_overlay_body_nonempty`: an
+    // empty `{}` body is ALSO rejected by the envelope/tags CHECKs, so a probe cannot attribute
+    // the rejection to it. For BOTH, a vacuous rewrite (`CHECK (true OR <needle>)`) would still
+    // contain the substring needle above — so assert the NORMALISED definition EXACTLY (strip
+    // whitespace + lowercase for PG11/16 parity), which a vacuous/stubbed form cannot match.
+    let exact_checks: &[(&str, &str)] = &[
+        ("ck_arm_overlay_revision_pos", "check((revision>0))"),
+        (
+            "ck_arm_overlay_body_nonempty",
+            "check(((bodyisnull)or(body<>'{}'::jsonb)))",
+        ),
+    ];
+    for (name, expected) in exact_checks {
+        let def: Option<String> = sqlx::query_scalar(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid = 'synthetic.arm_overlay'::regclass \
+               AND contype = 'c' AND conname = $1",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("arm_overlay inventory: probing exact CHECK {name} failed: {e}"))?;
+        match def {
+            None => {
+                return Err(format!(
+                    "arm_overlay inventory: missing CHECK constraint {name}"
+                ));
+            }
+            Some(d) => {
+                let norm: String = d
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>()
+                    .to_lowercase();
+                if norm != *expected {
+                    return Err(format!(
+                        "arm_overlay inventory: CHECK {name} is not its exact expected predicate \
+                         (vacuous/stubbed?) — normalised {norm:?}, expected {expected:?}"
+                    ));
+                }
+            }
+        }
+    }
+
+    // --- 2. Column types + nullability ----------------------------------------------------
+    let expected_cols: &[(&str, &str, &str)] = &[
+        ("id_lower", "text", "NO"),
+        ("id", "text", "NO"),
+        ("target_kind", "text", "NO"),
+        ("source", "text", "NO"),
+        ("present", "boolean", "NO"),
+        ("body", "jsonb", "YES"),
+        ("revision", "bigint", "NO"),
+    ];
+    for (col, ty, nullable) in expected_cols {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT data_type, is_nullable FROM information_schema.columns \
+             WHERE table_schema = 'synthetic' AND table_name = 'arm_overlay' \
+               AND column_name = $1",
+        )
+        .bind(col)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("arm_overlay inventory: probing column {col} failed: {e}"))?;
+        match row {
+            None => return Err(format!("arm_overlay inventory: missing column {col}")),
+            Some((data_type, is_nullable)) => {
+                if data_type != *ty {
+                    return Err(format!(
+                        "arm_overlay inventory: column {col} has type {data_type:?}, expected {ty:?}"
+                    ));
+                }
+                if is_nullable != *nullable {
+                    return Err(format!(
+                        "arm_overlay inventory: column {col} is_nullable={is_nullable:?}, expected {nullable:?}"
+                    ));
+                }
+            }
+        }
+    }
+
+    // --- 3. Sequence: exists, BIGINT, NO CYCLE, and UNOWNED -------------------------------
+    let seq: Option<(String, bool, i64)> = sqlx::query_as(
+        "SELECT data_type::text, cycle, increment_by FROM pg_sequences \
+         WHERE schemaname = 'synthetic' AND sequencename = 'arm_overlay_revision_seq'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("arm_overlay inventory: probing sequence failed: {e}"))?;
+    match seq {
+        None => {
+            return Err(
+                "arm_overlay inventory: missing sequence synthetic.arm_overlay_revision_seq"
+                    .to_string(),
+            );
+        }
+        Some((data_type, cycle, increment_by)) => {
+            if data_type != "bigint" {
+                return Err(format!(
+                    "arm_overlay inventory: revision sequence type is {data_type:?}, expected \"bigint\""
+                ));
+            }
+            if cycle {
+                return Err(
+                    "arm_overlay inventory: revision sequence is CYCLE, expected NO CYCLE"
+                        .to_string(),
+                );
+            }
+            // A non-positive increment would fail to ADVANCE revisions — a
+            // negative step would run them backwards, breaking the monotonic-revision contract.
+            if increment_by <= 0 {
+                return Err(format!(
+                    "arm_overlay inventory: revision sequence increment is {increment_by}, \
+                     expected a positive step"
+                ));
+            }
+        }
+    }
+    // Unowned: an OWNED-BY sequence has a pg_depend auto-dependency (deptype 'a') on a table
+    // column. A `TRUNCATE ... RESTART IDENTITY` WOULD rewind an owned sequence, so ownership
+    // is a correctness failure here.
+    let owned: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_depend d \
+           JOIN pg_class s ON s.oid = d.objid \
+           JOIN pg_namespace n ON n.oid = s.relnamespace \
+         WHERE s.relname = 'arm_overlay_revision_seq' AND n.nspname = 'synthetic' \
+           AND d.classid = 'pg_class'::regclass AND d.deptype = 'a' AND d.refobjsubid > 0",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("arm_overlay inventory: probing sequence ownership failed: {e}"))?;
+    if owned > 0 {
+        return Err(
+            "arm_overlay inventory: revision sequence is OWNED BY a column (must be unowned so \
+             TRUNCATE ... RESTART IDENTITY cannot rewind it)"
+                .to_string(),
+        );
+    }
+
+    // --- 4. Revision trigger: ROW-level BEFORE INSERT OR UPDATE trigger, wired to the right
+    // function -----------------------------------------------------------------------------
+    // tgtype bitmask: ROW=1, BEFORE=2, INSERT=4, UPDATE=16. Verify all FOUR bits are set — a
+    // STATEMENT-level trigger (bit 1 clear) would otherwise certify as valid yet cannot
+    // reference NEW.revision at write time. ALSO verify `tgfoid` resolves to
+    // `synthetic.arm_overlay_set_revision()`: a same-named, same-shape trigger
+    // wired to a DIFFERENT function (e.g. one assigning a constant revision) would pass the bit
+    // check yet break the monotonic-revision contract. The `::regprocedure` cast is safe — the
+    // function is guaranteed to exist (sql/009 `CREATE OR REPLACE`s it and the table exists). The
+    // behavioural monotonic probe below is the belt to this suspenders (it also catches a REPLACED
+    // function body that still bears the same name).
+    let trig: Option<(i16, bool)> = sqlx::query_as(
+        "SELECT tgtype::int2, \
+                (tgfoid = 'synthetic.arm_overlay_set_revision()'::regprocedure) AS right_fn \
+         FROM pg_trigger \
+         WHERE tgrelid = 'synthetic.arm_overlay'::regclass \
+           AND tgname = 'trg_arm_overlay_revision' AND NOT tgisinternal",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("arm_overlay inventory: probing trigger failed: {e}"))?;
+    match trig {
+        None => {
+            return Err(
+                "arm_overlay inventory: missing trigger trg_arm_overlay_revision".to_string(),
+            );
+        }
+        Some((tgtype, right_fn)) => {
+            let t = tgtype as i32;
+            if t & 1 == 0 || t & 2 == 0 || t & 4 == 0 || t & 16 == 0 {
+                return Err(format!(
+                    "arm_overlay inventory: trigger trg_arm_overlay_revision is not a ROW-level \
+                     BEFORE INSERT OR UPDATE trigger (tgtype bitmask {t})"
+                ));
+            }
+            if !right_fn {
+                return Err(
+                    "arm_overlay inventory: trigger trg_arm_overlay_revision invokes the wrong \
+                     trigger function (expected synthetic.arm_overlay_set_revision())"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    // --- 5. id_lower PRIMARY KEY — EXACTLY one column, = id_lower -------------------------
+    // A substring check on pg_get_constraintdef would accept a composite `PRIMARY KEY
+    // (id_lower, id)`. Enumerate the PK columns and require they are exactly [id_lower].
+    let pk_cols: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname::text FROM pg_constraint c \
+           JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) \
+         WHERE c.conrelid = 'synthetic.arm_overlay'::regclass AND c.contype = 'p' \
+         ORDER BY a.attnum",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("arm_overlay inventory: probing primary key failed: {e}"))?;
+    if pk_cols.as_slice() != ["id_lower"] {
+        return Err(format!(
+            "arm_overlay inventory: PRIMARY KEY must be exactly (id_lower), got {pk_cols:?}"
+        ));
+    }
+
+    // --- 6. Behavioural CHECK probes (savepoint-and-rollback) -----------------------------
+    behavioral_probes(pool).await
+}
+
+/// Behavioural CHECK probes. Definition-substring matching in
+/// [`arm_overlay_inventory`] can be fooled by a vacuous rewrite that still contains the
+/// characteristic needle (e.g. `CHECK (true OR id_lower = lower(id))`). This ALSO exercises the
+/// row-model for real: inside a transaction that is ALWAYS rolled back, a fully-valid row must
+/// be ACCEPTED and each single-field-invalid row must be REJECTED by exactly its target CHECK.
+/// Probe ids are suffixed with the backend pid so concurrent boots never contend on the PK.
+async fn behavioral_probes(pool: &sqlx::PgPool) -> Result<(), String> {
+    const INS: &str = "INSERT INTO synthetic.arm_overlay \
+        (id_lower, id, target_kind, source, present, body) SELECT ";
+    const FROM_PID: &str = " FROM (SELECT '__probe_' || pg_backend_pid()::text || '__' AS p) s";
+    // The same pid-suffixed probe id as an inline scalar (for the monotonic probe's UPDATE ... WHERE).
+    const PID_EXPR: &str = "'__probe_' || pg_backend_pid()::text || '__'";
+    // A complete, valid resource body (type is non-RG; tags present; no optional sku/kind).
+    const OK_BODY: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // Single-field-invalid body variants (each isolates ONE constraint).
+    const BODY_ID_MISMATCH: &str = "jsonb_build_object('id','__mismatch__','name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    const BODY_NO_NAME: &str = "jsonb_build_object('id',p,\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    const BODY_RG_TYPE: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Resources/resourceGroups','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    const BODY_NO_TAGS: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'properties','{}'::jsonb)";
+    const BODY_SKU_STR: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb,'sku','x')";
+    const BODY_RG_NO_PS: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Resources/resourceGroups','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // Envelope variants beyond missing-name: each drops/mistypes exactly one
+    // required served field, isolating `ck_arm_overlay_envelope`.
+    const BODY_NO_ID: &str = "jsonb_build_object('name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    const BODY_NO_TYPE: &str = "jsonb_build_object('id',p,'name','n',\
+        'location','eastus','tags','{}'::jsonb,'properties','{}'::jsonb)";
+    const BODY_NO_LOCATION: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // `properties` key entirely ABSENT: distinct from a non-object properties —
+    // an "optional properties" weakening (`NOT jsonb_exists(body,'properties') OR ...`) accepts a
+    // MISSING key while still rejecting a wrong-typed one, so a dedicated missing-key probe is
+    // required. Isolates the envelope's properties presence requirement.
+    const BODY_NO_PROPERTIES: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus','tags','{}'::jsonb)";
+    const BODY_NAME_INT: &str = "jsonb_build_object('id',p,'name',5,\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // `kind` present but not a string — the second half of `ck_arm_overlay_optional_types`.
+    const BODY_KIND_INT: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','{}'::jsonb,'kind',5)";
+    // A resource_group row whose body `type` is NOT the RG constant (the RG direction of
+    // `ck_arm_overlay_kind_shape`); provisioningState present so ONLY kind_shape rejects it.
+    const BODY_RG_WRONGTYPE: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties',jsonb_build_object('provisioningState','Succeeded'))";
+    // PRESENT-but-WRONG-TYPE variants: each key is PRESENT (so an existence-only
+    // weakening — e.g. `body ? 'tags'` — still ACCEPTS the row) but carries the WRONG jsonb type,
+    // which only the real `jsonb_typeof(...) = <t>` predicate rejects. Each isolates ONE type
+    // predicate: no OTHER CHECK also rejects it, so a vacuous target is detected.
+    // `tags` present as an ARRAY (not an object) — isolates ck_arm_overlay_tags's type check.
+    const BODY_TAGS_ARR: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','[]'::jsonb,'properties','{}'::jsonb)";
+    // `type` present as a NUMBER — isolates the envelope's type=string predicate. For a `resource`
+    // row `body ->> 'type'` ('5') is still `<> 'Microsoft.Resources/resourceGroups'`, so kind_shape
+    // stays satisfied and only the envelope rejects it.
+    const BODY_TYPE_INT: &str = "jsonb_build_object('id',p,'name','n',\
+        'type',5,'location','eastus','tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // `location` present as a NUMBER — isolates the envelope's location=string predicate.
+    const BODY_LOCATION_INT: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location',5,\
+        'tags','{}'::jsonb,'properties','{}'::jsonb)";
+    // `properties` present as a STRING (not an object) — isolates the envelope's properties=object
+    // predicate.
+    const BODY_PROPS_STR: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Storage/storageAccounts','location','eastus',\
+        'tags','{}'::jsonb,'properties','x')";
+    // A resource_group row whose properties.provisioningState is a NUMBER — isolates
+    // ck_arm_overlay_rg_provisioning_state's string check (envelope/kind_shape/tags all pass).
+    const BODY_RG_PS_INT: &str = "jsonb_build_object('id',p,'name','n',\
+        'type','Microsoft.Resources/resourceGroups','location','eastus',\
+        'tags','{}'::jsonb,'properties',jsonb_build_object('provisioningState',7))";
+
+    let ok_sql = format!("{INS}p, p, 'resource','user',true, {OK_BODY}{FROM_PID}");
+    let neg: Vec<(&str, String)> = vec![
+        (
+            "id_lower <> lower(id)",
+            format!(
+                "{INS}'WRONG_' || pg_backend_pid()::text, p, 'resource','user',true, {OK_BODY}{FROM_PID}"
+            ),
+        ),
+        (
+            "bad target_kind",
+            format!("{INS}p, p, 'widget','user',false, NULL{FROM_PID}"),
+        ),
+        (
+            "bad source",
+            format!("{INS}p, p, 'resource','system',true, {OK_BODY}{FROM_PID}"),
+        ),
+        (
+            "present=true+null body",
+            format!("{INS}p, p, 'resource','user',true, NULL{FROM_PID}"),
+        ),
+        (
+            "present=false+body",
+            format!("{INS}p, p, 'resource','user',false, {OK_BODY}{FROM_PID}"),
+        ),
+        (
+            "body id mismatch",
+            format!("{INS}p, p, 'resource','user',true, {BODY_ID_MISMATCH}{FROM_PID}"),
+        ),
+        (
+            "envelope missing name",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_NAME}{FROM_PID}"),
+        ),
+        (
+            "resource body with RG type",
+            format!("{INS}p, p, 'resource','user',true, {BODY_RG_TYPE}{FROM_PID}"),
+        ),
+        (
+            "missing tags",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_TAGS}{FROM_PID}"),
+        ),
+        (
+            "non-object sku",
+            format!("{INS}p, p, 'resource','user',true, {BODY_SKU_STR}{FROM_PID}"),
+        ),
+        (
+            "RG missing provisioningState",
+            format!("{INS}p, p, 'resource_group','user',true, {BODY_RG_NO_PS}{FROM_PID}"),
+        ),
+        // fill the behavioural coverage gaps.
+        (
+            "empty {} body",
+            format!("{INS}p, p, 'resource','user',true, '{{}}'::jsonb{FROM_PID}"),
+        ),
+        (
+            "envelope missing id",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_ID}{FROM_PID}"),
+        ),
+        (
+            "envelope missing type",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_TYPE}{FROM_PID}"),
+        ),
+        (
+            "envelope missing location",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_LOCATION}{FROM_PID}"),
+        ),
+        (
+            "envelope missing properties",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NO_PROPERTIES}{FROM_PID}"),
+        ),
+        (
+            "envelope non-string name",
+            format!("{INS}p, p, 'resource','user',true, {BODY_NAME_INT}{FROM_PID}"),
+        ),
+        (
+            "non-string kind",
+            format!("{INS}p, p, 'resource','user',true, {BODY_KIND_INT}{FROM_PID}"),
+        ),
+        (
+            "RG body with non-RG type",
+            format!("{INS}p, p, 'resource_group','user',true, {BODY_RG_WRONGTYPE}{FROM_PID}"),
+        ),
+        // PRESENT-but-WRONG-TYPE probes (an existence-only weakening ACCEPTS these).
+        (
+            "tags present as array",
+            format!("{INS}p, p, 'resource','user',true, {BODY_TAGS_ARR}{FROM_PID}"),
+        ),
+        // `id` as a NUMBER: to keep body_id_agree satisfied (so ONLY the envelope rejects it), the
+        // row id must equal the number's text form — use pg_backend_pid() as BOTH so the probe id
+        // stays per-backend unique (no PK contention with concurrent boots). No `p`/FROM_PID here.
+        (
+            "id present as number",
+            format!(
+                "{INS}pg_backend_pid()::text, pg_backend_pid()::text, 'resource','user',true, \
+                 jsonb_build_object('id', pg_backend_pid(), 'name','n',\
+                 'type','Microsoft.Storage/storageAccounts','location','eastus',\
+                 'tags','{{}}'::jsonb,'properties','{{}}'::jsonb)"
+            ),
+        ),
+        (
+            "type present as number",
+            format!("{INS}p, p, 'resource','user',true, {BODY_TYPE_INT}{FROM_PID}"),
+        ),
+        (
+            "location present as number",
+            format!("{INS}p, p, 'resource','user',true, {BODY_LOCATION_INT}{FROM_PID}"),
+        ),
+        (
+            "properties present as string",
+            format!("{INS}p, p, 'resource','user',true, {BODY_PROPS_STR}{FROM_PID}"),
+        ),
+        (
+            "RG provisioningState present as number",
+            format!("{INS}p, p, 'resource_group','user',true, {BODY_RG_PS_INT}{FROM_PID}"),
+        ),
+    ];
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("arm_overlay inventory: begin probe tx failed: {e}"))?;
+
+    // Positive control: a fully-valid snapshot MUST be accepted (constraints not over-tight).
+    sqlx::query("SAVEPOINT p")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("arm_overlay inventory: probe savepoint failed: {e}"))?;
+    match sqlx::query(&ok_sql).execute(&mut *tx).await {
+        Ok(_) => {
+            sqlx::query("ROLLBACK TO SAVEPOINT p")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("arm_overlay inventory: probe rollback failed: {e}"))?;
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(format!(
+                "arm_overlay inventory: behavioural probe [valid row] was REJECTED but must be \
+                 accepted — the row-model over-constrains ({e})"
+            ));
+        }
+    }
+
+    // Monotonic-revision probe: the trigger must ASSIGN a fresh, strictly
+    // INCREASING revision on both INSERT and a subsequent UPDATE. A same-shape trigger wired to a
+    // function that assigns a CONSTANT (e.g. `NEW.revision := 1`) passes the flag + tgfoid checks
+    // yet violates the monotonic contract — only exercising TWO writes on one row catches it.
+    // Reuses savepoint `p` (still active after the positive control's ROLLBACK TO); a trailing
+    // ROLLBACK TO undoes both writes so the shared probe id is free for the negatives below.
+    let r1: i64 = match sqlx::query_scalar(&format!(
+        "{INS}p, p, 'resource','user',true, {OK_BODY}{FROM_PID} RETURNING revision"
+    ))
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(format!(
+                "arm_overlay inventory: monotonic probe INSERT leg was REJECTED but must be \
+                 accepted ({e})"
+            ));
+        }
+    };
+    let r2: i64 = match sqlx::query_scalar(&format!(
+        "UPDATE synthetic.arm_overlay SET body = body WHERE id_lower = {PID_EXPR} RETURNING revision"
+    ))
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(format!(
+                "arm_overlay inventory: monotonic probe UPDATE leg was REJECTED but must be \
+                 accepted ({e})"
+            ));
+        }
+    };
+    if r2 <= r1 {
+        let _ = tx.rollback().await;
+        return Err(format!(
+            "arm_overlay inventory: revision did not advance on UPDATE (INSERT revision {r1}, \
+             UPDATE revision {r2}) — the trigger must assign a strictly increasing revision on \
+             every write"
+        ));
+    }
+    sqlx::query("ROLLBACK TO SAVEPOINT p")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("arm_overlay inventory: monotonic probe rollback failed: {e}"))?;
+
+    // Each negative MUST be rejected; an ACCEPT means the target CHECK is missing or vacuous.
+    for (label, sql) in &neg {
+        match sqlx::query(sql).execute(&mut *tx).await {
+            Err(_) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT p")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("arm_overlay inventory: probe rollback failed: {e}"))?;
+            }
+            Ok(_) => {
+                let _ = tx.rollback().await;
+                return Err(format!(
+                    "arm_overlay inventory: behavioural probe [{label}] was ACCEPTED but must be \
+                     rejected — the corresponding CHECK is missing or vacuous"
+                ));
+            }
+        }
+    }
+
+    tx.rollback()
+        .await
+        .map_err(|e| format!("arm_overlay inventory: probe tx rollback failed: {e}"))?;
+    Ok(())
 }
 
 pub async fn serve_dual(
