@@ -118,6 +118,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         })?;
 
+    // Startup schema preflight: idempotently provision the ARM overlay
+    // substrate (`synthetic.arm_overlay` + the unowned revision sequence + the revision
+    // trigger + the NAMED row-model CHECKs) so the resolver has a trustworthy
+    // overlay/tombstone/revision store to migrate onto. We PROVISION — never mask; and the
+    // structural inventory inside `ensure_arm_overlay_schema` fails LOUDLY on a malformed
+    // pre-existing table rather than serving on a corrupt substrate. Boundary:
+    // no reader consults this table yet, no drift path writes it, no ETag header is
+    // emitted. Runs AFTER `ensure_web_metadata_schema` and BEFORE building `AppState`.
+    tenantless_server::ensure_arm_overlay_schema(&pool)
+        .await
+        .map_err(|e| {
+            format!(
+                "arm overlay schema preflight (sql/009_arm_overlay.sql) failed: {e}. The \
+             database is reachable and has a tenant, but the `synthetic.arm_overlay` \
+             substrate could not be provisioned or failed its structural inventory. Check the \
+             DB role's CREATE privilege on schema `synthetic`, or run `tenantless init-db` to \
+             (re)provision (the overlay is NOT provisioned by `tenantless generate`)."
+            )
+        })?;
+
     // The run's signer, wrapped in a HOT-SWAPPABLE shared handle (IAM staleness fix): the
     // control plane rebuilds it after a tenant-mutating job so the served identity tracks the
     // current tenant, not this boot-time one. `AppState` and the `ControlPlane` below hold

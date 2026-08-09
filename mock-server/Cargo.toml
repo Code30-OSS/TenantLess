@@ -76,6 +76,11 @@ tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"] 
 # Cargo.lock (transitive via axum), so this direct dep adds ZERO new lock entries — same
 # rationale as `tower`/`subtle`/`sha2` above.
 http-body-util = "0.1"
+# Lowercase 64-char hex encode of the SHA-256 digest for the baseline `b-` ETag domain.
+# hex 0.4.3 is ALREADY in Cargo.lock transitively (RustCrypto
+# /utils ecosystem), so promoting it to a DIRECT dep adds ZERO new lock entries — same
+# rationale as the `subtle`/`sha2` promotion above. Never hand-roll the nibble loop.
+hex = "0.4"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
