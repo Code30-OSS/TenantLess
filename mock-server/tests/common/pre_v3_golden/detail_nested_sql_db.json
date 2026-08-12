@@ -1,0 +1,1 @@
+{"id":"/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-filter-000/providers/Microsoft.Sql/servers/sql-srv-000/databases/db-000","name":"db-000","type":"Microsoft.Sql/servers/databases","location":"westus","tags":{"env":"prod"},"properties":{"status":"Online"}}

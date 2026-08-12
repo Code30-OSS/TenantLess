@@ -767,7 +767,7 @@ async fn run_cost_query(
     let sql = format!(
         "SELECT SUM(c.cost_amount) AS total{select_cols}
          FROM synthetic.cost_records c
-         JOIN synthetic.resources r ON r.id = c.resource_id
+         JOIN synthetic.resources r ON r.id = c.resource_id  -- SYNRES-ALLOW[baseline-replay]: cost is baseline/as-of, not live-estate; cost-liveness parity is out of scope for Phase 22 (Open Q2)
          WHERE c.billing_period BETWEEN $1::date AND $2::date{scope_pred}{group_by}{order_by}
          LIMIT {fetch_limit}"
     );

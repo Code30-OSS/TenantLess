@@ -1,19 +1,22 @@
-"""revert-drift CLI tests (Plan 11-06, DRIFT-01/04 + D-01/02/03/06/13).
+"""revert-drift CLI tests (overlay reconcile).
 
-``tenantless revert-drift --batch-id <uuid> [--dry-run]`` is the LIFO-guarded,
-single-transaction restore. It rejects an out-of-order revert when a newer ACTIVE
-(``reverted_at IS NULL``) batch overlaps any resource (strict LIFO, D-06); else it
-restores each affected resource from its ``drift_records`` per-field ``before``
-value, unhides disappeared rows / DELETEs appear rows (D-13), and marks the batch
-``reverted_at`` WITHOUT deleting history (D-03). ``--dry-run`` mutates nothing.
+``tenantless revert-drift --batch-id <uuid> [--dry-run]`` is a single-transaction
+recompute-from-ledger. The overlay migration retired in-place ``synthetic.resources`` restore:
+revert rebuilds each affected id from the IMMUTABLE baseline by replaying every
+still-active overlay batch except the target, then DELETE-if-baseline (no zombie)
+else UPSERT a fresh ``source='drift'`` overlay snapshot/tombstone, and marks the
+batch ``reverted_at`` WITHOUT deleting history. The strict-LIFO overlap
+guard is GONE — ANY batch is independently revertable. Disappear
+revert removes the overlay tombstone; @appear revert DELETEs the overlay row.
+``synthetic.resources`` is NEVER mutated. ``--dry-run`` mutates nothing.
 
 This file ALSO pins the apply-side temporal lifecycle wiring carried forward from
-Plan 11-05: ``apply-drift --type temporal`` must PRODUCE the disappear/appear
-``drift_records`` revert consumes (otherwise revert's unhide/delete path has no
-producer and the 11-08 round-trip is untestable).
+the apply-drift tests: ``apply-drift --type temporal`` must PRODUCE the disappear/appear
+``drift_records`` (and overlay rows) revert consumes.
 
 DB-backed tests use the project ``pg_conn`` skip fixture so DB-less CI skips
-clean; the LIFO scenarios seed ``drift_batches`` / ``drift_records`` directly.
+clean. The canonical NEW-behaviour coverage lives in
+``tests/test_drift_overlay_revert.py``.
 """
 
 from __future__ import annotations
@@ -41,12 +44,18 @@ _SUB = str(uuid.UUID(int=0x11))
 def pg_conn():
     """Yield a live psycopg connection, or skip if Postgres is unavailable.
 
-    Verbatim mirror of ``tests/test_drift_apply.py::pg_conn`` so the suite skips
-    clean in DB-less CI (STATE.md: "DB-less CI skips clean").
+    ``autocommit=True`` is REQUIRED (mirrors
+    ``tests/test_drift_overlay_revert.py``): a non-autocommit psycopg3 connection
+    keeps a transaction open after every ``SELECT``, so the overlay/baseline reads
+    below would leave this connection idle-in-transaction holding ACCESS SHARE on
+    ``synthetic.resources``. ``apply-drift`` / ``revert-drift`` (invoked in-process)
+    run their idempotent schema-ensure preflight, whose DDL needs ACCESS EXCLUSIVE —
+    they would DEADLOCK behind that stray read lock (the server-startup ALTER-lock
+    fragility). Autocommit means our reads hold no lock, so the preflight never blocks.
     """
     psycopg = pytest.importorskip("psycopg")
     try:
-        conn = psycopg.connect(DATABASE_URL, connect_timeout=3)
+        conn = psycopg.connect(DATABASE_URL, connect_timeout=3, autocommit=True)
     except Exception as exc:  # noqa: BLE001 - any connection failure -> skip
         pytest.skip(f"Postgres on 5433 unavailable: {exc}")
     try:
@@ -68,8 +77,14 @@ def _seed_storage(conn, *, count=3, sub=_SUB):
     from tenantless.generator import writer
 
     writer.ensure_drift_schema(conn)
+    writer.ensure_arm_overlay_schema(conn)
+    writer.ensure_arm_resolver_schema(conn)
     writer.truncate_synthetic(conn)
     with conn.cursor() as cur:
+        # arm_overlay is mutable overlay state, EXCLUDED from truncate_synthetic
+        # (_SYNTHETIC_TABLES), so clear it explicitly — else overlay rows from a
+        # prior test leak into this one's assertions.
+        cur.execute("DELETE FROM synthetic.arm_overlay")
         cur.execute(
             "INSERT INTO synthetic.tenant "
             "(tenant_id, display_name, generated_at, profile_version, scale_params) "
@@ -173,26 +188,39 @@ def _res_id(i):
     )
 
 
+def _overlay_by_id(conn):
+    """The arm_overlay resource rows keyed by id (mirrors test_drift_overlay_revert.py)."""
+    conn.commit()  # fresh snapshot (no-op under autocommit)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, present, body, source, revision FROM synthetic.arm_overlay "
+            "WHERE target_kind = 'resource'"
+        )
+        cols = ("id", "present", "body", "source", "revision")
+        return {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+
+
 # --------------------------------------------------------------------------- #
-# Task 1 (carry-forward from 11-05) — apply-side temporal lifecycle wiring.
-# revert's unhide/delete (D-13) needs a real PRODUCER: apply-drift --type
+# apply-side temporal lifecycle wiring.
+# revert's unhide/delete needs a real PRODUCER: apply-drift --type
 # temporal must compute compute_lifecycle and persist disappear (drift_deleted_at
 # set + record) / appear (new leaf row + @appear record).
 # --------------------------------------------------------------------------- #
 
 
 def test_temporal_lifecycle_records(pg_conn):
-    """apply-drift --type temporal produces appear/disappear drift_records and
-    mutates the DB: disappeared leaves get drift_deleted_at set; appear mints new
-    leaf rows (D-09/D-12) — the producer revert's unhide/delete consumes."""
+    """apply-drift --type temporal produces appear/disappear drift_records AND writes
+    the lifecycle to arm_overlay: disappear → present=false
+    tombstones (source='drift'), @appear → present=true overlay rows for the minted
+    leaves. synthetic.resources is NEVER mutated in place — no soft-delete, no minted
+    baseline row — so revert's overlay recompute has a real producer."""
     _seed_storage(pg_conn, count=3)
 
     res = _apply("--type", "temporal", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
 
-    pg_conn.commit()
     with pg_conn.cursor() as cur:
-        # 3 eligible leaves at intensity 1.0 -> 3 disappear + 3 appear.
+        # 3 eligible leaves at intensity 1.0 -> 3 disappear + 3 appear records.
         cur.execute(
             "SELECT count(*) FROM synthetic.drift_records "
             "WHERE field_path = 'drift_deleted_at'"
@@ -202,172 +230,55 @@ def test_temporal_lifecycle_records(pg_conn):
             "SELECT count(*) FROM synthetic.drift_records WHERE field_path = '@appear'"
         )
         assert cur.fetchone()[0] == 3
+        cur.execute(
+            "SELECT resource_id FROM synthetic.drift_records WHERE field_path='@appear'"
+        )
+        appeared = {r[0] for r in cur.fetchall()}
 
-        # The original 3 leaves are now soft-deleted in place (D-09).
+    # Overlay carries the lifecycle: 3 tombstones (disappeared originals) + a present
+    # source='drift' row per minted appear leaf.
+    ov = _overlay_by_id(pg_conn)
+    tombstones = {rid for rid, r in ov.items() if r["present"] is False}
+    present_rows = {rid for rid, r in ov.items() if r["present"] is True}
+    assert len(tombstones) == 3
+    assert appeared <= present_rows
+    for r in ov.values():
+        assert r["source"] == "drift"
+
+    # Baseline never mutated in place: no soft-delete, no minted row, and
+    # each minted @appear leaf lives ONLY in the overlay (absent from synthetic.resources).
+    with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM synthetic.resources "
             "WHERE drift_deleted_at IS NOT NULL"
         )
-        assert cur.fetchone()[0] == 3
-
-        # 3 original + 3 minted appear rows (D-12).
+        assert cur.fetchone()[0] == 0
         cur.execute("SELECT count(*) FROM synthetic.resources")
-        assert cur.fetchone()[0] == 6
-
-        # Each @appear record's resource_id is a real, newly-inserted row.
-        cur.execute(
-            "SELECT resource_id FROM synthetic.drift_records WHERE field_path='@appear'"
-        )
-        appear_ids = [r[0] for r in cur.fetchall()]
-        for aid in appear_ids:
+        assert cur.fetchone()[0] == 3
+        for aid in appeared:
             cur.execute("SELECT count(*) FROM synthetic.resources WHERE id = %s", (aid,))
-            assert cur.fetchone()[0] == 1
+            assert cur.fetchone()[0] == 0
 
 
 # --------------------------------------------------------------------------- #
-# Task 2 (plan Task 1) — strict-LIFO overlap guard (D-06, Pitfall 5: the check
-# precedes any mutation). Reject reverting a batch when a newer ACTIVE batch
-# shares any resource_id; allow when there is no newer active overlap.
+# The strict-LIFO overlap guard is REMOVED.
+# Recompute-from-ledger rebuilds each affected id's overlay from the immutable
+# baseline by replaying whatever active batches remain, so ANY batch — including
+# a middle batch under a newer active overlapping batch — is independently
+# revertable. The four legacy LIFO tests that asserted the removed guard (reject
+# / same-instant-deadlock / non-overlap-permit / latest-permit) were removed:
+# their reject cases contradict the new model, and their permit cases are
+# now vacuous ("revert succeeds") and are covered by the harder OVERLAPPING case
+# in tests/test_drift_overlay_revert.py::test_middle_batch_revert_permitted.
 # --------------------------------------------------------------------------- #
 
+# Retained: used by test_revert_serialized_by_advisory_lock (below) to stamp a
+# deterministic applied_at on a hand-seeded batch.
 _T1 = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
-_T2 = _dt.datetime(2026, 1, 2, 12, 0, 0, tzinfo=_dt.timezone.utc)
-
-
-def test_lifo_reject(pg_conn):
-    """Reverting an older batch is REJECTED with zero mutation when a newer active
-    batch overlaps any of its resources (D-06). The target's reverted_at stays
-    NULL and no resource column changes (Pitfall 5 — guard precedes mutation)."""
-    from psycopg.types.json import Jsonb
-
-    _seed_storage(pg_conn, count=3)
-    # R0 carries B1's drift in place (simulating an applied chaos batch).
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "UPDATE synthetic.resources SET properties = %s WHERE id = %s",
-            (Jsonb({"allowBlobPublicAccess": True}), _res_id(0)),
-        )
-    pg_conn.commit()
-
-    b1, b2 = str(uuid.uuid4()), str(uuid.uuid4())
-    _seed_batch(
-        pg_conn, batch_id=b1, applied_at=_T1,
-        records=[(_res_id(0), "properties.allowBlobPublicAccess", None, True)],
-    )
-    # B2 is NEWER and ACTIVE and overlaps R0 → reverting B1 is out-of-order.
-    _seed_batch(
-        pg_conn, batch_id=b2, applied_at=_T2,
-        records=[(_res_id(0), "properties.minimumTlsVersion", None, "TLS1_0")],
-    )
-
-    res = _revert("--batch-id", b1)
-    assert res.exit_code != 0, (res.output, res.exception)
-
-    pg_conn.commit()
-    with pg_conn.cursor() as cur:
-        # B1 was NOT marked reverted (no mutation).
-        cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (b1,))
-        assert cur.fetchone()[0] is None
-        # R0's served column is untouched (the guard ran before any restore).
-        cur.execute("SELECT properties FROM synthetic.resources WHERE id=%s", (_res_id(0),))
-        assert cur.fetchone()[0] == {"allowBlobPublicAccess": True}
-
-
-def test_lifo_allows_non_overlap(pg_conn):
-    """Reverting B1 is ALLOWED when the newer active batch B2 shares no
-    resource_id with B1 (no out-of-order corruption risk)."""
-    _seed_storage(pg_conn, count=3)
-    b1, b2 = str(uuid.uuid4()), str(uuid.uuid4())
-    _seed_batch(
-        pg_conn, batch_id=b1, applied_at=_T1,
-        records=[(_res_id(0), "properties.allowBlobPublicAccess", None, True)],
-    )
-    _seed_batch(  # newer + active but a DIFFERENT resource → no overlap
-        pg_conn, batch_id=b2, applied_at=_T2,
-        records=[(_res_id(1), "properties.allowBlobPublicAccess", None, True)],
-    )
-
-    res = _revert("--batch-id", b1)
-    assert res.exit_code == 0, (res.output, res.exception)
-
-
-def test_lifo_same_instant_no_deadlock(pg_conn):
-    """Two batches sharing the EXACT same applied_at that overlap a resource_id
-    must NOT deadlock (P1, 11-10). The monotonic ``seq`` total order breaks the
-    applied_at tie: B2 (inserted second → higher seq) is the newer batch.
-
-    - Reverting the OLDER (B1) FIRST is rejected (B2 is a newer active overlap).
-    - Reverting the NEWER (B2) succeeds.
-    - The OLDER (B1) then becomes revertable — no permanent mutual block.
-
-    A pre-11-10 ``>=`` applied_at guard made the two same-instant batches block
-    EACH OTHER forever (neither revertable); this test pins that the seq order
-    resolves the deadlock."""
-    from psycopg.types.json import Jsonb
-
-    _seed_storage(pg_conn, count=3)
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "UPDATE synthetic.resources SET properties = %s WHERE id = %s",
-            (Jsonb({"allowBlobPublicAccess": True}), _res_id(0)),
-        )
-    pg_conn.commit()
-
-    # B1 and B2 share the EXACT same microsecond applied_at and overlap on R0.
-    # B1 is inserted first (lower seq); B2 second (higher seq → the newer batch).
-    same_ts = _dt.datetime(2026, 3, 3, 9, 0, 0, 123456, tzinfo=_dt.timezone.utc)
-    b1, b2 = str(uuid.uuid4()), str(uuid.uuid4())
-    _seed_batch(
-        pg_conn, batch_id=b1, applied_at=same_ts,
-        records=[(_res_id(0), "properties.allowBlobPublicAccess", None, True)],
-    )
-    _seed_batch(  # same instant, ACTIVE, overlaps R0, HIGHER seq → newer
-        pg_conn, batch_id=b2, applied_at=same_ts,
-        records=[(_res_id(0), "properties.minimumTlsVersion", None, "TLS1_0")],
-    )
-
-    # 1) Reverting the older B1 FIRST is rejected (B2 is a newer active overlap).
-    res = _revert("--batch-id", b1)
-    assert res.exit_code != 0, (res.output, res.exception)
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (b1,))
-        assert cur.fetchone()[0] is None  # untouched (guard tripped before mutation)
-    pg_conn.commit()  # release the AccessShareLock before the next in-process CLI call
-
-    # 2) Reverting the NEWER B2 succeeds (no deadlock — the prior >= guard rejected
-    #    this too because B1 shared the same applied_at).
-    res = _revert("--batch-id", b2)
-    assert res.exit_code == 0, (res.output, res.exception)
-
-    # 3) The older B1 is now revertable — its only overlapping sibling is reverted.
-    res = _revert("--batch-id", b1)
-    assert res.exit_code == 0, (res.output, res.exception)
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (b1,))
-        assert cur.fetchone()[0] is not None
-    pg_conn.commit()
-
-
-def test_lifo_allows_latest(pg_conn):
-    """Reverting the NEWEST batch is always allowed — there is no newer active
-    batch that could be corrupted (D-06)."""
-    _seed_storage(pg_conn, count=3)
-    b1, b2 = str(uuid.uuid4()), str(uuid.uuid4())
-    _seed_batch(
-        pg_conn, batch_id=b1, applied_at=_T1,
-        records=[(_res_id(0), "properties.allowBlobPublicAccess", None, True)],
-    )
-    _seed_batch(  # newest, overlaps R0 — but B2 itself has no newer active batch
-        pg_conn, batch_id=b2, applied_at=_T2,
-        records=[(_res_id(0), "properties.minimumTlsVersion", None, "TLS1_0")],
-    )
-
-    res = _revert("--batch-id", b2)
-    assert res.exit_code == 0, (res.output, res.exception)
 
 
 # --------------------------------------------------------------------------- #
-# 11-10 P1 — concurrent drift commands lose updates. apply-drift and revert-drift
+# Concurrent drift commands lose updates. apply-drift and revert-drift
 # do read-modify-write over JSONB columns; without serialization two concurrent
 # commands read the same parent state and overwrite with stale snapshots. Both
 # take a transaction-level Postgres advisory lock on a FIXED application-wide key
@@ -379,7 +290,7 @@ def test_lifo_allows_latest(pg_conn):
 
 def _assert_serialized_by_drift_lock(invoke):
     """A drift mutation command must BLOCK while DRIFT_LOCK_KEY is held by another
-    session, then complete (exit 0) once it is released (P1, 11-10)."""
+    session, then complete (exit 0) once it is released."""
     import threading
 
     import psycopg
@@ -438,96 +349,111 @@ def test_revert_serialized_by_advisory_lock(pg_conn):
 
 
 # --------------------------------------------------------------------------- #
-# Task 3 (plan Task 2) — single-transaction restore + unhide/delete + mark
-# reverted_at (never delete history) + dry-run (D-02/03/04/13).
+# single-transaction recompute-from-ledger onto arm_overlay:
+# overlay DELETE-if-baseline / tombstone-remove / @appear-delete +
+# mark reverted_at (never delete history) + dry-run; synthetic.resources untouched.
 # --------------------------------------------------------------------------- #
 
 
 def test_restore_from_before(pg_conn):
-    """After revert, every affected resource's served column is restored to its
-    pre-drift value (the recorded per-field before); the served shape is back to
-    the original (D-02/D-04)."""
+    """After revert, the drift is gone: recompute-from-ledger rebuilds each affected
+    id from the immutable baseline; with no other active batch the replayed result
+    EQUALS baseline so the overlay row is DELETED (no zombie). The
+    synthetic.resources baseline was never mutated (pristine {}), and the batch is
+    marked reverted_at."""
     _seed_storage(pg_conn, count=3)
     res = _apply("--type", "chaos", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
     bid = _only_batch_id(pg_conn)
 
-    # Pre-revert: the drift is live in the served column.
-    with pg_conn.cursor() as cur:
-        cur.execute("SELECT properties FROM synthetic.resources WHERE id=%s", (_res_id(0),))
-        assert cur.fetchone()[0]["allowBlobPublicAccess"] is True
-    pg_conn.commit()  # release locks before the in-process CLI invocation
+    # Pre-revert: the drift is live in the OVERLAY body (baseline untouched).
+    ov = _overlay_by_id(pg_conn)
+    assert ov[_res_id(0)]["body"]["properties"]["allowBlobPublicAccess"] is True
 
     r = _revert("--batch-id", bid)
     assert r.exit_code == 0, (r.output, r.exception)
 
-    pg_conn.commit()
+    # Post-revert: the overlay rows are DELETED back to baseline (no zombie).
+    assert _overlay_by_id(pg_conn) == {}
     with pg_conn.cursor() as cur:
-        # Every storage account is back to its empty pre-drift properties.
+        # The baseline was never mutated in place — still empty properties.
         cur.execute("SELECT properties FROM synthetic.resources ORDER BY id")
         for (props,) in cur.fetchall():
             assert props == {}
-        # The batch is marked reverted.
+        # The batch is marked reverted (history preserved).
         cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (bid,))
         assert cur.fetchone()[0] is not None
 
 
 def test_unhide_disappeared(pg_conn):
-    """Revert clears drift_deleted_at on disappeared resources (unhide, D-13)."""
+    """Revert REMOVES the overlay tombstone for each disappeared id — the id is live
+    again via the baseline. It does NOT clear synthetic.resources.drift_deleted_at
+    (never set in place under the overlay model)."""
     _seed_storage(pg_conn, count=3)
     res = _apply("--type", "temporal", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
     bid = _only_batch_id(pg_conn)
 
+    # The temporal apply hid all 3 leaves as overlay tombstones (NOT in-place).
+    ov = _overlay_by_id(pg_conn)
+    tombstoned = [rid for rid, r in ov.items() if r["present"] is False]
+    assert len(tombstoned) == 3
     with pg_conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM synthetic.resources WHERE drift_deleted_at IS NOT NULL"
         )
-        assert cur.fetchone()[0] == 3  # all 3 leaves hidden by the temporal apply
-    pg_conn.commit()  # release locks before the in-process CLI invocation
+        assert cur.fetchone()[0] == 0  # baseline never soft-deleted in place
 
     r = _revert("--batch-id", bid)
     assert r.exit_code == 0, (r.output, r.exception)
 
-    pg_conn.commit()
-    with pg_conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM synthetic.resources WHERE drift_deleted_at IS NOT NULL"
-        )
-        assert cur.fetchone()[0] == 0  # all unhidden
+    # Every disappear tombstone is removed → the id resolves live via baseline again.
+    after = _overlay_by_id(pg_conn)
+    for rid in tombstoned:
+        assert rid not in after
 
 
 def test_delete_appeared(pg_conn):
-    """Revert DELETEs the rows a batch added via appear (D-13)."""
+    """Revert DELETEs the overlay row a batch added via @appear; the baseline
+    never held the minted leaf (count stays 3) and the appear id no longer resolves
+    via the overlay."""
     _seed_storage(pg_conn, count=3)
     res = _apply("--type", "temporal", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
     bid = _only_batch_id(pg_conn)
 
     with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT resource_id FROM synthetic.drift_records WHERE field_path='@appear'"
+        )
+        appeared = [r[0] for r in cur.fetchall()]
+        assert appeared
+        # The minted leaves were written to the overlay only — NOT to the baseline.
         cur.execute("SELECT count(*) FROM synthetic.resources")
-        assert cur.fetchone()[0] == 6  # 3 original + 3 appeared
-    pg_conn.commit()  # release locks before the in-process CLI invocation
+        assert cur.fetchone()[0] == 3
+    ov = _overlay_by_id(pg_conn)
+    for aid in appeared:
+        assert ov[aid]["present"] is True
 
     r = _revert("--batch-id", bid)
     assert r.exit_code == 0, (r.output, r.exception)
 
-    pg_conn.commit()
-    with pg_conn.cursor() as cur:
-        # appear rows deleted; the 3 disappeared originals are unhidden -> back to 3.
-        cur.execute("SELECT count(*) FROM synthetic.resources")
-        assert cur.fetchone()[0] == 3
-        # none of the @appear ids survive.
-        cur.execute(
-            "SELECT resource_id FROM synthetic.drift_records WHERE field_path='@appear'"
-        )
-        for (aid,) in cur.fetchall():
+    # Each @appear overlay row is DELETED; baseline still never gains the leaf.
+    after = _overlay_by_id(pg_conn)
+    for aid in appeared:
+        assert aid not in after
+        with pg_conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM synthetic.resources WHERE id=%s", (aid,))
             assert cur.fetchone()[0] == 0
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM synthetic.resources")
+        assert cur.fetchone()[0] == 3
 
 
 def test_mark_not_delete(pg_conn):
-    """Revert marks reverted_at non-NULL AND preserves all drift_records (D-03)."""
+    """Revert marks reverted_at non-NULL AND preserves all drift_records — the
+    ledger history is never deleted. synthetic.resources is untouched throughout:
+    recompute writes only the overlay + the reverted_at mark."""
     _seed_storage(pg_conn, count=3)
     res = _apply("--type", "chaos", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
@@ -535,37 +461,45 @@ def test_mark_not_delete(pg_conn):
     with pg_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM synthetic.drift_records WHERE batch_id=%s", (bid,))
         before_count = cur.fetchone()[0]
-    pg_conn.commit()  # release locks before the in-process CLI invocation
     assert before_count == 9
+    # Snapshot the baseline to prove revert never mutates synthetic.resources.
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT id, tags, sku, kind, properties FROM synthetic.resources ORDER BY id")
+        baseline_before = cur.fetchall()
 
     r = _revert("--batch-id", bid)
     assert r.exit_code == 0, (r.output, r.exception)
 
-    pg_conn.commit()
     with pg_conn.cursor() as cur:
         cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (bid,))
         assert cur.fetchone()[0] is not None
         # History preserved — every drift_record row still present.
         cur.execute("SELECT count(*) FROM synthetic.drift_records WHERE batch_id=%s", (bid,))
         assert cur.fetchone()[0] == before_count
+        # Baseline byte-identical before/after revert (never mutated in place).
+        cur.execute("SELECT id, tags, sku, kind, properties FROM synthetic.resources ORDER BY id")
+        assert cur.fetchall() == baseline_before
 
 
 def test_revert_dry_run(pg_conn):
-    """--dry-run reports the would-revert count and mutates NOTHING: reverted_at
-    stays NULL and the drifted columns are unchanged (D-04)."""
+    """--dry-run reports the would-revert count and writes NO overlay change:
+    reverted_at stays NULL and the overlay snapshot the apply wrote is byte-identical
+    afterwards."""
     _seed_storage(pg_conn, count=3)
     res = _apply("--type", "chaos", "--intensity", "1.0")
     assert res.exit_code == 0, (res.output, res.exception)
     bid = _only_batch_id(pg_conn)
 
+    before_overlay = _overlay_by_id(pg_conn)
+    assert before_overlay  # apply wrote overlay rows
+
     r = _revert("--batch-id", bid, "--dry-run")
     assert r.exit_code == 0, (r.output, r.exception)
     assert "would revert 9" in r.output  # the count is reported (not silent)
 
-    pg_conn.commit()
     with pg_conn.cursor() as cur:
-        # Nothing marked, nothing restored.
+        # Nothing marked, nothing recomputed.
         cur.execute("SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id=%s", (bid,))
         assert cur.fetchone()[0] is None
-        cur.execute("SELECT properties FROM synthetic.resources WHERE id=%s", (_res_id(0),))
-        assert cur.fetchone()[0]["allowBlobPublicAccess"] is True
+    # The overlay is byte-identical (dry-run mutated nothing).
+    assert _overlay_by_id(pg_conn) == before_overlay

@@ -1,24 +1,24 @@
 //! Shared integration-test helpers: a self-seeding testcontainers fixture and an
 //! in-process `oneshot` request driver.
 //!
-//! The dev `:5433` Postgres is EMPTY until the generator runs (RESEARCH Pitfall 2),
+//! The dev `:5433` Postgres is EMPTY until the generator runs,
 //! so tests NEVER depend on it — every test spins an ephemeral container and seeds
 //! a known fixture: 1 tenant, 2 subscriptions (A, B), >100 resource groups under
 //! sub A, and >100 resources under one RG of sub A, plus a resource with empty
-//! `properties = '{}'` so MOCK-13 is assertable. Column lists mirror the
+//! `properties = '{}'` so the empty-properties case is assertable. Column lists mirror the
 //! `writer.py` COPY contracts exactly.
 //!
-//! **Phase-4 additions** (this file extends the Phase-3 fixture without altering
+//! **Filter-fixture additions** (this file extends the base fixture without altering
 //! the dense-RG loop or `FixtureCounts`): under two dedicated filter RGs
 //! (`rg-filter-000` and `Rg-Filter-Mixed`) we seed a NESTED-type resource
-//! (`Microsoft.Sql/servers/sql-srv-000/databases/db-000`) for MOCK-05
+//! (`Microsoft.Sql/servers/sql-srv-000/databases/db-000`) for
 //! arbitrary-depth detail resolution, four FILTER-selectivity resources spanning
-//! distinct `type`/`location`/`tags` for MOCK-06 `$filter`, and a MIXED-CASE-id
-//! resource for MOCK-07 case-insensitive `{rg}`/`{name}` matching.
+//! distinct `type`/`location`/`tags` for `$filter`, and a MIXED-CASE-id
+//! resource for case-insensitive `{rg}`/`{name}` matching.
 //!
 //! All rows use the same 12-column parameterized `INSERT` idiom (bound, never
-//! string-built — T-04-01). The exported `pub const`s below are the verbatim
-//! names/ids Plan 03/04 tests reference.
+//! string-built). The exported `pub const`s below are the verbatim
+//! names/ids the tests reference.
 
 #![allow(dead_code)]
 
@@ -42,26 +42,26 @@ pub const SUB_B: Uuid = Uuid::from_u128(0x2222_2222_2222_2222_2222_2222_2222_222
 pub const DENSE_RG_NAME: &str = "rg-dense-000";
 
 // ---------------------------------------------------------------------------
-// Phase-4 fixture constants (under sub A). These name the explicit detail /
-// `$filter` / case-insensitivity rows so Plan 03/04 tests avoid magic strings.
+// Filter-fixture constants (under sub A). These name the explicit detail /
+// `$filter` / case-insensitivity rows so the tests avoid magic strings.
 // ---------------------------------------------------------------------------
 
-/// RG (under sub A) holding the Phase-4 nested-type + filter-selectivity rows.
+/// RG (under sub A) holding the nested-type + filter-selectivity rows.
 pub const FILTER_RG_NAME: &str = "rg-filter-000";
 
-/// Stored-mixed-case RG holding the mixed-case-id resource (MOCK-07 / D-08).
+/// Stored-mixed-case RG holding the mixed-case-id resource.
 pub const FILTER_MIXED_RG_NAME: &str = "Rg-Filter-Mixed";
 
-/// Full id of the arbitrarily-nested resource (MOCK-05). Resolvable verbatim.
+/// Full id of the arbitrarily-nested resource. Resolvable verbatim.
 pub const NESTED_RESOURCE_ID: &str = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-filter-000/providers/Microsoft.Sql/servers/sql-srv-000/databases/db-000";
-/// Canonical type of the nested resource (MOCK-12 — returned exactly as stored).
+/// Canonical type of the nested resource (returned exactly as stored).
 pub const NESTED_RESOURCE_TYPE: &str = "Microsoft.Sql/servers/databases";
 
-/// Full stored id of the mixed-case resource (MOCK-07). A case-insensitive
+/// Full stored id of the mixed-case resource. A case-insensitive
 /// lookup of a lower/upper variant of `{rg}`/`{name}` must resolve to this row.
 pub const MIXED_CASE_RESOURCE_ID: &str = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/Rg-Filter-Mixed/providers/Microsoft.Storage/storageAccounts/Res-MixedCase-000";
 
-/// Discriminating values the `$filter` selectivity assertions key on (MOCK-06).
+/// Discriminating values the `$filter` selectivity assertions key on.
 pub const FILTER_TYPE_STORAGE: &str = "Microsoft.Storage/storageAccounts";
 pub const FILTER_TYPE_VNET: &str = "Microsoft.Network/virtualNetworks";
 pub const FILTER_LOCATION_EAST: &str = "eastus";
@@ -75,17 +75,17 @@ pub struct FixtureCounts {
     pub subscriptions: i64,
     pub resource_groups_sub_a: i64,
     pub resources_dense_rg: i64,
-    /// Phase-4 additive count: rows seeded under `FILTER_RG_NAME` (nested + 4 filter).
+    /// Additive count: rows seeded under `FILTER_RG_NAME` (nested + 4 filter).
     pub resources_filter_rg: i64,
-    /// Phase-4 additive count: rows seeded under `FILTER_MIXED_RG_NAME` (mixed-case).
+    /// Additive count: rows seeded under `FILTER_MIXED_RG_NAME` (mixed-case).
     pub resources_filter_mixed_rg: i64,
 }
 
 /// Provision the FULL `synthetic` schema (sql/001+002+003+005+006+007) but insert NO
-/// tenant row — the Phase-17 D-09 empty-tenant fixture. Mirrors `seed_fixture`'s migration
+/// tenant row — the empty-tenant fixture. Mirrors `seed_fixture`'s migration
 /// application MINUS every INSERT, so an ARM read over this pool returns empty envelopes
 /// (`{value:[]}`) / a detail 404 and the server's startup path tolerates zero tenant rows
-/// (RESEARCH Pitfall 3). Applies the identity/drift/web-metadata migrations too so every
+/// (an empty-DB startup edge case). Applies the identity/drift/web-metadata migrations too so every
 /// handler that references `principals`/`drift_deleted_at`/`profile_name` reads cleanly
 /// (empty), never 500s on a missing relation/column.
 pub async fn seed_empty_tenant(pool: &PgPool) {
@@ -131,6 +131,46 @@ pub async fn seed_overlay_first_boot(pool: &PgPool) {
         .expect("idempotent re-apply of ensure_arm_overlay_schema");
 }
 
+/// Insert ONE `present=true` `synthetic.arm_overlay` resource row (the copy-on-write
+/// snapshot a drift apply writes). The body is built server-side with `jsonb_build_object`
+/// so it satisfies the sql/009 row-model CHECKs (present ⇒ body present + `body->>'id' = id`
+/// + string envelope + object `tags`/`properties`); `revision` is a placeholder overwritten
+/// by the BEFORE trigger's `nextval`. `id` is the only bound value ($N); the rest is a fixed
+/// SQL fragment (no external input spliced — memory [[mock-server-sql-injection-bar]]).
+///
+/// Relocated from `boot_guard.rs` to `tests/common/mod.rs` so the `run_reset`
+/// (integration.rs) and snapshot-restore (control.rs) full-wipe proofs — each a SEPARATE test
+/// binary — can seed a present overlay row (a non-pub item in one tests/*.rs binary is
+/// inaccessible from a sibling binary). `id` defaults to the boot_guard fixture id; callers
+/// needing a DISTINCT target-only row (the restore proof) pass their own via
+/// [`insert_present_overlay_row_with_id`].
+pub async fn insert_present_overlay_row(pool: &PgPool) {
+    let id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-x/\
+              providers/Microsoft.Storage/storageAccounts/ov-x";
+    insert_present_overlay_row_with_id(pool, id, "ov-x").await;
+}
+
+/// Insert ONE `present=true` `synthetic.arm_overlay` row with a CALLER-SUPPLIED `id`/`name`
+/// (the restore proof seeds a target-only row whose id is absent from the snapshot). Both `id`
+/// and `name` bind as `$N`; the remaining fragment is a fixed literal (no splice).
+pub async fn insert_present_overlay_row_with_id(pool: &PgPool, id: &str, name: &str) {
+    sqlx::query(
+        "INSERT INTO synthetic.arm_overlay \
+             (id_lower, id, target_kind, source, present, body, revision) \
+         VALUES (lower($1), $1, 'resource', 'drift', true, \
+                 jsonb_build_object( \
+                     'id', $1::text, 'name', $2::text, \
+                     'type', 'Microsoft.Storage/storageAccounts', \
+                     'location', 'eastus', 'tags', '{}'::jsonb, 'properties', '{}'::jsonb), \
+                 1)",
+    )
+    .bind(id)
+    .bind(name)
+    .execute(pool)
+    .await
+    .expect("insert present overlay row");
+}
+
 /// Build an ARMED `ControlPlane` over `pool` with `token` as the control secret, using a
 /// fresh unique tempdir for the three control-data subdirs (`profiles`/`sources`/`snapshots`).
 /// For control-plane integration tests (token gate, validation, armed byte-identical): the
@@ -139,7 +179,7 @@ pub async fn seed_overlay_first_boot(pool: &PgPool) {
 /// The `database_url` is a placeholder (analyze/generate jobs in tests spawn the stub below,
 /// not a real Postgres write).
 ///
-/// **Runner seam (17-02):** `pipeline_cmd` is a deterministic `python` stub instead of the
+/// **Runner seam:** `pipeline_cmd` is a deterministic `python` stub instead of the
 /// production `uv run tenantless` — so a control roundtrip (generate/analyze → job →
 /// registry → profile_allowed) is fast and hermetic, never depending on a runnable Python
 /// CLI/uv env. The stub creates the `--out` file (analyze) if the flag is present and is a
@@ -179,7 +219,7 @@ pub fn armed_control_plane(pool: &PgPool, token: &str) -> tenantless_server::job
 }
 
 /// An armed `ControlPlane` (as [`armed_control_plane`]) but with a REAL `database_url` —
-/// the snapshot round-trip (17-04) needs `pg_dump`/`pg_restore` to connect to the SAME
+/// the snapshot round-trip needs `pg_dump`/`pg_restore` to connect to the SAME
 /// testcontainers Postgres the pool talks to (the default builder uses a placeholder DSN,
 /// since generate/analyze in tests run the python stub, not a real DB write). The snapshot
 /// ops derive `PG*` env from this DSN; `pipeline_cmd` is irrelevant to them (they build their
@@ -200,7 +240,7 @@ pub fn armed_control_plane_with_dsn(
 /// harness populated what later pagination waves rely on.
 pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     // Schema: the same migration files the generator/dev DB use. sql/003 adds the
-    // lower(id) functional index + safe FKs (SEC-MED-3) — applied here so the
+    // lower(id) functional index + safe FKs — applied here so the
     // harness mirrors the docker-entrypoint-initdb.d ordering (001 -> 002 -> 003).
     let sql_001 = include_str!("../../../sql/001_synthetic_tenant.sql");
     let sql_002 = include_str!("../../../sql/002_cross_sub_dependencies.sql");
@@ -209,10 +249,10 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     pool.execute_unchecked(sql_002).await;
     pool.execute_unchecked(sql_003).await;
 
-    // Phase 11: apply sql/006 so the additive `synthetic.resources.drift_deleted_at`
+    // Apply sql/006 so the additive `synthetic.resources.drift_deleted_at`
     // soft-delete column (+ drift tables) exists for EVERY existing list/detail test —
     // without it the `AND drift_deleted_at IS NULL` filter added to the three serving
-    // queries 500s on the missing column (RESEARCH Pitfall 2 / fixture coupling). The
+    // queries 500s on the missing column (fixture coupling). The
     // ALTER is nullable-no-default, so existing seeded rows get NULL and all existing
     // counts are unchanged. No fixture rows are mutated.
     let sql_006 = include_str!("../../../sql/006_drift.sql");
@@ -224,6 +264,24 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     // existing counts are unchanged.
     let sql_008 = include_str!("../../../sql/008_rg_lower_index.sql");
     pool.execute_unchecked(sql_008).await;
+
+    // The three ARM read handlers now resolve through
+    // `synthetic.arm_resolved_*` instead of raw `synthetic.resources`/`resource_groups`, so
+    // the fixture must provision the overlay substrate (sql/009) and the resolver views
+    // (sql/010) — otherwise the swapped `FROM synthetic.arm_resolved_*` clause references a
+    // missing relation. Both are ADDITIVE and the overlay table is EMPTY here, so every
+    // resolved view is a pure baseline passthrough: no fixture row is mutated and every
+    // existing count/pagination assertion is unchanged (empty-overlay byte-identity). Applied
+    // via the same `ensure_*` provisioning paths `main` runs (idempotent; run twice below to
+    // mirror the boot preflight's first-real-then-noop shape).
+    for _ in 0..2 {
+        tenantless_server::ensure_arm_overlay_schema(pool)
+            .await
+            .expect("seed_fixture: ensure_arm_overlay_schema");
+        tenantless_server::ensure_arm_resolver_schema(pool)
+            .await
+            .expect("seed_fixture: ensure_arm_resolver_schema");
+    }
 
     // 1 tenant.
     sqlx::query(
@@ -274,7 +332,7 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     }
 
     // >100 resources under the dense RG (writer.py copy_resources contract).
-    // One resource intentionally keeps properties = '{}' (MOCK-13 assertable).
+    // One resource intentionally keeps properties = '{}' (empty-properties assertable).
     let res_count: i64 = 110;
     for i in 0..res_count {
         let name = format!("res-{i:04}");
@@ -305,10 +363,10 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     }
 
     // -----------------------------------------------------------------------
-    // Phase-4 fixture rows: nested-type, filter-selectivity, and mixed-case
+    // Filter-fixture rows: nested-type, filter-selectivity, and mixed-case
     // resources under dedicated filter RGs. Same 12-column parameterized INSERT
-    // idiom as the dense-RG loop above (bound, never string-built — T-04-01).
-    // These RGs are NOT the dense RG, so the Phase-3 `resources_dense_rg` count
+    // idiom as the dense-RG loop above (bound, never string-built).
+    // These RGs are NOT the dense RG, so the base `resources_dense_rg` count
     // is unaffected (its smoke test scopes on `resource_group_name`).
     // -----------------------------------------------------------------------
 
@@ -333,7 +391,7 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
         .expect("insert filter resource group");
     }
 
-    // One Phase-4 fixture row, bound (never spliced) into the canonical INSERT.
+    // One filter-fixture row, bound (never spliced) into the canonical INSERT.
     struct Phase4Row<'a> {
         id: &'a str,
         rg_name: &'a str,
@@ -364,10 +422,10 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
         .bind(row.properties_json)
         .execute(pool)
         .await
-        .expect("insert phase-4 resource");
+        .expect("insert filter-fixture resource");
     }
 
-    // 1) NESTED resource (MOCK-05 arbitrary depth, MOCK-12 canonical casing).
+    // 1) NESTED resource (arbitrary depth, canonical casing).
     insert_resource(
         pool,
         Phase4Row {
@@ -382,7 +440,7 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
     )
     .await;
 
-    // 2) FILTER selectivity rows (MOCK-06): distinct (type, location, tags)
+    // 2) FILTER selectivity rows: distinct (type, location, tags)
     //    combinations so each predicate selects a provable subset.
     //    flt-0000: storage / eastus / env=prod
     //    flt-0001: storage / westus / env=dev
@@ -432,7 +490,7 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
         .await;
     }
 
-    // 3) MIXED-CASE resource (MOCK-07 / D-08): stored id carries mixed-case
+    // 3) MIXED-CASE resource: stored id carries mixed-case
     //    `{rg}` and `{name}`; the case-insensitive test requests a lower/upper
     //    variant and compares against MIXED_CASE_RESOURCE_ID.
     insert_resource(
@@ -461,10 +519,10 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
 }
 
 // ---------------------------------------------------------------------------
-// Cost fixture (Plan 09-05) — a SCOPED, deterministic cost-row seed applied ON
+// Cost fixture — a SCOPED, deterministic cost-row seed applied ON
 // TOP of the shared fixture WITHOUT touching `seed_fixture` (project memory:
 // fixture coupling — earlier phases' hardcoded counts stay zero-cost). The cost
-// rows reference EXISTING Phase-4 filter-RG resources (so the FK fk_cost_resource
+// rows reference EXISTING filter-RG resources (so the FK fk_cost_resource
 // holds and the 0-dangling anti-join is 0). Amounts are exact-in-f64 so the
 // reconciliation total is byte-deterministic.
 // ---------------------------------------------------------------------------
@@ -491,7 +549,7 @@ pub struct CostSeed {
 /// cost set against EXISTING fixture resources. MUST be called AFTER `seed_fixture`
 /// (the FK references `synthetic.resources`). Returns the ground-truth totals.
 ///
-/// The six cost-bearing resources are the Phase-4 filter-RG rows (known type / RG /
+/// The six cost-bearing resources are the filter-RG rows (known type / RG /
 /// `env` tag) plus the mixed-case row in a DIFFERENT RG, so the RG-scope total is a
 /// strict subset of the sub-scope total:
 ///   nested  (Sql/servers/databases, rg-filter-000, env=prod)   100.0
@@ -543,17 +601,17 @@ pub async fn seed_cost_rows(pool: &PgPool) -> CostSeed {
 }
 
 // ---------------------------------------------------------------------------
-// Identity / RBAC fixture (Plan 10-03) — a SCOPED, deterministic principals +
+// Identity / RBAC fixture — a SCOPED, deterministic principals +
 // role_assignments seed applied ON TOP of the shared fixture WITHOUT touching
 // `seed_fixture` (project memory: fixture coupling). Every assignment references an
 // EXISTING fixture subscription/RG/resource scope + a real seeded principal + a
 // built-in roleDefinition GUID that the served `authorization.rs` catalogue ships
-// (so all three legs of the 0-dangling anti-join return 0 — D-07/Pitfall 1/3).
+// (so all three legs of the 0-dangling anti-join return 0).
 // ---------------------------------------------------------------------------
 
 /// Built-in role GUIDs (a subset) the identity seed draws from. These MUST be present
-/// in the served `authorization.rs` BUILTIN_ROLE_DEFINITIONS catalogue (Pitfall 3,
-/// pinned by `role_def_catalogue_agrees`). Byte-identical to `identity.py`.
+/// in the served `authorization.rs` BUILTIN_ROLE_DEFINITIONS catalogue
+/// (pinned by `role_def_catalogue_agrees`). Byte-identical to `identity.py`.
 pub const ROLE_OWNER_GUID: &str = "8e3af657-bb00-4899-acbc-f0f7f5db61aa";
 pub const ROLE_CONTRIBUTOR_GUID: &str = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 pub const ROLE_READER_GUID: &str = "acdd72a7-3385-48ef-bd42-f606fba81ae7";
@@ -589,14 +647,14 @@ pub struct IdentitySeed {
 ///
 /// The seed is a spread of Reader/Contributor at sub/RG/resource scopes plus two
 /// over-privilege rows (Owner-at-subscription, one of them granted to a
-/// ServicePrincipal — D-05). All INSERT literals are bound as `$N` (SQL bar / project
-/// memory); `seed_fixture` is left untouched (Pitfall 4).
+/// ServicePrincipal). All INSERT literals are bound as `$N` (SQL bar / project
+/// memory); `seed_fixture` is left untouched.
 pub async fn seed_identity_rows(pool: &PgPool) -> IdentitySeed {
     let sql_005 = include_str!("../../../sql/005_identity.sql");
     pool.execute_unchecked(sql_005).await;
 
     // 3 principals: a User, a Group, and a ServicePrincipal (the SP carries an app_id;
-    // display_name stays NULL — principals are ARM-opaque GUIDs, IAM-01/Pitfall 5). The
+    // display_name stays NULL — principals are ARM-opaque GUIDs). The
     // oids are the exported `PRINCIPAL_*` consts (single source — the `$filter` tests
     // target the same values).
     let p_user = PRINCIPAL_USER;
@@ -632,7 +690,7 @@ pub async fn seed_identity_rows(pool: &PgPool) -> IdentitySeed {
 
     // (assignment_id, principal, principal_type, role guid, scope). The last two rows
     // are the over-privilege injection: Owner at SUBSCRIPTION scope, one of them on a
-    // ServicePrincipal (the spicy SP-granted-Owner signal — D-05).
+    // ServicePrincipal (the spicy SP-granted-Owner signal).
     struct RaSeed {
         assignment_id: Uuid,
         principal: Uuid,
@@ -721,12 +779,12 @@ pub async fn seed_identity_rows(pool: &PgPool) -> IdentitySeed {
 }
 
 // ---------------------------------------------------------------------------
-// Drift audit fixture (Plan 11-07) — a SCOPED, deterministic drift_batches +
+// Drift audit fixture — a SCOPED, deterministic drift_batches +
 // drift_records seed (plus ONE soft-deleted fixture resource) applied ON TOP of
 // the shared fixture WITHOUT touching `seed_fixture` (project memory: fixture
 // coupling — earlier phases' hardcoded counts stay drift-free). Every drift_record
 // references an EXISTING `seed_fixture` resource id; the soft-deleted row is an
-// existing dense-RG resource hidden via `drift_deleted_at` (D-09/D-11). All INSERT
+// existing dense-RG resource hidden via `drift_deleted_at`. All INSERT
 // literals are bound as `$N` (SQL bar / project memory).
 // ---------------------------------------------------------------------------
 
@@ -743,7 +801,7 @@ pub struct DriftSeed {
     pub drifted_resource_id: String,
     /// How many drift records reference `drifted_resource_id`.
     pub drifted_resource_record_count: i64,
-    /// An EXISTING fixture resource hidden via `drift_deleted_at` (soft-delete; D-11).
+    /// An EXISTING fixture resource hidden via `drift_deleted_at` (soft-delete).
     pub soft_deleted_resource_id: String,
     /// Total number of `drift_batches` rows seeded (the list_drift continuation
     /// ground truth — MUST exceed a small `$top` so paging requires >1 page).
@@ -853,7 +911,7 @@ pub async fn seed_drift_rows(pool: &PgPool) -> DriftSeed {
         .expect("insert drift record");
     }
 
-    // Soft-delete (disappear, D-09) ONE existing fixture resource so the ARM list/detail
+    // Soft-delete (disappear) ONE existing fixture resource so the ARM list/detail
     // soft-delete filter is exercised; the row STAYS in the DB (only hidden).
     sqlx::query("UPDATE synthetic.resources SET drift_deleted_at = now() WHERE id = $1")
         .bind(&soft_deleted_resource_id)
@@ -867,7 +925,7 @@ pub async fn seed_drift_rows(pool: &PgPool) -> DriftSeed {
         .count() as i64;
 
     // ----------------------------------------------------------------------------
-    // Continuation ground truth (Plan 11-11): the primary batch above is too small
+    // Continuation ground truth: the primary batch above is too small
     // to exercise keyset continuation, so seed > one small-`$top` page of batches
     // and of records. A `$top=2` traversal must require ≥3 pages.
     //   * cont_batch_id: one batch carrying `CONT_RECORDS` records, ALL on a single
@@ -959,14 +1017,14 @@ pub async fn seed_drift_rows(pool: &PgPool) -> DriftSeed {
 }
 
 // ---------------------------------------------------------------------------
-// `/_sim` fixture (Phase 14, WAPI-01/02/03) — a SCOPED, deterministic
+// `/_sim` fixture — a SCOPED, deterministic
 // violations + dependencies seed applied ON TOP of the shared fixture WITHOUT
 // touching `seed_fixture` or `FixtureCounts` (project memory: fixture coupling).
 // Every violation references an EXISTING `seed_fixture` resource id under SUB_A
-// (0-dangling → `totals.violations` reconciles with the per-sub sum, Pitfall 3);
+// (0-dangling → `totals.violations` reconciles with the per-sub sum);
 // stored casing mirrors the generator domains — codes UPPER_SNAKE, severities
-// Title, dependency types lower-hyphen (Pitfall 6 / D-09). Enough rows are seeded
-// to exceed a small `$top` so Plans 14-02/14-03 pagination traversal needs >1 page
+// Title, dependency types lower-hyphen. Enough rows are seeded
+// to exceed a small `$top` so pagination traversal needs >1 page
 // (mirrors `seed_drift_rows`' surplus trick). All INSERT literals are bound `$N`.
 // ---------------------------------------------------------------------------
 
@@ -975,7 +1033,7 @@ pub async fn seed_drift_rows(pool: &PgPool) -> DriftSeed {
 /// resource row is valid: `crossSubscription` keys on the SUBSCRIPTION ids, not the resource rows.
 pub const SIM_SUB_B_RESOURCE_ID: &str = "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-b-000/providers/Microsoft.Network/virtualNetworks/vnet-b-000";
 
-/// What `seed_sim_rows` established, so the Plan 14-02/14-03 assertions have a known
+/// What `seed_sim_rows` established, so the assertions have a known
 /// ground truth. All violations live under SUB_A (their resources do); the cross-sub
 /// dependency edges connect SUB_A → SUB_B.
 pub struct SimSeed {
@@ -1011,12 +1069,49 @@ pub struct SimSeed {
 /// `seed_fixture` (already run); this helper INSERTs rows only. Returns the ground-truth
 /// [`SimSeed`]. Leaves `seed_fixture` / `FixtureCounts` untouched (scoped-helper contract).
 pub async fn seed_sim_rows(pool: &PgPool) -> SimSeed {
-    // Plan 14-05 (D-14): apply sql/007 idempotently so `synthetic.tenant.profile_name`
+    // Apply sql/007 idempotently so `synthetic.tenant.profile_name`
     // exists for the summary handler read (same pattern as `seed_drift_rows` re-applying
     // sql/006). `seed_fixture` inserts the tenant WITHOUT profile_name (it stays NULL) —
     // this helper only provisions the column, it never edits `seed_fixture`/`FixtureCounts`.
     let sql_007 = include_str!("../../../sql/007_web_metadata.sql");
     pool.execute_unchecked(sql_007).await;
+
+    // The console dependency reader now applies a both-endpoint resolver
+    // LIVENESS filter, so an edge to a NON-live (unseeded) resource drops out.
+    // The cross-sub edges below target `SIM_SUB_B_RESOURCE_ID`, which `seed_fixture` never
+    // seeded as a resource row (SUB_B has a subscription but no resources) — a latent fixture
+    // dangler that the pre-migration unfiltered reader silently counted. Seed it (+ its RG)
+    // as a LIVE resource so the edges reference a real resource and the count-consistency
+    // invariants (`collection_count_is_filtered_total`, `dependencies_source_or_target`,
+    // `summary_counts_ground_truth`) stay valid under the resolver — the liveness filter is a
+    // no-op on this now-consistent clean seed. Scoped to `seed_sim_rows`; `seed_fixture`/
+    // `FixtureCounts` are untouched.
+    let sub_b_rg_id = format!("/subscriptions/{SUB_B}/resourceGroups/rg-b-000");
+    sqlx::query(
+        r#"INSERT INTO synthetic.resource_groups
+               (id, subscription_id, name, location, template_type, tags, provisioning_state)
+           VALUES ($1, $2, 'rg-b-000', 'eastus', 'network', '{}'::jsonb, 'Succeeded')
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(&sub_b_rg_id)
+    .bind(SUB_B)
+    .execute(pool)
+    .await
+    .expect("insert SUB_B resource group");
+    sqlx::query(
+        r#"INSERT INTO synthetic.resources
+               (id, subscription_id, resource_group_name, name, type, location,
+                tags, sku, kind, properties, provisioning_state, managed_by)
+           VALUES ($1, $2, 'rg-b-000', 'vnet-b-000', 'Microsoft.Network/virtualNetworks',
+                   'eastus', '{}'::jsonb, NULL, NULL,
+                   '{"provisioningState":"Succeeded"}'::jsonb, 'Succeeded', NULL)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(SIM_SUB_B_RESOURCE_ID)
+    .bind(SUB_B)
+    .execute(pool)
+    .await
+    .expect("insert SUB_B cross-sub target resource");
 
     // Existing dense-RG resource ids (seed_fixture inserts res-0000..res-0109 under SUB_A).
     let dense = |name: &str| {
@@ -1201,7 +1296,7 @@ pub async fn seed_sim_rows(pool: &PgPool) -> SimSeed {
 
 /// Build a fresh ephemeral RS256 signer for the fixture tenant, wrapped in the
 /// [`SharedSigner`](tenantless_server::jwt::SharedSigner) handle that `AppState.signer`
-/// expects. Each call mints a new in-memory key (D-08); tests that only exercise the
+/// expects. Each call mints a new in-memory key; tests that only exercise the
 /// any-Bearer/OFF path don't depend on the key, so a throwaway per-builder signer is correct
 /// and cheap enough.
 pub fn test_signer() -> tenantless_server::jwt::SharedSigner {

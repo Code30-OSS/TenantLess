@@ -1,12 +1,12 @@
-//! Control-plane job registry types + the `ControlPlane` bundle (Phase 17).
+//! Control-plane job registry types + the `ControlPlane` bundle.
 //!
-//! **Types only in 17-01** — the tokio subprocess runner that drives `uv run
-//! tenantless generate|analyze` lands in 17-02, and the pg_dump/pg_restore snapshot
-//! orchestration in 17-04. This module defines the shared contracts every later
-//! Phase-17 plan builds on: the simple `JobStatus` state machine (D-15), the in-memory
-//! `Job` record with a bounded log tail (D-06), the serializable `JobSnapshot` the poll
-//! endpoint returns (D-07), and the `ControlPlane` bundle carried in `AppState.control`
-//! (`Some` ⇔ armed, D-02) — mirroring the in-memory `Metrics` Arc-registry precedent.
+//! Types only — the tokio subprocess runner that drives `uv run
+//! tenantless generate|analyze` and the pg_dump/pg_restore snapshot
+//! orchestration land in later modules. This module defines the shared contracts every later
+//! control-plane piece builds on: the simple `JobStatus` state machine, the in-memory
+//! `Job` record with a bounded log tail, the serializable `JobSnapshot` the poll
+//! endpoint returns, and the `ControlPlane` bundle carried in `AppState.control`
+//! (`Some` ⇔ armed) — mirroring the in-memory `Metrics` Arc-registry precedent.
 //!
 //! The control token is NEVER stored in the clear: `arm_decision`/`arm` keep only the
 //! SHA-256 `token_digest`, compared in constant time by [`crate::control::control_token`].
@@ -25,7 +25,7 @@ use tokio::process::Command;
 use tokio::sync::OwnedSemaphorePermit;
 use uuid::Uuid;
 
-/// Bounded per-job log tail cap (D-06): keep only the last `LOG_CAP` captured lines so
+/// Bounded per-job log tail cap: keep only the last `LOG_CAP` captured lines so
 /// a 500K-resource generate cannot grow the in-memory log without bound.
 pub const LOG_CAP: usize = 200;
 
@@ -43,15 +43,15 @@ pub const LOG_LINE_CAP: usize = 8 * 1024;
 /// completed history is kept, not a hard cap on live jobs.
 pub const JOB_RETENTION: usize = 100;
 
-/// Server-only secret env vars that must NEVER be inherited by a spawned child (WR-03/T-17-05).
+/// Server-only secret env vars that must NEVER be inherited by a spawned child.
 /// The control token arms the server via `TENANTLESS_CONTROL_TOKEN` (the recommended env path),
 /// which `tokio::process::Command` inherits by default — but no child (generate/analyze/pg_dump/
 /// pg_restore) needs it, so it is stripped from every child we spawn (keeps the secret off the
-/// child's `/proc/<pid>/environ`, closing the surface T-17-05 shrinks).
+/// child's `/proc/<pid>/environ`, closing that surface).
 pub const CHILD_SECRET_ENV: [&str; 1] = ["TENANTLESS_CONTROL_TOKEN"];
 
-/// Strip the server-only secrets ([`CHILD_SECRET_ENV`]) from a child command's inherited env
-/// (WR-03). Applied at EVERY child-spawn construction site (the pipeline generate/analyze command
+/// Strip the server-only secrets ([`CHILD_SECRET_ENV`]) from a child command's inherited env.
+/// Applied at EVERY child-spawn construction site (the pipeline generate/analyze command
 /// AND the pg_dump/pg_restore snapshot commands) so the control secret is never inherited.
 pub fn scrub_child_env(cmd: &mut Command) {
     for key in CHILD_SECRET_ENV {
@@ -60,15 +60,15 @@ pub fn scrub_child_env(cmd: &mut Command) {
 }
 
 /// SHA-256 a string to a fixed 32-byte digest. The control token is hashed to this
-/// fixed width BEFORE the constant-time compare so the comparison never leaks length
-/// (RESEARCH "Don't Hand-Roll"). Also used to derive `token_digest` at arm time.
+/// fixed width BEFORE the constant-time compare so the comparison never leaks length.
+/// Also used to derive `token_digest` at arm time.
 pub fn digest(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
 
-/// The simple job state machine (D-15): `queued → running → succeeded | failed`. No
-/// user cancel this phase. Serialized **lowercase** — the exact wire strings the
-/// frontend keys on (D-17); the serde default would emit `"Queued"` and break the match.
+/// The simple job state machine: `queued → running → succeeded | failed`. No
+/// user cancel yet. Serialized **lowercase** — the exact wire strings the
+/// frontend keys on; the serde default would emit `"Queued"` and break the match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -90,8 +90,8 @@ pub enum JobKind {
     Restore,
 }
 
-/// One tracked job in the in-memory registry (D-06). Cloned out under the registry
-/// mutex for polling; the runner (17-02) mutates it in place via lock-mutate-drop.
+/// One tracked job in the in-memory registry. Cloned out under the registry
+/// mutex for polling; the runner mutates it in place via lock-mutate-drop.
 #[derive(Debug, Clone)]
 pub struct Job {
     /// Unguessable v4 id (mild enumeration resistance over a sequential counter).
@@ -100,11 +100,11 @@ pub struct Job {
     pub kind: JobKind,
     /// Current lifecycle state.
     pub status: JobStatus,
-    /// Coarse phase label mapped from the child's stderr (D-08), e.g. `"generating tenant…"`.
+    /// Coarse phase label mapped from the child's stderr, e.g. `"generating tenant…"`.
     pub phase: Option<String>,
     /// Bounded captured log tail (last [`LOG_CAP`] lines).
     pub log: VecDeque<String>,
-    /// Opportunistically parsed final result (tenant_id + counts), if any (D-08).
+    /// Opportunistically parsed final result (tenant_id + counts), if any.
     pub result: Option<serde_json::Value>,
     /// When the job entered the registry — for the UI elapsed timer.
     pub started_at: std::time::Instant,
@@ -175,7 +175,7 @@ pub(crate) fn evict_terminal(reg: &mut HashMap<Uuid, Job>, retention: usize) {
     }
 }
 
-/// The serializable projection of a [`Job`] returned by `GET /_control/jobs/{id}` (D-07).
+/// The serializable projection of a [`Job`] returned by `GET /_control/jobs/{id}`.
 /// A plain owned snapshot so the registry mutex is released before serialization.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobSnapshot {
@@ -187,7 +187,7 @@ pub struct JobSnapshot {
     pub result: Option<serde_json::Value>,
 }
 
-/// Server-owned directories for control-plane artifacts (D-03/D-12/D-13). All names
+/// Server-owned directories for control-plane artifacts. All names
 /// crossing into these dirs are safe-name guarded — no arbitrary paths, no upload.
 #[derive(Debug, Clone)]
 pub struct ControlDirs {
@@ -199,33 +199,33 @@ pub struct ControlDirs {
     pub snapshots: PathBuf,
 }
 
-/// The armed control-plane bundle carried in `AppState.control` (`Some` ⇔ armed, D-02).
+/// The armed control-plane bundle carried in `AppState.control` (`Some` ⇔ armed).
 ///
 /// Mirrors the in-memory `Metrics` Arc-registry precedent. The `registry` is a
 /// `std::sync::Mutex` held only for lock-mutate-drop (never across an `.await`); the
-/// `write_gate` is a `Semaphore(1)` that serializes ALL destructive jobs (D-11). The
+/// `write_gate` is a `Semaphore(1)` that serializes ALL destructive jobs. The
 /// `database_url` is threaded here because `AppState` today stores only the pool, not the
-/// URL string the child `uv run tenantless generate` needs via `DATABASE_URL` (Pitfall 2).
+/// URL string the child `uv run tenantless generate` needs via `DATABASE_URL`.
 #[derive(Clone)]
 pub struct ControlPlane {
-    /// SHA-256 of the configured control secret — the raw token is never stored (T-17-05).
+    /// SHA-256 of the configured control secret — the raw token is never stored.
     pub token_digest: [u8; 32],
-    /// The server's Postgres DSN, passed to child jobs via env (Pitfall 2, T-07-02).
+    /// The server's Postgres DSN, passed to child jobs via env.
     pub database_url: String,
     /// The repo root the child `uv` runs from (`current_dir`).
     pub repo_root: PathBuf,
     /// Server-owned artifact directories (profiles / sources / snapshots).
     pub dirs: ControlDirs,
-    /// In-memory ephemeral job registry (D-06) — reset on restart.
+    /// In-memory ephemeral job registry — reset on restart.
     pub registry: Arc<Mutex<HashMap<Uuid, Job>>>,
-    /// Single-writer permit source: at most one destructive job in flight (D-11).
+    /// Single-writer permit source: at most one destructive job in flight.
     pub write_gate: Arc<tokio::sync::Semaphore>,
     /// The pipeline argv prefix the runner invokes for generate/analyze jobs — production
     /// arms this to [`DEFAULT_PIPELINE_CMD`] (`uv run tenantless`); the handlers append the
     /// subcommand + validated flags. A per-instance seam so integration tests can substitute
-    /// a deterministic stub (RESEARCH Wave-0 runner seam) without a runnable Python CLI.
+    /// a deterministic stub (a runner seam) without a runnable Python CLI.
     pub pipeline_cmd: Vec<String>,
-    /// The pool used for `TRUNCATE` on reset/restore (17-02/17-04).
+    /// The pool used for `TRUNCATE` on reset/restore.
     pub pool: PgPool,
     /// The hot-swappable signer handle — the SAME [`crate::jwt::SharedSigner`] held by
     /// `AppState.signer`. After a tenant-mutating job (generate/restore/reset) commits, the
@@ -235,7 +235,7 @@ pub struct ControlPlane {
     pub signer: crate::jwt::SharedSigner,
 }
 
-/// The fail-closed arming DECISION (D-02), factored out so the security-critical rule is
+/// The fail-closed arming DECISION, factored out so the security-critical rule is
 /// unit-testable DB-free (no pool, no dir creation). Returns:
 ///   * `Ok(None)` — the control plane is disabled (flag absent): stay read-only;
 ///   * `Err(msg)` — enabled but the token is missing/empty/whitespace: **fail closed**,
@@ -253,7 +253,7 @@ pub fn arm_decision(enable: bool, token: Option<&str>) -> Result<Option<[u8; 32]
         return Err(
             "control plane enabled (--enable-control-plane) but no control token configured \
              — set --control-token or TENANTLESS_CONTROL_TOKEN to a non-empty secret \
-             (fail-closed, D-02)"
+             (fail-closed)"
                 .to_string(),
         );
     }
@@ -262,7 +262,7 @@ pub fn arm_decision(enable: bool, token: Option<&str>) -> Result<Option<[u8; 32]
 
 impl ControlPlane {
     /// Assemble the armed bundle from the CLI config + the server pool, implementing the
-    /// D-02 fail-closed rule via [`arm_decision`]: disabled → `Ok(None)`; enabled + empty
+    /// fail-closed rule via [`arm_decision`]: disabled → `Ok(None)`; enabled + empty
     /// token → `Err`; enabled + non-empty → `Ok(Some(ControlPlane))` after creating the
     /// three server-owned control-data subdirs (`profiles/`, `sources/`, `snapshots/`).
     /// `signer` is the shared handle `AppState` also holds — the control plane rebuilds it
@@ -347,25 +347,25 @@ fn job_kind(cp: &ControlPlane, job_id: Uuid) -> Option<JobKind> {
 }
 
 // ---------------------------------------------------------------------------
-// Job runner (Plan 17-02, Task 1) — a tokio subprocess runner that drives the
-// Python `generate`/`analyze` CLI. RESEARCH Pattern 3 (concurrent drain) is the
-// blueprint: drain stdout AND stderr concurrently (Pitfall 1 — a full pipe on one
+// Job runner — a tokio subprocess runner that drives the
+// Python `generate`/`analyze` CLI. The concurrent-drain pattern is the
+// blueprint: drain stdout AND stderr concurrently (a full pipe on one
 // stream while blocking on the other deadlocks), map known stderr lines to coarse
-// phase labels (D-08), opportunistically parse the final stdout summary, and finalize
-// on the child's exit code (never a 500 on a bad child, D-08/D-15).
+// phase labels, opportunistically parse the final stdout summary, and finalize
+// on the child's exit code (never a 500 on a bad child).
 // ---------------------------------------------------------------------------
 
-/// The full `synthetic.*` table set a reset TRUNCATEs and a snapshot must cover (D-14) —
+/// The full `synthetic.*` table set a reset TRUNCATEs and a snapshot must cover —
 /// a verbatim port of `writer.py::_SYNTHETIC_TABLES` in FK order (`role_assignments`
 /// before `principals`, `drift_records` before `drift_batches`). This is a STATIC code
 /// literal, NEVER user/profile input, so joining it into a `TRUNCATE`/`--table` fragment
 /// introduces no injection surface (mirrors the `writer.truncate_synthetic` comment; the
 /// project SQL bar binds user VALUES as `$N`, but relation names come from this allowlist).
-pub const SYNTHETIC_TABLES: [&str; 11] = [
+pub const SYNTHETIC_TABLES: [&str; 12] = [
     "synthetic.tenant",
     "synthetic.subscriptions",
     "synthetic.resource_groups",
-    "synthetic.resources",
+    "synthetic.resources", // SYNRES-ALLOW[reset]: static TRUNCATE/snapshot allowlist entry, never a resolver-facing read
     "synthetic.dependencies",
     "synthetic.violations",
     "synthetic.cost_records",
@@ -373,21 +373,28 @@ pub const SYNTHETIC_TABLES: [&str; 11] = [
     "synthetic.principals",
     "synthetic.drift_records",
     "synthetic.drift_batches",
+    // The ARM overlay copy-on-write plane (sql/009). LAST entry —
+    // arm_overlay has no outgoing FK, so truncating it last is FK-safe. Without it the three
+    // full-wipe paths (run_reset / generate --force / snapshot restore pre-load TRUNCATE)
+    // leave a stale `present=true` overlay row that resolves as a phantom live resource. Not
+    // `synthetic.resources`, so it needs NO SYNRES-ALLOW marker (a static allowlist literal,
+    // never user input → no injection surface).
+    "synthetic.arm_overlay",
 ];
 
 /// The production pipeline argv prefix: `uv run tenantless <subcommand> …`. Held in
 /// [`ControlPlane::pipeline_cmd`] as a per-instance seam so integration tests can
-/// substitute a deterministic stub instead of a runnable Python CLI (RESEARCH Wave-0
-/// "runner seam"). The subcommand + validated flags are appended by the handlers (17-02).
+/// substitute a deterministic stub instead of a runnable Python CLI (a
+/// "runner seam"). The subcommand + validated flags are appended by the handlers.
 pub const DEFAULT_PIPELINE_CMD: [&str; 3] = ["uv", "run", "tenantless"];
 
-/// Wall-clock fail-safe (D-15): a job exceeding this is `start_kill`ed and marked `Failed`
+/// Wall-clock fail-safe: a job exceeding this is `start_kill`ed and marked `Failed`
 /// with the same reset/regenerate recovery guidance. One hour leaves ample headroom over a
 /// 500K-resource generate at the throughput the committed benchmark records for the bundled
 /// synthetic profile (see `docs/benchmarks/`), which is reproducible on any machine.
 pub const JOB_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Map a raw child **stderr** line to a coarse phase label (D-08). Returns `Some(label)`
+/// Map a raw child **stderr** line to a coarse phase label. Returns `Some(label)`
 /// for the exact generator progress lines and `None` otherwise (an unknown line changes no
 /// phase). Pure — the runner locks the registry only to APPLY the returned label.
 pub fn phase_label(line: &str) -> Option<&'static str> {
@@ -400,8 +407,8 @@ pub fn phase_label(line: &str) -> Option<&'static str> {
     }
 }
 
-/// Opportunistically parse the final `generate` **stdout** summary line into the job result
-/// (D-08). The canonical line is:
+/// Opportunistically parse the final `generate` **stdout** summary line into the job result.
+/// The canonical line is:
 /// `Generated tenant {uuid}: {n} subscriptions, {n} resource groups, {n} resources, {n}
 /// violations, …`. Returns a JSON object with `tenant_id` + the four headline counts, or
 /// `None` if the line is not a well-formed summary (parse-failure keeps the job `Succeeded`).
@@ -444,7 +451,7 @@ pub fn parse_generate_summary(line: &str) -> Option<serde_json::Value> {
 }
 
 /// Lock the registry, apply `f` to the job if present, and drop the lock immediately —
-/// the std `Mutex` is NEVER held across an `.await` (RESEARCH invariant / Pattern 4).
+/// the std `Mutex` is NEVER held across an `.await`.
 /// `pub(crate)` so the reset/snapshot runners (control.rs / snapshot.rs) mutate a job
 /// through the SAME lock-mutate-drop seam as the subprocess runner.
 pub(crate) fn with_job(cp: &ControlPlane, job_id: Uuid, f: impl FnOnce(&mut Job)) {
@@ -456,14 +463,13 @@ pub(crate) fn with_job(cp: &ControlPlane, job_id: Uuid, f: impl FnOnce(&mut Job)
 }
 
 /// Spawn `cmd` as a tracked control job and drive it to a terminal state, updating the
-/// in-memory registry as it runs. The caller (17-02 handlers) builds `cmd` (program, args,
+/// in-memory registry as it runs. The caller builds `cmd` (program, args,
 /// the `DATABASE_URL` env, and `current_dir`) and holds the single-writer `_permit`, which
-/// drops at the end here, releasing the write gate on success, failure, timeout, OR panic
-/// (D-11).
+/// drops at the end here, releasing the write gate on success, failure, timeout, OR panic.
 ///
-/// Contract (D-08/D-15): stdio is forced (`stdin` null, `stdout`/`stderr` piped,
+/// Contract: stdio is forced (`stdin` null, `stdout`/`stderr` piped,
 /// `kill_on_drop`); a spawn error (missing binary) marks the job `Failed` with a clear log
-/// (never a panic); both child streams are drained CONCURRENTLY (Pitfall 1 — no pipe-buffer
+/// (never a panic); both child streams are drained CONCURRENTLY (no pipe-buffer
 /// deadlock); each line is pushed into the bounded log and a known stderr line updates the
 /// phase label; a wall-clock timeout `start_kill`s the child and marks `Failed`; and exit 0
 /// yields `Succeeded` (with an opportunistic summary parse into `result`), else `Failed`.
@@ -554,12 +560,12 @@ fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], truncated: &mut bool) {
 
 /// Drive `cmd` to a terminal exit as a tracked job, WITHOUT owning/dropping a permit and WITHOUT
 /// setting `JobStatus::Succeeded` — the permit-retaining core shared by the generate/analyze
-/// runner and the snapshot save/restore runners (P1-A/P1-B). It sets `Running` on entry; on a
+/// runner and the snapshot save/restore runners. It sets `Running` on entry; on a
 /// spawn error / nonzero exit / timeout it sets `Failed` (+ the same log line as before) and
 /// returns `succeeded: false`; on exit 0 it leaves the job `Running` and returns
 /// `succeeded: true` with the last stdout line, so the caller finalizes (`Succeeded` +
 /// summary parse) only AFTER its own post-run work (rename / temp cleanup) under the still-held
-/// permit. The P1-B kill-before-join timeout ordering is preserved verbatim.
+/// permit. The kill-before-join timeout ordering is preserved verbatim.
 pub(crate) async fn run_command_keep_permit(
     cp: &ControlPlane,
     job_id: Uuid,
@@ -576,7 +582,7 @@ pub(crate) async fn run_command_keep_permit(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            // Missing binary / not executable: a first-class `Failed`, never a crash (D-08).
+            // Missing binary / not executable: a first-class `Failed`, never a crash.
             with_job(cp, job_id, |j| {
                 j.push_log(format!("failed to spawn subprocess: {e}"));
                 j.status = JobStatus::Failed;
@@ -623,7 +629,7 @@ pub(crate) async fn run_command_keep_permit(
     // Wait with a wall-clock fail-safe. On a TIMEOUT the child may still be alive holding its
     // stdout/stderr pipes open, so we MUST kill (and reap) it BEFORE joining the drain tasks —
     // otherwise the drains never see EOF, `join!` blocks forever, the job never finalizes, and
-    // the single-writer permit is held permanently (the P1-B deadlock). Kill-before-join
+    // the single-writer permit is held permanently (a deadlock). Kill-before-join
     // guarantees the pipes close so both drains complete and the permit can drop.
     let waited = tokio::time::timeout(timeout, child.wait()).await;
     if waited.is_err() {
@@ -707,19 +713,19 @@ pub async fn run_command_with_timeout(
     // `_permit` drops here → the single-writer gate is released.
 }
 
-/// The reset runner (Plan 17-04, CTRL-03/D-09): `TRUNCATE` every `synthetic.*` table under
+/// The reset runner: `TRUNCATE` every `synthetic.*` table under
 /// the held single-writer permit, wiping the active tenant to a blank simulator. Unlike
 /// [`run_command`] this is a pure SQL mutation (no subprocess) — but it uses the SAME
 /// registry seam ([`with_job`]) and the SAME permit lifecycle (the `_permit` moves in and
-/// drops here, releasing the write gate on success OR failure, D-11).
+/// drops here, releasing the write gate on success OR failure).
 ///
 /// `TRUNCATE … RESTART IDENTITY CASCADE` over the FK-ordered [`SYNTHETIC_TABLES`] wipes all
 /// rows in one atomic statement (CASCADE also clears any FK-referencing rows, matching
 /// `writer.truncate_synthetic`). The relation list is a STATIC allowlist, never user input.
 /// The migration-managed schema itself is preserved, so the ARM read path immediately serves
 /// an empty tenant (list 200-empty / detail 404 / summary zeros) and a fresh boot tolerates
-/// the empty schema (17-01 D-09). On SQL error the job ends `Failed` with a logged cause —
-/// never a panic; the tenant may be left dirty (recover via reset/regenerate, D-15).
+/// the empty schema. On SQL error the job ends `Failed` with a logged cause —
+/// never a panic; the tenant may be left dirty (recover via reset/regenerate).
 pub async fn run_reset(cp: ControlPlane, job_id: Uuid, _permit: OwnedSemaphorePermit) {
     with_job(&cp, job_id, |j| j.status = JobStatus::Running);
     match truncate_synthetic(&cp.pool).await {
@@ -745,7 +751,7 @@ pub async fn run_reset(cp: ControlPlane, job_id: Uuid, _permit: OwnedSemaphorePe
 
 /// `TRUNCATE` every EXISTING `synthetic.*` table (`RESTART IDENTITY CASCADE`, FK-safe) —
 /// the Rust twin of `writer.truncate_synthetic`, shared by the reset runner and the
-/// snapshot restore path (17-04). Only tables that CURRENTLY exist are truncated: a
+/// snapshot restore path. Only tables that CURRENTLY exist are truncated: a
 /// synthetic table may be introduced by a later migration than the one applied to the
 /// target schema (e.g. the test fixture applies a subset), so `to_regclass` returns NULL
 /// for an absent table and it is skipped rather than aborting the whole TRUNCATE. The
@@ -807,10 +813,10 @@ mod tests {
         }
     }
 
-    /// Task 1 (P1-B substrate): `run_command_keep_permit` on a nonexistent binary returns
+    /// `run_command_keep_permit` on a nonexistent binary returns
     /// `succeeded == false`, marks the job `Failed`, and NEVER touches the caller's permit —
     /// the single-writer gate stays held until the CALLER drops it (so save/restore can retain
-    /// it across artifact promotion / temp cleanup). Required-test #5 substrate.
+    /// it across artifact promotion / temp cleanup).
     #[tokio::test]
     async fn keep_permit_spawn_failure_fails_and_retains_permit() {
         let cp = lazy_cp();

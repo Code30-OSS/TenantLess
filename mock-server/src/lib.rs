@@ -1,8 +1,8 @@
 //! tenantless-server public API.
 //!
 //! `build_router(state) -> Router` is the single app factory shared by `main` and
-//! the integration tests (RESEARCH L163: the most important testability decision).
-//! Every module this phase creates is re-exported here.
+//! the integration tests (the most important testability decision).
+//! Every module in this crate is re-exported here.
 
 pub mod arm;
 pub mod auth;
@@ -38,12 +38,12 @@ use tower::{
     timeout::TimeoutLayer,
 };
 
-/// Build the axum router. Registers `GET /subscriptions` (Wave 1), the
+/// Build the axum router. Registers `GET /subscriptions`, the
 /// `/subscriptions/{sub}/resourceGroups` and `/subscriptions/{sub}/resources`
-/// paginated list routes (Wave 2), and the RG-scoped
-/// `/subscriptions/{sub}/resourceGroups/{rg}/resources` route (Wave 3, MOCK-04). The
+/// paginated list routes, and the RG-scoped
+/// `/subscriptions/{sub}/resourceGroups/{rg}/resources` route. The
 /// Bearer layer is applied at the ARM router level
-/// so EVERY ARM route is gated (threat T-03-01, MOCK-09). Param routes use the axum 0.8
+/// so EVERY ARM route is gated. Param routes use the axum 0.8
 /// `/{param}` curly-brace syntax convention.
 ///
 /// The `/_console` dashboard sub-router is merged in SEPARATELY, outside both the
@@ -53,19 +53,19 @@ use tower::{
 /// including 401s.
 pub fn build_router(state: AppState) -> Router {
     // Delegate to the pre-merge ARM baseline, then add the `/_sim` surface AND the `/ui`
-    // Web Console SPA on the SAME bearer-exempt seam (WAPI-04 / WEBUI-03). Keeping the
+    // Web Console SPA on the SAME bearer-exempt seam. Keeping the
     // composition in `build_router_without_sim` gives the contract test a GENUINE pre-merge
     // router to compare against, so `arm_byte_identical` can detect a merge regression
-    // instead of asserting X == X (D-17). `/ui` is a FRESH nested prefix with its OWN
-    // scoped fallback (see [`ui::router`]) — it cannot shadow an ARM route (D-06), and the
+    // instead of asserting X == X. `/ui` is a FRESH nested prefix with its OWN
+    // scoped fallback (see [`ui::router`]) — it cannot shadow an ARM route, and the
     // fallback-free `arm` router never hits the two-fallbacks merge panic. `ui::router()`
     // takes NO state (the SPA assets are static, embedded via `include_dir!`).
-    // Phase 17 (D-02/D-17): merge the `/_control` write surface ONLY when the server is
+    // Merge the `/_control` write surface ONLY when the server is
     // armed (`state.control` is `Some`). A disarmed server exposes NO `/_control/*` routes
     // (they 404, not 403). `/_control` is a FRESH `nest` prefix on this SAME bearer-exempt
     // seam, off the ARM bearer/metrics layers, so merging it CANNOT change ARM response
-    // bytes — `arm_byte_identical` stays green (CTRL-06). It carries its OWN control-token
-    // gate (see [`control::router`]), a distinct realm from the any-Bearer ARM model (D-01).
+    // bytes — `arm_byte_identical` stays green. It carries its OWN control-token
+    // gate (see [`control::router`]), a distinct realm from the any-Bearer ARM model.
     let mut r = build_router_without_sim(state.clone())
         .merge(sim::router(state.clone()))
         .merge(ui::router());
@@ -128,13 +128,13 @@ async fn map_budget_error(err: BoxError) -> error::ApiError {
     }
 }
 
-/// The pre-merge ARM baseline (WAPI-04 test seam, D-17): the FULL runtime router MINUS the
+/// The pre-merge ARM baseline (a test seam): the FULL runtime router MINUS the
 /// `/_sim` merge. Builds the `arm` chain (with its `bearer_auth` + `record_metrics` layers)
 /// and merges the two other bearer-exempt sub-routers (`/_console` and `/token` + JWKS) —
 /// but does NOT `.merge(sim::router)`, so it exposes NO `/_sim` surface.
 ///
 /// [`build_router`] delegates here and then adds `.merge(sim::router(state))`, so this is
-/// the exact router that served every prior phase before Phase 14. `arm_byte_identical`
+/// the exact router that served the ARM surface before `/_sim` was added. `arm_byte_identical`
 /// (`tests/sim.rs`) builds its reference app from this fn and compares it byte-for-byte
 /// against the merged [`build_router`] — the pre-merge/merged pair is what makes that proof
 /// non-tautological (a `/_sim` merge that altered ARM bytes/headers would fail the test).
@@ -145,6 +145,14 @@ pub fn build_router_without_sim(state: AppState) -> Router {
             "/subscriptions/{sub}/resourceGroups",
             get(handlers::list_resource_groups),
         )
+        // Read-only single-RG detail (ETag emission for the RG kind). An EXACT path with
+        // no trailing segment — distinct from `{rg}/resources` and the `{rg}/providers/{*tail}`
+        // catch-all below, so it registers with no static-vs-wildcard overlap. READ-ONLY for
+        // now (no RG write path / overlay writer yet).
+        .route(
+            "/subscriptions/{sub}/resourceGroups/{rg}",
+            get(handlers::get_resource_group_detail),
+        )
         .route(
             "/subscriptions/{sub}/resources",
             get(handlers::list_resources),
@@ -153,20 +161,20 @@ pub fn build_router_without_sim(state: AppState) -> Router {
             "/subscriptions/{sub}/resourceGroups/{rg}/resources",
             get(handlers::list_rg_resources),
         )
-        // Cost Management Query — sub scope (COST-03). Registered INSIDE `arm` (above
-        // the bearer/metrics layers) so it inherits the any-Bearer scanner contract
-        // (IAM-05 / T-9-03). The sub-scope path has no catch-all, so it registers
+        // Cost Management Query — sub scope. Registered INSIDE `arm` (above
+        // the bearer/metrics layers) so it inherits the any-Bearer scanner contract.
+        // The sub-scope path has no catch-all, so it registers
         // directly with no static-vs-wildcard overlap.
         .route(
             "/subscriptions/{sub}/providers/Microsoft.CostManagement/query",
             post(handlers::cost_query),
         )
-        // Microsoft.Authorization data plane (IAM-03) — three sub-scoped GET routes
+        // Microsoft.Authorization data plane — three sub-scoped GET routes
         // registered INSIDE `arm` (above the bearer/metrics layers) so they inherit the
         // any-Bearer scanner contract + the `--enforce-auth` swap. These are static
         // `providers/...` paths (the SAME shape the cost sub-scope route already proved
         // registers cleanly — the only `{*tail}` catch-all is RG-scoped). Any api-version
-        // is accepted/ignored (MOCK-11).
+        // is accepted/ignored.
         .route(
             "/subscriptions/{sub}/providers/Microsoft.Authorization/roleDefinitions",
             get(handlers::list_role_definitions),
@@ -179,15 +187,15 @@ pub fn build_router_without_sim(state: AppState) -> Router {
             "/subscriptions/{sub}/providers/Microsoft.Authorization/roleAssignments",
             get(handlers::list_role_assignments),
         )
-        // Simulator-only drift audit reads (DRIFT-05) — three GET routes registered
+        // Simulator-only drift audit reads — three GET routes registered
         // INSIDE `arm` (above the bearer/metrics layers) so they sit INSIDE the bearer
-        // gate (D-15): missing Bearer → 401, any non-empty Bearer → 200 (enforce off),
+        // gate: missing Bearer → 401, any non-empty Bearer → 200 (enforce off),
         // valid RS256 JWT under `--enforce-auth`. These are NOT merged via the outer
         // `arm.merge(...)` bearer-exempt path — only `/token`+JWKS+`/_console` stay
-        // exempt (D-16). `/simulator` is a fresh prefix (no static-vs-wildcard overlap);
+        // exempt. `/simulator` is a fresh prefix (no static-vs-wildcard overlap);
         // the by-resource route uses a `{*resource_id}` catch-all because ARM ids
         // contain `/`. The audit data served here is NEVER injected into ARM bodies
-        // (D-17) — this is the only drift-audit surface.
+        // — this is the only drift-audit surface.
         .route("/simulator/drift", get(handlers::drift::list_drift))
         .route(
             "/simulator/drift/{batch_id}",
@@ -209,43 +217,43 @@ pub fn build_router_without_sim(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), metrics::record_metrics))
         .with_state(state.clone());
 
-    // The `/_console` dashboard AND the token mint + JWKS (Plan 10-04) are merged
+    // The `/_console` dashboard AND the token mint + JWKS are merged
     // OUTSIDE the bearer layer: the console must load in a plain browser, and
     // `/token` + JWKS must be reachable with NO auth header to bootstrap a token
-    // even when `--enforce-auth` is ON (D-11, the token-to-get-a-token deadlock
+    // even when `--enforce-auth` is ON (the token-to-get-a-token deadlock
     // avoidance). Neither sub-router inherits the `bearer_auth`/`record_metrics`
     // layers above.
-    // NOTE: `/_sim` (Phase 14, WAPI-04) is NOT merged here — it is added by the caller
+    // NOTE: `/_sim` is NOT merged here — it is added by the caller
     // [`build_router`] on this SAME bearer-exempt, uninstrumented seam. Keeping the `/_sim`
     // merge out of this baseline is exactly what lets `arm_byte_identical` compare a genuine
-    // pre-merge router against the merged one (D-17). `/_sim` sits on the exempt seam — NOT
+    // pre-merge router against the merged one. `/_sim` sits on the exempt seam — NOT
     // inside `arm` (that is where the drift audit reads sit, INSIDE the bearer gate,
-    // deliberately not mirrored — D-02) — and is a fresh `nest("/_sim", …)` prefix with its
-    // own scoped JSON-404 fallback, so it cannot shadow an ARM route (D-12.4) and the `arm`
+    // deliberately not mirrored) — and is a fresh `nest("/_sim", …)` prefix with its
+    // own scoped JSON-404 fallback, so it cannot shadow an ARM route and the `arm`
     // router (which keeps NO fallback) never hits the two-fallbacks merge panic.
     arm.merge(console::router(state.clone()))
         .merge(handlers::token::router(state))
 }
 
-/// Bind and serve the mock server (PLAT-05, D-15/D-16).
+/// Bind and serve the mock server.
 ///
 /// The default (`tls == false`) path is a single plain-HTTP bind: one
 /// [`build_router`] served by `axum::serve` on `{host}:{http_port}`. The `host`
-/// defaults to loopback `127.0.0.1` (SEC-HIGH-3); pass `0.0.0.0` to bind every
+/// defaults to loopback `127.0.0.1`; pass `0.0.0.0` to bind every
 /// interface. Nothing touches `tls_port` and no cert is generated — this
-/// preserves the any-Bearer HTTP scanner contract (invariant 3 / RESEARCH Pitfall 5).
+/// preserves the any-Bearer HTTP scanner contract.
 ///
 /// When `tls == true`, the SAME `Router` is ALSO served over HTTPS on
 /// `{host}:{tls_port}` via `axum_server::bind_rustls`, using an **ephemeral
 /// in-memory** self-signed cert (CN/SAN = `localhost`, `127.0.0.1`) generated fresh
-/// at startup by `rcgen` — never written to disk (D-16). Both listeners run
+/// at startup by `rcgen` — never written to disk. Both listeners run
 /// concurrently over one `tokio::try_join!`; either erroring brings the process down.
 ///
 /// Extracted from `main.rs` so integration tests can drive the real dual bind
 /// (`tests/tls.rs`). One rustls stack only: the `ring` provider (see `Cargo.toml`).
-/// Build a `host:port` bind address (SEC-HIGH-3). The default host is the
+/// Build a `host:port` bind address. The default host is the
 /// loopback `127.0.0.1`; an explicit `0.0.0.0` binds all interfaces. Pure +
-/// std-only so it is unit-testable DB-free (Nyquist).
+/// std-only so it is unit-testable DB-free.
 pub fn bind_addr(host: &str, port: u16) -> String {
     format!("{host}:{port}")
 }
@@ -275,7 +283,7 @@ pub async fn apply_schema_batch(pool: &sqlx::PgPool, sql: &str) -> Result<(), sq
     Ok(())
 }
 
-/// Idempotently provision the Phase-10 identity tables (`synthetic.principals`,
+/// Idempotently provision the identity tables (`synthetic.principals`,
 /// `synthetic.role_assignments`) by applying `sql/005_identity.sql`. Safe to run on
 /// every boot: the migration is `CREATE ... IF NOT EXISTS` + a guarded-FK `DO` block,
 /// a no-op on an already-migrated schema. This PROVISIONS the (possibly empty) tables
@@ -290,14 +298,14 @@ pub async fn ensure_identity_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
     apply_schema_batch(pool, SQL_005).await
 }
 
-/// Idempotently provision the Phase-11 drift tables (`synthetic.drift_batches`,
+/// Idempotently provision the drift tables (`synthetic.drift_batches`,
 /// `synthetic.drift_records`) AND the `synthetic.resources.drift_deleted_at`
 /// soft-delete column by applying `sql/006_drift.sql`. Safe to run on every boot:
 /// the migration is `CREATE ... IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS` + a
 /// guarded-FK `DO` block, a no-op on an already-migrated schema. This PROVISIONS the
 /// `drift_deleted_at` column so the list/detail soft-delete filter
 /// (`AND drift_deleted_at IS NULL`) never references a missing relation/column on a
-/// volume provisioned before Phase 11 (RESEARCH Pitfall 2) — it never masks a missing
+/// volume provisioned before the drift schema existed — it never masks a missing
 /// column as empty business data. Requires the `synthetic` schema to already exist
 /// (the caller confirms a tenant first).
 ///
@@ -308,12 +316,12 @@ pub async fn ensure_drift_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error>
     apply_schema_batch(pool, SQL_006).await
 }
 
-/// Idempotently provision the Phase-14 Web Console metadata column
+/// Idempotently provision the Web Console metadata column
 /// (`synthetic.tenant.profile_name`) by applying `sql/007_web_metadata.sql`. Safe to run
 /// on every boot: the migration is a single `ADD COLUMN IF NOT EXISTS`, a no-op on an
 /// already-migrated schema. This PROVISIONS the nullable `profile_name` column so the
 /// `/_sim/summary` handler's `SELECT ... profile_name ...` never references a missing
-/// column on a volume provisioned before Phase 14 (WAPI-03 / D-14) — an un-set column
+/// column on a volume provisioned before this column existed — an un-set column
 /// simply reads NULL (⇒ `profile: null`), it never masks a missing column as empty data.
 /// Requires the `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
@@ -362,6 +370,244 @@ pub async fn ensure_arm_overlay_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::
     arm_overlay_inventory(pool)
         .await
         .map_err(sqlx::Error::Protocol)
+}
+
+/// Idempotently provision the resolver substrate by applying `sql/010_arm_resolver.sql`:
+/// the `storage_mode` provenance column on `synthetic.drift_batches`, the two per-kind
+/// resolved views (`synthetic.arm_resolved_resources` — the liveness authority —
+/// and `synthetic.arm_resolved_resource_groups`), and the `(target_kind, id_lower)` overlay
+/// resolution index.
+///
+/// Safe to run on every boot. The migration uses `CREATE OR REPLACE VIEW`, `CREATE INDEX
+/// IF NOT EXISTS`, and a guarded `DO` block for the column, so it is a no-op on an
+/// already-migrated schema; the preamble prepended by this function takes a
+/// transaction-scoped advisory lock (a key DISTINCT from the sql/009 key) so racing boots
+/// all succeed. It touches NOTHING on the populated `synthetic.resources` table.
+///
+/// Requires `ensure_arm_overlay_schema` (the views union against `synthetic.arm_overlay`
+/// and the index is built on it) and the base + drift schemas to already exist — so this
+/// runs AFTER `ensure_arm_overlay_schema` and BEFORE `AppState`/`serve_dual`.
+///
+/// Boundary: this only PROVISIONS the resolver seam. It changes NO reader and NO
+/// writer — the ARM handler `FROM`-swap and the drift re-point land in later releases.
+///
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// with a transaction-scoped preamble prepended HERE rather than in the `.sql` file so
+/// `sql/010` stays honest under Docker initdb autocommit. Mirrors the Python twin
+/// `writer.ensure_arm_resolver_schema`. After the DDL applies, [`arm_resolver_inventory`]
+/// deep-verifies the resulting views/column-types/column/index and fails boot loudly if a
+/// malformed pre-existing object was left intact.
+pub async fn ensure_arm_resolver_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    const SQL_010: &str = include_str!("../../sql/010_arm_resolver.sql");
+    // Transaction-scoped preamble (see `ensure_arm_overlay_schema`) — a DISTINCT advisory
+    // key from the 009 key so a 009 apply and a 010 apply do not needlessly serialize, while
+    // concurrent 010 applies still serialize with each other. Both revert/release on commit.
+    const PREAMBLE: &str = "SET LOCAL lock_timeout = '3s';\n\
+        SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_resolver:010'));\n";
+    apply_schema_batch(pool, &format!("{PREAMBLE}{SQL_010}")).await?;
+    arm_resolver_inventory(pool)
+        .await
+        .map_err(sqlx::Error::Protocol)
+}
+
+/// Deep structural-completeness inventory for the resolver substrate. Because
+/// `CREATE OR REPLACE VIEW` silently keeps a mis-shaped pre-existing view (and a re-apply
+/// can leave a stale definition from an aborted upgrade), boot must independently verify
+/// every required element and fail LOUDLY (naming the first bad element)
+/// rather than serve on a corrupt resolver seam:
+///   * both resolved views exist (`to_regclass`);
+///   * each view exposes its EXACT enumerated typed column contract (so a missing or
+///     mistyped column that would break `sqlx::query_as::<_, ResourceRow>` decode is
+///     caught) — views carry no NOT NULL, so only column name + `data_type` are asserted;
+///   * `synthetic.drift_batches.storage_mode` exists as `TEXT NOT NULL DEFAULT 'synthetic'`;
+///   * the `idx_arm_overlay_kind_id` overlay resolution index exists.
+///
+/// Returns `Ok(())` on a correctly-provisioned substrate; `Err(String)` naming the first
+/// missing / mistyped element otherwise. All catalog queries are PG11-safe.
+pub async fn arm_resolver_inventory(pool: &sqlx::PgPool) -> Result<(), String> {
+    // --- 1. Both resolved views exist -----------------------------------------------------
+    for view in ["arm_resolved_resources", "arm_resolved_resource_groups"] {
+        let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("synthetic.{view}"))
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("arm_resolver inventory: probing view {view} failed: {e}"))?;
+        if reg.is_none() {
+            return Err(format!(
+                "arm_resolver inventory: missing view synthetic.{view}"
+            ));
+        }
+    }
+
+    // --- 2. Each view's EXACT enumerated typed column contract ----------------------------
+    // The resource view MUST decode into `ResourceRow`'s 8-column SELECT (id, name, type,
+    // location, tags, sku, kind, properties) via `->>`(text)/`->`(jsonb); the internal
+    // scope/state columns are carried too. A UNION-ALL view resolves each column to a
+    // single type, so `information_schema.columns.data_type` is the byte-decode contract.
+    let resource_cols: &[(&str, &str)] = &[
+        ("id", "text"),
+        ("name", "text"),
+        ("type", "text"),
+        ("location", "text"),
+        ("tags", "jsonb"),
+        ("sku", "jsonb"),
+        ("kind", "text"),
+        ("properties", "jsonb"),
+        ("subscription_id", "uuid"),
+        ("resource_group_name", "text"),
+        ("provisioning_state", "text"),
+        ("managed_by", "text"),
+    ];
+    verify_view_columns(pool, "arm_resolved_resources", resource_cols).await?;
+
+    let rg_cols: &[(&str, &str)] = &[
+        ("id", "text"),
+        ("name", "text"),
+        ("location", "text"),
+        ("tags", "jsonb"),
+        ("provisioning_state", "text"),
+        ("subscription_id", "uuid"),
+    ];
+    verify_view_columns(pool, "arm_resolved_resource_groups", rg_cols).await?;
+
+    // --- 3. drift_batches.storage_mode: TEXT NOT NULL DEFAULT 'synthetic' -----------------
+    let sm: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns \
+         WHERE table_schema = 'synthetic' AND table_name = 'drift_batches' \
+           AND column_name = 'storage_mode'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("arm_resolver inventory: probing storage_mode failed: {e}"))?;
+    match sm {
+        None => {
+            return Err(
+                "arm_resolver inventory: missing column synthetic.drift_batches.storage_mode"
+                    .to_string(),
+            );
+        }
+        Some((data_type, is_nullable, default)) => {
+            if data_type != "text" {
+                return Err(format!(
+                    "arm_resolver inventory: storage_mode has type {data_type:?}, expected \"text\""
+                ));
+            }
+            if is_nullable != "NO" {
+                return Err(format!(
+                    "arm_resolver inventory: storage_mode is_nullable={is_nullable:?}, expected \"NO\""
+                ));
+            }
+            // The FAIL-SAFE default: an unstamped batch reads as legacy ('synthetic') and
+            // trips the boot guard rather than being silently trusted as overlay.
+            match default {
+                Some(d) if d.contains("synthetic") => {}
+                other => {
+                    return Err(format!(
+                        "arm_resolver inventory: storage_mode default {other:?} must default to 'synthetic'"
+                    ));
+                }
+            }
+        }
+    }
+
+    // --- 4. The overlay resolution index exists -------------------------------------------
+    let idx: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('synthetic.idx_arm_overlay_kind_id')::text")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("arm_resolver inventory: probing overlay index failed: {e}"))?;
+    if idx.is_none() {
+        return Err(
+            "arm_resolver inventory: missing index synthetic.idx_arm_overlay_kind_id".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Verify a resolved view exposes exactly the expected enumerated columns with the expected
+/// `information_schema.columns.data_type`, failing loudly on the first missing / mistyped
+/// column. Views carry no NOT NULL, so nullability is intentionally NOT asserted.
+async fn verify_view_columns(
+    pool: &sqlx::PgPool,
+    view: &str,
+    expected: &[(&str, &str)],
+) -> Result<(), String> {
+    for (col, ty) in expected {
+        let data_type: Option<String> = sqlx::query_scalar(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = 'synthetic' AND table_name = $1 AND column_name = $2",
+        )
+        .bind(view)
+        .bind(col)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("arm_resolver inventory: probing {view}.{col} failed: {e}"))?;
+        match data_type {
+            None => {
+                return Err(format!(
+                    "arm_resolver inventory: view {view} missing column {col}"
+                ));
+            }
+            Some(dt) if dt != *ty => {
+                return Err(format!(
+                    "arm_resolver inventory: view {view} column {col} has type {dt:?}, expected {ty:?}"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The provenance-based fail-closed boot-guard probe SQL. A SINGLE read-only round trip:
+/// two `EXISTS` sub-selects OR'd together. Extracted as a `const` so a DB-free unit test
+/// (`assert_no_legacy_inplace_drift_query_shape`) can assert its shape — both EXISTS clauses,
+/// the mandatory `storage_mode = 'synthetic'` provenance conjunct, and ZERO DDL keywords — so a
+/// refactor can never silently turn it into an index-creating / table-altering statement that
+/// reintroduces the ACCESS-EXCLUSIVE startup deadlock.
+///
+/// Both sub-selects run under `ACCESS SHARE` only. On a clean post-cutover tenant
+/// `drift_deleted_at` is all-NULL, so the second EXISTS seq-scans `synthetic.resources` once
+/// (read-only, ~sub-second at 520K) — acceptable for a one-time boot check. NO index is added.
+const D12_GUARD_PROBE_SQL: &str = "SELECT \
+    EXISTS(SELECT 1 FROM synthetic.drift_batches \
+           WHERE storage_mode = 'synthetic' AND reverted_at IS NULL) \
+    OR \
+    EXISTS(SELECT 1 FROM synthetic.resources WHERE drift_deleted_at IS NOT NULL)"; // SYNRES-ALLOW[schema/provisioning]: fail-closed boot guard probes the raw baseline for the retired drift_deleted_at column
+
+/// Provenance-based FAIL-CLOSED boot guard (mandatory safety net for the
+/// reset-cutover). This release does NOT migrate historical in-place drift; instead, a tenant still
+/// carrying legacy in-place drift (applied by the pre-v3 binary) must refuse to boot rather than
+/// silently serve stale/invisible drift.
+///
+/// Fails closed iff there is an ACTIVE legacy in-place drift batch
+/// (`storage_mode = 'synthetic' AND reverted_at IS NULL`) OR any `synthetic.resources` row with
+/// `drift_deleted_at IS NOT NULL`. The `storage_mode = 'synthetic'` conjunct is NON-NEGOTIABLE:
+/// an active OVERLAY batch (`storage_mode = 'overlay'`, the new apply-drift path) must NOT
+/// trip the guard — a `reverted_at IS NULL`-only probe would brick a valid
+/// post-cutover tenant on the first restart after legitimate overlay drift. The
+/// provenance marker is exactly what lets a valid overlay-drift tenant boot.
+///
+/// On a dirty tenant returns `Err` carrying the EXACT locked message, so the caller propagates
+/// it and `serve_dual` is never reached (the server never binds). The probe is a single
+/// read-only round trip that issues NO DDL — no `ALTER`, no `CREATE INDEX` — so it cannot
+/// reintroduce the ACCESS-EXCLUSIVE startup deadlock. Runs at boot AFTER
+/// [`ensure_arm_resolver_schema`] (needs `storage_mode`) and BEFORE building `AppState`.
+pub async fn assert_no_legacy_inplace_drift(pool: &sqlx::PgPool) -> Result<(), String> {
+    let dirty: bool = sqlx::query_scalar(D12_GUARD_PROBE_SQL)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("fail-closed boot guard probe failed: {e}"))?;
+    if dirty {
+        // Byte-exact locked message (do NOT reword) — the operator's actionable next step.
+        return Err(
+            "Applied in-place drift detected. Revert drift or regenerate the tenant before \
+             restarting."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Deep structural-completeness inventory for `synthetic.arm_overlay`. Because
@@ -959,7 +1205,7 @@ pub async fn serve_dual(
         return Ok(());
     }
 
-    // Opt-in HTTPS: ephemeral in-memory self-signed cert (D-16), one shared Router.
+    // Opt-in HTTPS: ephemeral in-memory self-signed cert, one shared Router.
     use axum_server::tls_rustls::RustlsConfig;
     use rcgen::generate_simple_self_signed;
 
@@ -968,7 +1214,7 @@ pub async fn serve_dual(
     // a second provider, leaving rustls unable to auto-select one — it then panics
     // inside `from_pem` ("Could not automatically determine the process-level
     // CryptoProvider"). Installing the default once removes that ambiguity and keeps
-    // a single TLS stack (T-08-02-V6). `install_default` errors only if a provider
+    // a single TLS stack. `install_default` errors only if a provider
     // is already installed, which is fine — we ignore that.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -1007,9 +1253,56 @@ pub async fn serve_dual(
 mod tests {
     use super::bind_addr;
 
+    /// The fail-closed boot guard is a READ. Assert the extracted probe
+    /// SQL is the exact both-EXISTS conjunction and carries ZERO DDL — so a refactor can never
+    /// silently turn it into an index-creating / table-altering statement that reintroduces the
+    /// ACCESS-EXCLUSIVE startup deadlock. DB-free: inspects the extracted const.
+    #[test]
+    fn assert_no_legacy_inplace_drift_query_shape() {
+        let sql = super::D12_GUARD_PROBE_SQL;
+        let upper = sql.to_uppercase();
+
+        // Exactly two EXISTS sub-selects, OR'd together.
+        assert_eq!(
+            upper.matches("EXISTS").count(),
+            2,
+            "probe must be two EXISTS sub-selects"
+        );
+        assert!(upper.contains(" OR "), "the two EXISTS clauses must be OR'd");
+
+        // The MANDATORY provenance conjunction: a `reverted_at IS NULL`-only probe WITHOUT the
+        // `storage_mode = 'synthetic'` conjunct would brick a valid overlay-drift tenant on the
+        // first restart after legitimate overlay drift (non-negotiable).
+        assert!(
+            sql.contains("storage_mode = 'synthetic'"),
+            "provenance conjunct required"
+        );
+        assert!(
+            sql.contains("reverted_at IS NULL"),
+            "active-batch predicate required"
+        );
+        assert!(
+            sql.contains("drift_deleted_at IS NOT NULL"),
+            "soft-delete predicate required"
+        );
+
+        // Zero DDL — the probe must never take ACCESS EXCLUSIVE at boot.
+        for kw in ["CREATE", "ALTER", "INDEX", "DROP", "TRUNCATE"] {
+            assert!(
+                !upper.contains(kw),
+                "guard probe must issue no DDL (found {kw})"
+            );
+        }
+        // A single statement (no multi-statement batch).
+        assert!(
+            !sql.contains(';'),
+            "guard probe must be a single statement"
+        );
+    }
+
     #[test]
     fn bind_addr_defaults_to_loopback() {
-        // SEC-HIGH-3: the default host yields a loopback bind, NOT 0.0.0.0.
+        // The default host yields a loopback bind, NOT 0.0.0.0.
         assert_eq!(bind_addr("127.0.0.1", 8080), "127.0.0.1:8080");
     }
 

@@ -3,8 +3,8 @@
 //!
 //! `serve_dual` (in `lib.rs`) keeps the no-`--tls` path byte-identical to v1 (a
 //! single `axum::serve` on `--port`) and, only when `--tls` is set, ALSO binds
-//! HTTPS on `--tls-port` with an ephemeral in-memory self-signed cert (PLAT-05,
-//! D-15/D-16). The shared seam lets `tests/tls.rs` drive the real dual bind.
+//! HTTPS on `--tls-port` with an ephemeral in-memory self-signed cert.
+//! The shared seam lets `tests/tls.rs` drive the real dual bind.
 
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let cli = Cli::parse();
 
-    // Cap connections as a DoS guard (Security Domain, RESEARCH L565) and apply the
+    // Cap connections as a DoS guard and apply the
     // server-wide DB execution budgets: a session-level `statement_timeout` on EVERY pooled
     // connection (so a runaway query on any handler — not just cost — is cancelled, ⇒ a 504
     // via the SQLSTATE-57014 mapping), and an `acquire_timeout` so pool exhaustion fails
@@ -48,9 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read the single served tenant_id once at startup (the sim has one tenant) so
     // the signer's v1.0 `iss` embeds it, then generate the ephemeral RS256 key
     // BEFORE building AppState (mirrors the TLS cert in `serve_dual`). The key lives
-    // only in memory, inside the hot-swappable `SharedSigner` handle below (D-08).
+    // only in memory, inside the hot-swappable `SharedSigner` handle below.
     //
-    // Phase 17 (D-09, RESEARCH Pitfall 3): an initialized-but-EMPTY `synthetic` schema
+    // An initialized-but-EMPTY `synthetic` schema
     // (migrations applied, `synthetic.tenant` still empty — the post-`reset` state) must
     // BOOT, not crash. `fetch_optional` tolerates zero rows and we fall back to
     // `Uuid::nil()`; the ARM read handlers already query `synthetic.*` directly and return
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .unwrap_or_else(uuid::Uuid::nil);
 
     // Startup schema preflight: idempotently provision the identity tables so a volume
-    // provisioned before Phase 10 (or by an older --no-identity generate) serves RBAC
+    // provisioned before the identity tables existed (or by an older --no-identity generate) serves RBAC
     // (empty) instead of 500ing on a missing relation. We PROVISION — never mask. Loud +
     // actionable if provisioning itself fails. Runs AFTER the tenant_id ok_or so the
     // `synthetic` schema is confirmed to exist (sql/005 assumes it).
@@ -83,9 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Startup schema preflight: idempotently provision the drift tables + the
     // `synthetic.resources.drift_deleted_at` soft-delete column so a volume provisioned
-    // before Phase 11 (or before this plan's `tenantless generate`) serves list/detail
+    // before the drift tables existed (or before an older `tenantless generate`) serves list/detail
     // WITHOUT 500ing on the missing `drift_deleted_at` column referenced by the
-    // soft-delete filter (RESEARCH Pitfall 2 — the filter must NOT land before the
+    // soft-delete filter (the filter must NOT land before the
     // column exists). We PROVISION — never mask. Runs AFTER `ensure_identity_schema`
     // and BEFORE `serve_dual` so `drift_deleted_at` exists before any list/detail SELECT.
     tenantless_server::ensure_drift_schema(&pool)
@@ -100,9 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })?;
 
     // Startup schema preflight: idempotently provision the Web Console metadata column
-    // (`synthetic.tenant.profile_name`) so a volume provisioned before Phase 14 (or by an
+    // (`synthetic.tenant.profile_name`) so a volume provisioned before this column existed (or by an
     // older `tenantless generate`) serves `/_sim/summary` WITHOUT referencing a missing
-    // `profile_name` column (WAPI-03 / D-14). We PROVISION — never mask; an un-set column
+    // `profile_name` column. We PROVISION — never mask; an un-set column
     // reads NULL ⇒ `profile: null`. The ALTER targets `synthetic.tenant` (1 row) and is
     // nullable-no-default → metadata-only fast path (minimal lock). Runs AFTER
     // `ensure_drift_schema` and BEFORE `serve_dual` so `profile_name` exists before any
@@ -138,13 +138,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         })?;
 
+    // Startup schema preflight: idempotently provision the resolver substrate
+    // (`synthetic.drift_batches.storage_mode` + the two resolved views
+    // `synthetic.arm_resolved_resources` / `synthetic.arm_resolved_resource_groups` + the
+    // `(target_kind, id_lower)` overlay index) so the ARM readers have the liveness
+    // authority + resolution seam to build on. We PROVISION — never mask; and the
+    // structural inventory inside `ensure_arm_resolver_schema` fails LOUDLY on a malformed
+    // view/column/index rather than serving on a corrupt resolver seam. The migration is
+    // additive + idempotent + touches NOTHING on the populated `synthetic.resources` table.
+    // Runs AFTER `ensure_arm_overlay_schema` (the views union against `synthetic.arm_overlay`,
+    // the index is built on it) and BEFORE building `AppState`.
+    tenantless_server::ensure_arm_resolver_schema(&pool)
+        .await
+        .map_err(|e| {
+            format!(
+                "arm resolver schema preflight (sql/010_arm_resolver.sql) failed: {e}. The \
+             database is reachable and has a tenant, but the resolver substrate \
+             (`synthetic.arm_resolved_resources` / `synthetic.arm_resolved_resource_groups` + \
+             `storage_mode` + the overlay index) could not be provisioned or failed its \
+             structural inventory. Check the DB role's CREATE privilege on schema `synthetic`, \
+             or run `tenantless init-db` to (re)provision (the resolver is NOT provisioned by \
+             `tenantless generate`)."
+            )
+        })?;
+
+    // Provenance-based FAIL-CLOSED boot guard (mandatory safety net for the
+    // reset-cutover). This release does NOT migrate historical in-place drift — so a tenant still
+    // carrying legacy in-place drift applied by the pre-v3 binary (an ACTIVE
+    // `storage_mode='synthetic'` drift batch, or any `synthetic.resources.drift_deleted_at`)
+    // must REFUSE to boot rather than silently serve stale/invisible drift. An ACTIVE OVERLAY
+    // batch (`storage_mode='overlay'`, the new apply-drift path) NEVER trips it — the provenance
+    // marker is exactly what lets a valid post-cutover tenant boot. The probe is a single
+    // read-only round trip (two EXISTS, ACCESS SHARE) that issues NO DDL, so it cannot
+    // reintroduce the ACCESS-EXCLUSIVE startup deadlock. Runs AFTER
+    // `ensure_arm_resolver_schema` (needs `storage_mode`) and BEFORE building `SharedSigner`/
+    // `AppState`, so on a dirty tenant `serve_dual` is never reached and the server never binds.
+    // The `String` error (the byte-exact locked message) surfaces verbatim as the boxed `main`
+    // error via `?` (`From<String> for Box<dyn Error + Send + Sync>`).
+    tenantless_server::assert_no_legacy_inplace_drift(&pool).await?;
+
     // The run's signer, wrapped in a HOT-SWAPPABLE shared handle (IAM staleness fix): the
     // control plane rebuilds it after a tenant-mutating job so the served identity tracks the
     // current tenant, not this boot-time one. `AppState` and the `ControlPlane` below hold
     // clones of the SAME handle.
     let signer = SharedSigner::new(JwtSigner::ephemeral(&tenant_id)?);
 
-    // Phase 17 (CTRL-05, D-02): arm the control plane BEFORE moving `cli` fields into
+    // Arm the control plane BEFORE moving `cli` fields into
     // AppState. `arm` is FAIL-CLOSED — disabled → `None` (read-only posture unchanged);
     // `--enable-control-plane` WITHOUT a non-empty token → `Err`, propagated here as a
     // clear startup error (the server never arms without a secret). The `String` error
@@ -158,9 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         base_url: cli.base_url,
         metrics: Metrics::new(),
         signer,
-        // Default OFF — any-Bearer preserved until Plan 10-04 wires the swap (D-11).
+        // Default OFF — any-Bearer preserved until the auth swap is wired in.
         enforce_auth: cli.enforce_auth,
-        // `Some` only when armed (D-02); `build_router` merges `/_control` iff `Some`.
+        // `Some` only when armed; `build_router` merges `/_control` iff `Some`.
         control,
     };
 

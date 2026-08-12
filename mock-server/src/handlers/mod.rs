@@ -15,7 +15,7 @@ pub use authorization::{get_role_definition, list_role_assignments, list_role_de
 pub use cost::{cost_query, cost_query_scoped};
 pub use drift::{by_resource, get_batch, list_drift};
 pub use resource_detail::get_resource_detail;
-pub use resource_groups::list_resource_groups;
+pub use resource_groups::{get_resource_group_detail, list_resource_groups};
 pub use resources::{list_resources, list_rg_resources};
 pub use sim::{list_dependencies, list_violations, summary};
 pub use subscriptions::list_subscriptions;

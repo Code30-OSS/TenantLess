@@ -1,0 +1,8 @@
+-- Positive-control fixture for tests/test_reader_inventory_gate.py.
+--
+-- An UNMARKED raw read of synthetic.resources. The scanner, fed this file's
+-- content, MUST return exactly one violation. It is a .txt (not a scanned
+-- source suffix) and lives under tests/ (outside the enforced scan roots), so
+-- it can never make the real-tree gate go red — it is only ever handed to the
+-- scanner explicitly by the positive-control test.
+SELECT id FROM synthetic.resources WHERE 1=1;

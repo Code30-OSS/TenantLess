@@ -1,14 +1,14 @@
-//! Control-plane integration suite (Phase 17, CTRL-05/CTRL-06).
+//! Control-plane integration suite.
 //!
-//! Covers the interface-defining contracts every later Phase-17 plan builds on:
+//! Covers the interface-defining contracts every later control-plane plan builds on:
 //!   * fail-closed arming (`arm_decision`) — DB-free unit assertions;
-//!   * the lowercase `JobStatus` wire contract the frontend keys on (D-17);
-//!   * empty-tenant read tolerance (D-09) — an initialized-but-empty `synthetic`
+//!   * the lowercase `JobStatus` wire contract the frontend keys on;
+//!   * empty-tenant read tolerance — an initialized-but-empty `synthetic`
 //!     schema serves `{value:[]}` instead of crashing;
-//!   * disarmed posture (D-02/D-06) — with `control: None` the `/_control/*` routes
+//!   * disarmed posture — with `control: None` the `/_control/*` routes
 //!     are absent (`/_control/probe` → 404), the default read-only surface;
-//!   * the constant-time control-token gate (D-01, added in Task 2);
-//!   * safe-name + pre-spawn validation contracts (D-03, added in Task 3).
+//!   * the constant-time control-token gate;
+//!   * safe-name + pre-spawn validation contracts.
 //!
 //! Like every server integration test, this spins an EPHEMERAL testcontainers
 //! Postgres (never the `:5433` dev DB — pytest/generator truncation hazard).
@@ -50,7 +50,7 @@ async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgre
     (pool, container)
 }
 
-/// A DISARMED `AppState` (`control: None`) — the default read-only posture (D-02).
+/// A DISARMED `AppState` (`control: None`) — the default read-only posture.
 fn disarmed_state(pool: &PgPool) -> AppState {
     AppState {
         pool: pool.clone(),
@@ -102,10 +102,10 @@ async fn control_request(
 }
 
 // ---------------------------------------------------------------------------
-// Task 1 — arming + AppState.control + empty-tenant startup + JobStatus wire
+// arming + AppState.control + empty-tenant startup + JobStatus wire
 // ---------------------------------------------------------------------------
 
-/// D-09: an initialized-but-empty `synthetic` schema (schema provisioned, ZERO tenant
+/// An initialized-but-empty `synthetic` schema (schema provisioned, ZERO tenant
 /// rows) builds a router WITHOUT panicking, and an ARM list returns `200 {value:[]}`.
 #[tokio::test]
 async fn startup_tolerates_empty_tenant() {
@@ -125,7 +125,7 @@ async fn startup_tolerates_empty_tenant() {
     );
 }
 
-/// D-02/D-06: with `control: None` the `/_control/*` routes are NOT merged, so
+/// With `control: None` the `/_control/*` routes are NOT merged, so
 /// `GET /_control/probe` is a 404 (routes absent, not 403) — the default posture.
 #[tokio::test]
 async fn disarmed_router_has_no_control() {
@@ -140,7 +140,7 @@ async fn disarmed_router_has_no_control() {
     );
 }
 
-/// D-02: fail-closed arming. Disabled → `Ok(None)`; enabled + missing/empty/whitespace
+/// Fail-closed arming. Disabled → `Ok(None)`; enabled + missing/empty/whitespace
 /// token → `Err` (naming the flags); enabled + non-empty → `Ok(Some(digest))`.
 #[test]
 fn arming_requires_nonempty_token() {
@@ -162,7 +162,7 @@ fn arming_requires_nonempty_token() {
     assert_eq!(d, job::digest("secret"));
 }
 
-/// D-17: `JobStatus` serializes lowercase — the exact wire strings the frontend keys on.
+/// `JobStatus` serializes lowercase — the exact wire strings the frontend keys on.
 /// The serde default would emit `"Queued"`, breaking the key match.
 #[test]
 fn job_status_serializes_lowercase() {
@@ -185,10 +185,10 @@ fn job_status_serializes_lowercase() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2 — constant-time control-token gate + /probe + conditional merge
+// constant-time control-token gate + /probe + conditional merge
 // ---------------------------------------------------------------------------
 
-/// D-01/CTRL-05: an armed `/_control/probe` rejects a missing/wrong `X-Control-Token`
+/// An armed `/_control/probe` rejects a missing/wrong `X-Control-Token`
 /// with a 401 `InvalidControlToken` ApiError and accepts the configured token (200).
 #[tokio::test]
 async fn control_token_gate() {
@@ -196,7 +196,7 @@ async fn control_token_gate() {
     common::seed_fixture(&pool).await;
     let app = build_router(armed_state(&pool, TEST_TOKEN));
 
-    // No token → 401 InvalidControlToken (the ApiError envelope, D-17).
+    // No token → 401 InvalidControlToken (the ApiError envelope).
     let (s, body) = control_request(app.clone(), "GET", "/_control/probe", None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "missing token → 401");
     assert_eq!(body["error"]["code"], "InvalidControlToken");
@@ -212,7 +212,7 @@ async fn control_token_gate() {
     assert_eq!(body["armed"], true);
 }
 
-/// D-17/CTRL-06: merging `/_control` (armed) must NOT alter ARM bytes. This is the
+/// Merging `/_control` (armed) must NOT alter ARM bytes. This is the
 /// armed companion to `tests/sim.rs::arm_byte_identical` (which runs disarmed): it builds
 /// a disarmed and an armed router over the SAME pool+signer, proves `/_control` is genuinely
 /// present only when armed (the non-tautological discriminator), and asserts a representative
@@ -260,12 +260,12 @@ async fn control_merge_keeps_arm_byte_identical() {
     assert_eq!(s1, s2, "ARM list status identical with /_control merged");
     assert_eq!(
         b1, b2,
-        "ARM list body identical with /_control merged (D-17/CTRL-06)"
+        "ARM list body identical with /_control merged"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Task 3 — pre-spawn validation contracts (safe-name + caps, reject before spawn)
+// pre-spawn validation contracts (safe-name + caps, reject before spawn)
 // ---------------------------------------------------------------------------
 
 /// Extract the fixed 400 message from an `ApiError::BadRequest`, panicking on any other arm.
@@ -289,7 +289,7 @@ fn valid_generate_args() -> GenerateArgs {
     }
 }
 
-/// T-17-01/02 (D-03): the safe-name traversal guard (port of `_is_bare_stem`, restricted to
+/// The safe-name traversal guard (port of `_is_bare_stem`, restricted to
 /// `[A-Za-z0-9_-]`) rejects path syntax / `..` segments and accepts plain stems.
 #[test]
 fn is_safe_name_rejects_paths() {
@@ -301,7 +301,7 @@ fn is_safe_name_rejects_paths() {
     }
 }
 
-/// CTRL-05 (D-03): `validate_generate` returns a fixed 400 (UI-SPEC copy) for out-of-cap
+/// `validate_generate` returns a fixed 400 for out-of-cap
 /// resources / subscriptions / jobs and an unknown profile — and NO job is inserted into the
 /// registry (validation runs strictly BEFORE any spawn seam).
 #[tokio::test]
@@ -348,11 +348,11 @@ async fn validation_rejects_before_spawn() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 17-02 Task 1 — job.rs tokio subprocess runner (concurrent drain, phase
+// job.rs tokio subprocess runner (concurrent drain, phase
 // labels, opportunistic summary parse, never-500 on a bad child).
 // ---------------------------------------------------------------------------
 
-/// D-08: the pure stderr→coarse-phase-label map. Known generator stderr lines map to a
+/// The pure stderr→coarse-phase-label map. Known generator stderr lines map to a
 /// coarse label; an unknown line changes no phase (None).
 #[test]
 fn phase_label_map() {
@@ -377,7 +377,7 @@ fn phase_label_map() {
     assert_eq!(job::phase_label(""), None);
 }
 
-/// D-08: the opportunistic stdout summary parse. The exact `generate` summary line parses
+/// The opportunistic stdout summary parse. The exact `generate` summary line parses
 /// to {tenant_id, subscriptions, resource_groups, resources, violations}; a garbled line → None.
 #[test]
 fn parse_generate_summary_extracts_counts() {
@@ -392,12 +392,12 @@ fn parse_generate_summary_extracts_counts() {
     assert_eq!(v["resources"], 20);
     assert_eq!(v["violations"], 4);
 
-    // A garbled / non-summary line yields None (parse-failure is non-fatal, D-08).
+    // A garbled / non-summary line yields None (parse-failure is non-fatal).
     assert!(job::parse_generate_summary("just some log chatter").is_none());
     assert!(job::parse_generate_summary("Generated tenant abc: incomplete").is_none());
 }
 
-/// D-08/D-15: a runner pointed at a NONEXISTENT command finalizes the job as `Failed` with a
+/// A runner pointed at a NONEXISTENT command finalizes the job as `Failed` with a
 /// log line — no panic, no 500. This is a first-class path (missing binary), not an edge case.
 #[tokio::test]
 async fn run_records_failure_on_missing_binary() {
@@ -431,7 +431,7 @@ async fn run_records_failure_on_missing_binary() {
     );
 }
 
-/// P1-B regression (17-UAT): a job that OUTLIVES the wall-clock timeout while keeping a pipe
+/// Regression: a job that OUTLIVES the wall-clock timeout while keeping a pipe
 /// open must NOT deadlock the runner. On the buggy code the drain tasks `join!` before the
 /// child is killed, so — with the child still alive holding stdout/stderr open — the two drains
 /// never return, `join!` blocks forever, the timeout kill is never reached, the job never
@@ -508,7 +508,7 @@ async fn run_timeout_releases_write_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 17-02 Task 2 — generate + analyze handlers (validate → permit → spawn → 202;
+// generate + analyze handlers (validate → permit → spawn → 202;
 // single-writer 409; job poll). Uses the SAME `ControlPlane` instance in the router
 // state so the test can inspect the shared registry.
 // ---------------------------------------------------------------------------
@@ -568,8 +568,8 @@ fn generate_body() -> serde_json::Value {
     })
 }
 
-/// CTRL-01/D-06: a valid generate POST validates, acquires the permit, inserts ONE job, and
-/// returns 202 `{job_id}`; the job is poll-able with a lowercase wire status (D-17).
+/// A valid generate POST validates, acquires the permit, inserts ONE job, and
+/// returns 202 `{job_id}`; the job is poll-able with a lowercase wire status.
 #[tokio::test]
 async fn control_generate_starts_job() {
     let (pool, _pg) = start_pg().await;
@@ -594,7 +594,7 @@ async fn control_generate_starts_job() {
         "exactly one job is registered"
     );
 
-    // Poll-able: GET /_control/jobs/{id} → 200 with a LOWERCASE status string (D-17).
+    // Poll-able: GET /_control/jobs/{id} → 200 with a LOWERCASE status string.
     let (s, jb) = control_request(
         app,
         "GET",
@@ -611,7 +611,7 @@ async fn control_generate_starts_job() {
     assert_eq!(jb["id"].as_str(), Some(job_id.as_str()));
 }
 
-/// CR-01 (D-12): the analyze→generate handoff. `generate_argv` MUST pass a NON-bundled derived
+/// The analyze→generate handoff. `generate_argv` MUST pass a NON-bundled derived
 /// profile as the RESOLVED `<profiles>/<name>.json` path (so the Python `resolve_profile` step-1
 /// `Path(..).is_file()` matches), NOT the bare stem (which is neither a cwd-relative path nor
 /// bundled → `UsageError`, so every derived generate would fail). A bundled profile still passes
@@ -625,7 +625,7 @@ async fn generate_argv_resolves_derived_profile_path() {
     std::fs::write(cp.dirs.profiles.join("derived-acme.json"), b"{}")
         .expect("write derived profile");
 
-    // Non-bundled derived profile → the resolved <profiles>/<name>.json path (CR-01).
+    // Non-bundled derived profile → the resolved <profiles>/<name>.json path.
     let mut a = valid_generate_args();
     a.profile = "derived-acme".to_string();
     let argv = generate_argv(&a, &cp);
@@ -642,11 +642,11 @@ async fn generate_argv_resolves_derived_profile_path() {
         .to_string();
     assert_eq!(
         passed, &expected,
-        "a derived profile must be passed as the resolved <profiles>/<name>.json path (CR-01)"
+        "a derived profile must be passed as the resolved <profiles>/<name>.json path"
     );
     assert_ne!(
         passed, "derived-acme",
-        "must NOT pass the bare stem (Python resolve_profile → UsageError, the D-12 loop break)"
+        "must NOT pass the bare stem (Python resolve_profile → UsageError, the loop break)"
     );
 
     // Bundled profile → still the bare stem (the CLI resolves it from the packaged profiles).
@@ -664,7 +664,7 @@ async fn generate_argv_resolves_derived_profile_path() {
     );
 }
 
-/// WR-03 (T-17-05): the control token MUST NOT be inherited by any spawned child. The server
+/// The control token MUST NOT be inherited by any spawned child. The server
 /// arms via `TENANTLESS_CONTROL_TOKEN` (the recommended env path), which `tokio::process::Command`
 /// inherits by default — so every child builder (pipeline generate/analyze + pg_dump/pg_restore)
 /// must `env_remove` it. Each builder's env must carry an EXPLICIT removal of the token key.
@@ -686,14 +686,14 @@ async fn child_env_omits_control_token() {
     let pipe = tenantless_server::control::pipeline_command(&cp, "generate");
     assert!(
         scrubs_token(&pipe),
-        "the pipeline child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+        "the pipeline child must not inherit TENANTLESS_CONTROL_TOKEN"
     );
 
     // The pg_dump (save) child.
     let dump = tenantless_server::snapshot::dump_command(&cp, "snap1");
     assert!(
         scrubs_token(&dump),
-        "the pg_dump child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+        "the pg_dump child must not inherit TENANTLESS_CONTROL_TOKEN"
     );
 
     // The pg_restore (decode) child.
@@ -704,7 +704,7 @@ async fn child_env_omits_control_token() {
     );
     assert!(
         scrubs_token(&decode),
-        "the pg_restore decode child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+        "the pg_restore decode child must not inherit TENANTLESS_CONTROL_TOKEN"
     );
 
     // The psql (restore apply) child.
@@ -715,11 +715,11 @@ async fn child_env_omits_control_token() {
     );
     assert!(
         scrubs_token(&apply),
-        "the psql apply child must not inherit TENANTLESS_CONTROL_TOKEN (WR-03)"
+        "the psql apply child must not inherit TENANTLESS_CONTROL_TOKEN"
     );
 }
 
-/// CTRL-01/D-11: with the single-writer permit already held (a destructive job "running"), a
+/// With the single-writer permit already held (a destructive job "running"), a
 /// second POST /_control/generate → 409 `ControlBusy` and NO second job is inserted.
 #[tokio::test]
 async fn single_writer_409() {
@@ -749,7 +749,7 @@ async fn single_writer_409() {
     );
 }
 
-/// CTRL-01/D-12: POST /_control/analyze against an allowlisted DuckDB source → 202; after the
+/// POST /_control/analyze against an allowlisted DuckDB source → 202; after the
 /// job runs, the derived profile lands in the profiles dir and passes `profile_allowed` (so it
 /// appears in the generate allowlist).
 #[tokio::test]
@@ -784,7 +784,7 @@ async fn control_analyze_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 17-02 Task 3 — read-only source + profile enumeration (token-gated,
+// read-only source + profile enumeration (token-gated,
 // safe-name filtered; feed the AnalyzeForm SOURCE / GenerateForm PROFILE selects).
 // ---------------------------------------------------------------------------
 
@@ -798,7 +798,7 @@ fn names_of(body: &serde_json::Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// T-17-02b (D-03/D-12): GET /_control/sources returns safe-name `*.duckdb` stems from the
+/// GET /_control/sources returns safe-name `*.duckdb` stems from the
 /// server-owned sources dir; unsafe-name and non-`.duckdb` entries are excluded (bare stems,
 /// never paths).
 #[tokio::test]
@@ -827,7 +827,7 @@ async fn list_sources_returns_safe_duckdb() {
     );
 }
 
-/// T-17-02b (D-03/D-12): GET /_control/profiles lists bundled `enterprise` + `small` plus
+/// GET /_control/profiles lists bundled `enterprise` + `small` plus
 /// safe-name `*.json` stems in the profiles dir; unsafe-name and non-`.json` excluded.
 #[tokio::test]
 async fn list_profiles_includes_bundled() {
@@ -857,7 +857,7 @@ async fn list_profiles_includes_bundled() {
     assert!(!names.contains(&"ignore".to_string()), "non-.json excluded");
 }
 
-/// T-17-02b (CTRL-05): GET /_control/sources with no / a wrong `X-Control-Token` → 401
+/// GET /_control/sources with no / a wrong `X-Control-Token` → 401
 /// `InvalidControlToken` (same gate + ApiError contract as every control route).
 #[tokio::test]
 async fn list_sources_token_gated() {
@@ -874,10 +874,10 @@ async fn list_sources_token_gated() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 17-04 Task 1 — reset-to-empty (CTRL-03, D-09) + the empty-tenant ARM
+// reset-to-empty + the empty-tenant ARM
 // read-path proof. `reset` TRUNCATEs synthetic.* under the single-writer gate;
 // afterward ARM lists 200-empty, detail 404s, /_sim/summary zeros, and a fresh
-// router over the now-empty schema still boots (the 17-01 startup-tolerance proof).
+// router over the now-empty schema still boots (the startup-tolerance proof).
 // ---------------------------------------------------------------------------
 
 /// Poll `GET /_control/jobs/{id}` until it reaches `want` (panics on the opposite terminal
@@ -904,10 +904,10 @@ async fn await_status(app: &Router, job_id: &str, want: &str) {
     panic!("job {job_id} never reached {want:?}");
 }
 
-/// CTRL-03 (D-03/D-09/D-11): a seeded tenant, then POST /_control/reset → after the job
+/// A seeded tenant, then POST /_control/reset → after the job
 /// succeeds the ARM read path serves an EMPTY tenant (list 200 `{value:[]}`, a resource
 /// detail GET 404 `ResourceNotFound`, `/_sim/summary` zeros) — not a crash — and a FRESH
-/// router built over the now-empty schema still boots and serves the empties (the 17-01
+/// router built over the now-empty schema still boots and serves the empties (the
 /// startup-tolerance proof).
 #[tokio::test]
 async fn empty_tenant_read_path() {
@@ -971,7 +971,7 @@ async fn empty_tenant_read_path() {
     assert_eq!(b3["totals"]["resources"], 0);
     assert_eq!(b3["tenantId"], serde_json::Value::Null, "no active tenant");
 
-    // A FRESH router over the now-empty schema still boots and serves empties (17-01 D-09).
+    // A FRESH router over the now-empty schema still boots and serves empties.
     let app2 = build_router(disarmed_state(&pool));
     let (s4, b4) = common::request(app2, "GET", "/subscriptions", Some("t")).await;
     assert_eq!(
@@ -982,7 +982,7 @@ async fn empty_tenant_read_path() {
     assert_eq!(b4["value"], serde_json::json!([]));
 }
 
-/// CTRL-03 (D-11): with the single-writer permit already held (an in-flight destructive
+/// With the single-writer permit already held (an in-flight destructive
 /// job), POST /_control/reset → 409 `ControlBusy` and NO job is inserted.
 #[tokio::test]
 async fn reset_serializes_under_gate() {
@@ -1018,14 +1018,14 @@ async fn reset_serializes_under_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan 17-04 Task 2 — pg_dump/pg_restore snapshots (CTRL-04, D-04/D-05/D-13/D-14):
+// pg_dump/pg_restore snapshots:
 // safe-name-guarded save/restore/delete under the single-writer gate, the DSN via
 // PG* env (never argv), the missing-binary path a first-class clean `failed` job, and
 // a full-state (incl. drift) round-trip that hot-swaps the served tenant.
 // ---------------------------------------------------------------------------
 
 /// True if `bin --version` can be spawned (the client tool is on PATH). `pg_dump`/`pg_restore`
-/// are NOT on this dev box (RESEARCH Env Availability) — the round-trip skips cleanly then.
+/// are NOT on this dev box (the default) — the round-trip skips cleanly then.
 fn binary_present(bin: &str) -> bool {
     std::process::Command::new(bin)
         .arg("--version")
@@ -1033,7 +1033,7 @@ fn binary_present(bin: &str) -> bool {
         .is_ok()
 }
 
-/// T-17-02 (D-13): every snapshot op safe-name-validates BEFORE touching the filesystem or
+/// Every snapshot op safe-name-validates BEFORE touching the filesystem or
 /// spawning a subprocess — an unsafe name is a fixed 400 and NO job is inserted. `save` takes
 /// the name in the JSON body (so `../evil` is testable); `restore`/`delete` take a routable
 /// unsafe stem (`bad..name`) in the path.
@@ -1081,7 +1081,7 @@ async fn snapshot_name_rejects_paths() {
     );
 }
 
-/// T-17-04 (D-13, Pitfall 4): a snapshot `save` when `pg_dump` cannot dump (absent binary OR
+/// A snapshot `save` when `pg_dump` cannot dump (absent binary OR
 /// unreachable DSN — the default `armed_control_plane` uses a placeholder DSN) ends the job
 /// `failed` with a logged cause and the server STAYS UP (no 500/panic). The missing-binary
 /// path is a first-class outcome, not an edge case.
@@ -1101,7 +1101,7 @@ async fn snapshot_missing_binary_fails_clean() {
     assert_eq!(
         status,
         StatusCode::ACCEPTED,
-        "save → 202 (the job is accepted; failure surfaces in the job record, D-17)"
+        "save → 202 (the job is accepted; failure surfaces in the job record)"
     );
     let job_id = json["job_id"].as_str().expect("save 202 carries a job_id");
 
@@ -1118,7 +1118,7 @@ async fn snapshot_missing_binary_fails_clean() {
     );
 }
 
-/// P1 regression (17-UAT Run 2): `DELETE /_control/snapshots/{name}` MUST serialize under the
+/// Regression: `DELETE /_control/snapshots/{name}` MUST serialize under the
 /// single-writer gate so it cannot race an in-flight restore/save (TOCTOU). `restore` checks the
 /// artifact `is_file()`, TRUNCATEs `synthetic.*`, then hands the path to `pg_restore`; a DELETE
 /// that removes the `.dump` between the check and `pg_restore` makes the restore fail AFTER the
@@ -1155,7 +1155,7 @@ async fn delete_serializes_under_gate() {
     );
 }
 
-/// CTRL-04: with the write gate FREE (idle server), a delete of an existing snapshot → `204`
+/// With the write gate FREE (idle server), a delete of an existing snapshot → `204`
 /// and the artifact is removed (the happy path still works once no job holds the gate).
 #[tokio::test]
 async fn delete_idle_removes_artifact() {
@@ -1174,7 +1174,7 @@ async fn delete_idle_removes_artifact() {
     );
 }
 
-/// CTRL-04 (D-05/D-14): with `pg_dump`/`pg_restore` present, save `s1` → mutate (reset) →
+/// With `pg_dump`/`pg_restore` present, save `s1` → mutate (reset) →
 /// restore `s1` reproduces the FULL served state INCLUDING drift, and the running server
 /// serves the restored tenant with NO restart (hot-swap). Skips cleanly (does NOT fail) when
 /// the client tools are absent — the default state on this dev box.
@@ -1182,7 +1182,7 @@ async fn delete_idle_removes_artifact() {
 async fn snapshot_roundtrip() {
     if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
         eprintln!(
-            "skipping snapshot_roundtrip: pg_dump/pg_restore/psql not on PATH (RESEARCH default)"
+            "skipping snapshot_roundtrip: pg_dump/pg_restore/psql not on PATH (the default)"
         );
         return;
     }
@@ -1191,7 +1191,7 @@ async fn snapshot_roundtrip() {
     tenantless_server::ensure_web_metadata_schema(&pool)
         .await
         .expect("provision web-metadata schema");
-    // Drift rows prove the D-14 full-state capture (drift_records/drift_batches).
+    // Drift rows prove the full-state capture (drift_records/drift_batches).
     let _drift = common::seed_drift_rows(&pool).await;
 
     // A ControlPlane whose DSN points at the SAME container so pg_dump/pg_restore connect there.
@@ -1267,20 +1267,137 @@ async fn snapshot_roundtrip() {
         .expect("count drift post");
     assert_eq!(
         post_drift, pre_drift,
-        "restore reproduced drift_records (D-14)"
+        "restore reproduced drift_records"
     );
 
     let (sfin, bfin) = common::request(app, "GET", "/subscriptions", Some("t")).await;
     assert_eq!(sfin, StatusCode::OK);
     assert!(
         !bfin["value"].as_array().unwrap().is_empty(),
-        "the running server serves the restored tenant hot (D-05, no restart)"
+        "the running server serves the restored tenant hot (no restart)"
     );
 
     // The decode temp is cleaned on every path — no `.restore-*.sql` lingers (RAII).
     assert!(
         no_restore_temp(&cp.dirs.snapshots),
         "the psql-path restore leaves no decoded .restore-*.sql temp behind"
+    );
+}
+
+/// The snapshot RESTORE path carries TWO independent overlay defects the
+/// full-wipe allowlist fix + the snapshot.rs forward-clamp close together —
+///   (a) the pre-load `TRUNCATE` (built from `job::existing_synthetic_tables` → `SYNTHETIC_TABLES`)
+///       omits `synthetic.arm_overlay`, so a target-only `present=true` overlay row ABSENT from
+///       the snapshot SURVIVES the restore (a stale phantom resource leaks into the restored
+///       tenant / risks a PK collision with the snapshot's own overlay rows), and
+///   (b) `pg_dump --data-only --schema=synthetic` captures a `setval` for the standalone
+///       `arm_overlay_revision_seq`, so restoring an OLDER snapshot REWINDS the monotonic
+///       revision counter → revision/ETag REUSE.
+///
+/// This test saves a snapshot of an EMPTY-overlay estate (its dump captures the sequence's
+/// pristine low `setval`), then seeds a target-only present overlay row AND advances the
+/// revision sequence well past the snapshot's value, and restores. It asserts BOTH that the
+/// pre-restore overlay row is GONE (the pre-load TRUNCATE now covers `arm_overlay`) AND that the
+/// revision `last_value` is NON-DECREASING across the restore (the post-load setval-forward
+/// clamp neutralises the data-only dump's rewind). RED on the pre-fix tree for BOTH vectors.
+/// Skips cleanly when the pg client tools are absent (the dev-box default; runs on CI).
+#[tokio::test]
+async fn restore_clears_preexisting_arm_overlay() {
+    if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
+        eprintln!("skipping restore_clears_preexisting_arm_overlay: pg client tools absent");
+        return;
+    }
+    let (pool, container) = start_pg().await;
+    common::seed_fixture(&pool).await;
+    tenantless_server::ensure_web_metadata_schema(&pool)
+        .await
+        .expect("provision web-metadata schema");
+    let _drift = common::seed_drift_rows(&pool).await;
+
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let cp = common::armed_control_plane_with_dsn(&pool, TEST_TOKEN, &dsn);
+    let app = build_router(armed_state_with(&pool, cp.clone()));
+
+    // Save s1 while the overlay is EMPTY (seed_fixture/seed_drift_rows do not write arm_overlay):
+    // the dump captures ZERO overlay rows + the sequence at its pristine (never-advanced) value.
+    let (s, j) = control_post_json(
+        app.clone(),
+        "/_control/snapshots",
+        Some(TEST_TOKEN),
+        &serde_json::json!({ "name": "s1" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "save → 202");
+    await_status(&app, j["job_id"].as_str().unwrap(), "succeeded").await;
+
+    // Seed a TARGET-ONLY present overlay row whose id is absent from the snapshot (its trigger
+    // advances the revision sequence), then advance the sequence further so its `last_value` is
+    // strictly and OBSERVABLY above the snapshot's captured value (a single insert lands at 1,
+    // which equals a pristine sequence's dumped value — advancing makes the rewind numeric).
+    let target_only_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/\
+                          rg-restore/providers/Microsoft.Storage/storageAccounts/ov-target-only";
+    common::insert_present_overlay_row_with_id(&pool, target_only_id, "ov-target-only").await;
+    sqlx::query(
+        "SELECT nextval('synthetic.arm_overlay_revision_seq') FROM generate_series(1, 9)",
+    )
+    .execute(&pool)
+    .await
+    .expect("advance revision sequence above the snapshot's captured value");
+
+    let overlay_before: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+        .fetch_one(&pool)
+        .await
+        .expect("count overlay pre-restore");
+    assert!(overlay_before > 0, "precondition: a target-only overlay row is seeded");
+    let seq_before: i64 =
+        sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
+            .fetch_one(&pool)
+            .await
+            .expect("revision seq last_value pre-restore (S0)");
+    assert!(seq_before > 1, "precondition: the sequence is advanced above the snapshot value");
+
+    // Restore s1: the pre-load TRUNCATE clears the target-only overlay row; the snapshot has no
+    // overlay rows to reload; the post-load setval-forward clamp preserves the revision cursor.
+    let (sre, jre) = control_post_json(
+        app.clone(),
+        "/_control/snapshots/s1/restore",
+        Some(TEST_TOKEN),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(sre, StatusCode::ACCEPTED, "restore → 202");
+    await_status(&app, jre["job_id"].as_str().unwrap(), "succeeded").await;
+
+    // Vector (a): the pre-restore overlay row is GONE — the snapshot's empty overlay replaced it.
+    let overlay_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+        .fetch_one(&pool)
+        .await
+        .expect("count overlay post-restore");
+    assert_eq!(
+        overlay_after, 0,
+        "the pre-load TRUNCATE must clear the target-only overlay row absent from the snapshot"
+    );
+
+    // Vector (b): the monotonic revision sequence did NOT rewind across the restore.
+    let seq_after: i64 =
+        sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
+            .fetch_one(&pool)
+            .await
+            .expect("revision seq last_value post-restore");
+    assert!(
+        seq_after >= seq_before,
+        "arm_overlay_revision_seq rewound across restore ({seq_after} < {seq_before}) — the \
+         data-only dump's setval replayed an older value; revision/ETag reuse"
+    );
+
+    assert!(
+        no_restore_temp(&cp.dirs.snapshots),
+        "a restore leaves no decoded .restore-*.sql temp behind"
     );
 }
 
@@ -1594,7 +1711,7 @@ async fn restore_kill_rolls_back_and_releases_gate() {
 async fn restore_aborts_on_corrupt_archive() {
     if !binary_present("pg_restore") {
         eprintln!(
-            "skipping restore_aborts_on_corrupt_archive: pg_restore not on PATH (RESEARCH default)"
+            "skipping restore_aborts_on_corrupt_archive: pg_restore not on PATH (the default)"
         );
         return;
     }
@@ -1669,7 +1786,7 @@ async fn restore_aborts_on_corrupt_archive() {
 async fn failed_save_leaves_no_artifact() {
     if !binary_present("pg_dump") {
         eprintln!(
-            "skipping failed_save_leaves_no_artifact: pg_dump not on PATH (RESEARCH default)"
+            "skipping failed_save_leaves_no_artifact: pg_dump not on PATH (the default)"
         );
         return;
     }
