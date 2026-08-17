@@ -569,7 +569,7 @@ async fn verify_view_columns(
 ///
 /// Both sub-selects run under `ACCESS SHARE` only. On a clean post-cutover tenant
 /// `drift_deleted_at` is all-NULL, so the second EXISTS seq-scans `synthetic.resources` once
-/// (read-only, ~sub-second at 520K) — acceptable for a one-time boot check. NO index is added.
+/// (read-only, ~sub-second at 500K) — acceptable for a one-time boot check. NO index is added.
 const D12_GUARD_PROBE_SQL: &str = "SELECT \
     EXISTS(SELECT 1 FROM synthetic.drift_batches \
            WHERE storage_mode = 'synthetic' AND reverted_at IS NULL) \
@@ -1268,7 +1268,10 @@ mod tests {
             2,
             "probe must be two EXISTS sub-selects"
         );
-        assert!(upper.contains(" OR "), "the two EXISTS clauses must be OR'd");
+        assert!(
+            upper.contains(" OR "),
+            "the two EXISTS clauses must be OR'd"
+        );
 
         // The MANDATORY provenance conjunction: a `reverted_at IS NULL`-only probe WITHOUT the
         // `storage_mode = 'synthetic'` conjunct would brick a valid overlay-drift tenant on the
@@ -1294,10 +1297,7 @@ mod tests {
             );
         }
         // A single statement (no multi-statement batch).
-        assert!(
-            !sql.contains(';'),
-            "guard probe must be a single statement"
-        );
+        assert!(!sql.contains(';'), "guard probe must be a single statement");
     }
 
     #[test]

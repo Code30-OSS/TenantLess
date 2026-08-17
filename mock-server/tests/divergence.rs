@@ -242,7 +242,10 @@ async fn tombstoned_resource_is_gone_via_both_arm_and_sim() {
     )
     .await;
     let arm_ids = ids(&arm_list);
-    assert!(arm_ids.contains(&live), "ARM lists the live id: {arm_ids:?}");
+    assert!(
+        arm_ids.contains(&live),
+        "ARM lists the live id: {arm_ids:?}"
+    );
     assert!(
         !arm_ids.contains(&ghost),
         "ARM (resolved) HIDES the tombstoned id — the drift is visible: {arm_ids:?}"
@@ -256,8 +259,7 @@ async fn tombstoned_resource_is_gone_via_both_arm_and_sim() {
 
     // --- `/_sim` plane (RESOLVED): the SAME id is ALSO gone. ---
     // search NO LONGER returns it (the console now reads through the resolver)...
-    let (sim_search_status, sim_search) =
-        get_json(&app, "/_sim/resources/search?q=sa-ghost").await;
+    let (sim_search_status, sim_search) = get_json(&app, "/_sim/resources/search?q=sa-ghost").await;
     assert_eq!(sim_search_status, StatusCode::OK, "/_sim search 200s");
     assert!(
         !ids(&sim_search).contains(&ghost),
@@ -310,13 +312,12 @@ async fn drifted_body_is_reflected_on_both_arm_and_sim() {
     .await;
 
     // The raw baseline row is STILL `env=base` / `location=eastus` (never mutated in place).
-    let (baseline_env, baseline_loc): (String, String) = sqlx::query_as(
-        "SELECT tags ->> 'env', location FROM synthetic.resources WHERE id = $1",
-    )
-    .bind(&id)
-    .fetch_one(&pool)
-    .await
-    .expect("baseline row read");
+    let (baseline_env, baseline_loc): (String, String) =
+        sqlx::query_as("SELECT tags ->> 'env', location FROM synthetic.resources WHERE id = $1")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .expect("baseline row read");
     assert_eq!(
         baseline_env, "base",
         "the raw synthetic.resources row is byte-stale/unmutated"
@@ -327,7 +328,11 @@ async fn drifted_body_is_reflected_on_both_arm_and_sim() {
 
     // --- ARM plane (RESOLVED): serves the DRIFTED value. ---
     let (arm_status, arm_detail) = get_json(&app, &id).await;
-    assert_eq!(arm_status, StatusCode::OK, "ARM detail 200s for the drifted id");
+    assert_eq!(
+        arm_status,
+        StatusCode::OK,
+        "ARM detail 200s for the drifted id"
+    );
     assert_eq!(
         arm_detail["tags"]["env"], "drifted",
         "ARM (resolved) serves the overlay/DRIFTED tag — if this becomes 'base', an ARM \

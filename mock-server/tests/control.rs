@@ -258,10 +258,7 @@ async fn control_merge_keeps_arm_byte_identical() {
     let (s2, b2) = common::request(app_armed, "GET", "/subscriptions", Some("t")).await;
     assert_eq!(s1, StatusCode::OK);
     assert_eq!(s1, s2, "ARM list status identical with /_control merged");
-    assert_eq!(
-        b1, b2,
-        "ARM list body identical with /_control merged"
-    );
+    assert_eq!(b1, b2, "ARM list body identical with /_control merged");
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,9 +1178,7 @@ async fn delete_idle_removes_artifact() {
 #[tokio::test]
 async fn snapshot_roundtrip() {
     if !binary_present("pg_dump") || !binary_present("pg_restore") || !binary_present("psql") {
-        eprintln!(
-            "skipping snapshot_roundtrip: pg_dump/pg_restore/psql not on PATH (the default)"
-        );
+        eprintln!("skipping snapshot_roundtrip: pg_dump/pg_restore/psql not on PATH (the default)");
         return;
     }
     let (pool, container) = start_pg().await;
@@ -1265,10 +1260,7 @@ async fn snapshot_roundtrip() {
         .fetch_one(&pool)
         .await
         .expect("count drift post");
-    assert_eq!(
-        post_drift, pre_drift,
-        "restore reproduced drift_records"
-    );
+    assert_eq!(post_drift, pre_drift, "restore reproduced drift_records");
 
     let (sfin, bfin) = common::request(app, "GET", "/subscriptions", Some("t")).await;
     assert_eq!(sfin, StatusCode::OK);
@@ -1342,24 +1334,28 @@ async fn restore_clears_preexisting_arm_overlay() {
     let target_only_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/\
                           rg-restore/providers/Microsoft.Storage/storageAccounts/ov-target-only";
     common::insert_present_overlay_row_with_id(&pool, target_only_id, "ov-target-only").await;
-    sqlx::query(
-        "SELECT nextval('synthetic.arm_overlay_revision_seq') FROM generate_series(1, 9)",
-    )
-    .execute(&pool)
-    .await
-    .expect("advance revision sequence above the snapshot's captured value");
+    sqlx::query("SELECT nextval('synthetic.arm_overlay_revision_seq') FROM generate_series(1, 9)")
+        .execute(&pool)
+        .await
+        .expect("advance revision sequence above the snapshot's captured value");
 
     let overlay_before: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
         .fetch_one(&pool)
         .await
         .expect("count overlay pre-restore");
-    assert!(overlay_before > 0, "precondition: a target-only overlay row is seeded");
+    assert!(
+        overlay_before > 0,
+        "precondition: a target-only overlay row is seeded"
+    );
     let seq_before: i64 =
         sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
             .fetch_one(&pool)
             .await
             .expect("revision seq last_value pre-restore (S0)");
-    assert!(seq_before > 1, "precondition: the sequence is advanced above the snapshot value");
+    assert!(
+        seq_before > 1,
+        "precondition: the sequence is advanced above the snapshot value"
+    );
 
     // Restore s1: the pre-load TRUNCATE clears the target-only overlay row; the snapshot has no
     // overlay rows to reload; the post-load setval-forward clamp preserves the revision cursor.
@@ -1785,9 +1781,7 @@ async fn restore_aborts_on_corrupt_archive() {
 #[tokio::test]
 async fn failed_save_leaves_no_artifact() {
     if !binary_present("pg_dump") {
-        eprintln!(
-            "skipping failed_save_leaves_no_artifact: pg_dump not on PATH (the default)"
-        );
+        eprintln!("skipping failed_save_leaves_no_artifact: pg_dump not on PATH (the default)");
         return;
     }
     let (pool, container) = start_pg().await;

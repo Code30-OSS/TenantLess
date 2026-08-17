@@ -2198,12 +2198,7 @@ mod parity {
         })
     }
 
-    async fn seed_overlay(
-        pool: &PgPool,
-        id: &str,
-        present: bool,
-        body: Option<serde_json::Value>,
-    ) {
+    async fn seed_overlay(pool: &PgPool, id: &str, present: bool, body: Option<serde_json::Value>) {
         sqlx::query(
             "INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body) \
              VALUES ($1, $2, 'resource', 'drift', $3, $4)",
@@ -2308,10 +2303,38 @@ mod parity {
 
         // Baseline: four Storage/eastus rows (drift_deleted_at stays NULL for ALL of them —
         // the ONLY liveness signal is the overlay, so a raw-baseline reader can't see it).
-        seed_resource(&pool, &e.keep, "sa-keep", "Microsoft.Storage/storageAccounts", "eastus").await;
-        seed_resource(&pool, &e.keep2, "sa-keep2", "Microsoft.Storage/storageAccounts", "eastus").await;
-        seed_resource(&pool, &e.tomb, "sa-tomb", "Microsoft.Storage/storageAccounts", "eastus").await;
-        seed_resource(&pool, &e.modr, "sa-mod", "Microsoft.Storage/storageAccounts", "eastus").await;
+        seed_resource(
+            &pool,
+            &e.keep,
+            "sa-keep",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.keep2,
+            "sa-keep2",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.tomb,
+            "sa-tomb",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.modr,
+            "sa-mod",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
 
         // Overlay: tombstone `tomb`; modify `modr` → Compute/westus; appear two overlay-only rows
         // (so live count != baseline count — tombstone −1 does NOT cancel with a single appear).
@@ -2320,14 +2343,24 @@ mod parity {
             &pool,
             &e.modr,
             true,
-            Some(overlay_body(&e.modr, "sa-mod", "Microsoft.Compute/virtualMachines", "westus")),
+            Some(overlay_body(
+                &e.modr,
+                "sa-mod",
+                "Microsoft.Compute/virtualMachines",
+                "westus",
+            )),
         )
         .await;
         seed_overlay(
             &pool,
             &e.appear,
             true,
-            Some(overlay_body(&e.appear, "sa-appear", "Microsoft.Storage/storageAccounts", "centralus")),
+            Some(overlay_body(
+                &e.appear,
+                "sa-appear",
+                "Microsoft.Storage/storageAccounts",
+                "centralus",
+            )),
         )
         .await;
         let appear2 = rid("sa-appear-two");
@@ -2335,7 +2368,12 @@ mod parity {
             &pool,
             &appear2,
             true,
-            Some(overlay_body(&appear2, "sa-appear-two", "Microsoft.Storage/storageAccounts", "centralus")),
+            Some(overlay_body(
+                &appear2,
+                "sa-appear-two",
+                "Microsoft.Storage/storageAccounts",
+                "centralus",
+            )),
         )
         .await;
 
@@ -2367,7 +2405,10 @@ mod parity {
     }
 
     async fn scalar(pool: &PgPool, sql: &str) -> i64 {
-        sqlx::query_scalar(sql).fetch_one(pool).await.expect("scalar count")
+        sqlx::query_scalar(sql)
+            .fetch_one(pool)
+            .await
+            .expect("scalar count")
     }
 
     // -----------------------------------------------------------------------------------
@@ -2380,9 +2421,16 @@ mod parity {
 
         // --- totals.resources: the RESOLVED live count, and it MUST differ from the raw
         //     baseline (tombstone dropped, two appears added) — the RED discriminator. ---
-        let resolved = scalar(&pool, "SELECT count(*) FROM synthetic.arm_resolved_resources").await;
+        let resolved = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.arm_resolved_resources",
+        )
+        .await;
         let baseline = scalar(&pool, "SELECT count(*) FROM synthetic.resources").await;
-        assert_ne!(resolved, baseline, "estate must drift so the two readers disagree");
+        assert_ne!(
+            resolved, baseline,
+            "estate must drift so the two readers disagree"
+        );
         assert_eq!(
             body["totals"]["resources"].as_i64().unwrap(),
             resolved,
@@ -2437,9 +2485,21 @@ mod parity {
                 .find(|b| b["location"].as_str() == Some(name))
                 .and_then(|b| b["count"].as_i64())
         };
-        assert_eq!(loc("westus"), Some(1), "modified resource resolves to westus");
-        assert_eq!(loc("centralus"), Some(2), "both appeared overlays resolve to centralus");
-        assert_eq!(loc("eastus"), Some(2), "only the two live baseline rows remain in eastus");
+        assert_eq!(
+            loc("westus"),
+            Some(1),
+            "modified resource resolves to westus"
+        );
+        assert_eq!(
+            loc("centralus"),
+            Some(2),
+            "both appeared overlays resolve to centralus"
+        );
+        assert_eq!(
+            loc("eastus"),
+            Some(2),
+            "only the two live baseline rows remain in eastus"
+        );
 
         // --- search: tombstone ABSENT, appear PRESENT, modified matches its RESOLVED type. ---
         let search = |uri: String| {
@@ -2501,10 +2561,15 @@ mod parity {
         )
         .await;
         let raw_viol = scalar(&pool, "SELECT count(*) FROM synthetic.violations").await;
-        assert_ne!(live_viol, raw_viol, "the tombstoned resource owns a violation, so live < raw");
+        assert_ne!(
+            live_viol, raw_viol,
+            "the tombstoned resource owns a violation, so live < raw"
+        );
 
         // summary totals.violations DECREMENTS to the live-resource count (NOT the raw total).
-        let total_viol = body["totals"]["violations"].as_i64().expect("totals.violations");
+        let total_viol = body["totals"]["violations"]
+            .as_i64()
+            .expect("totals.violations");
         assert_eq!(
             total_viol, live_viol,
             "totals.violations counts ONLY live-resource findings (tombstone's finding excluded)"
@@ -2597,7 +2662,10 @@ mod parity {
         )
         .await;
         let raw_deps = scalar(&pool, "SELECT count(*) FROM synthetic.dependencies").await;
-        assert_ne!(live_deps, raw_deps, "tombstoned-endpoint edges must drop the live count below raw");
+        assert_ne!(
+            live_deps, raw_deps,
+            "tombstoned-endpoint edges must drop the live count below raw"
+        );
 
         // summary totals.dependencies applies the SAME both-endpoint liveness filter.
         assert_eq!(
@@ -2631,7 +2699,10 @@ mod parity {
 
         // Retained: both endpoints live.
         assert!(has(&e.keep, &e.keep2), "live→live edge retained");
-        assert!(has(&e.modr, &e.keep2), "modified-but-live→live edge retained");
+        assert!(
+            has(&e.modr, &e.keep2),
+            "modified-but-live→live edge retained"
+        );
         // Case-insensitivity RETAIN: an UPPER-cased live endpoint must NOT drop the edge.
         assert!(
             has(&e.keep.to_uppercase(), &e.keep2),

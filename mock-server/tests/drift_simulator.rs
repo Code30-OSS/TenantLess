@@ -525,13 +525,12 @@ async fn drift_soft_delete_excluded() {
 
     // (3) the baseline row is STILL in `synthetic.resources` (baseline immutability): it is
     // hidden purely via the overlay tombstone, not deleted from the baseline table.
-    let still_present: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM synthetic.resources WHERE id = $1",
-    )
-    .bind(&hidden)
-    .fetch_one(&pool)
-    .await
-    .expect("count hidden row");
+    let still_present: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM synthetic.resources WHERE id = $1")
+            .bind(&hidden)
+            .fetch_one(&pool)
+            .await
+            .expect("count hidden row");
     assert_eq!(
         still_present, 1,
         "the baseline row survives (hidden via the overlay tombstone, not deleted)"

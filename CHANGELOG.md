@@ -52,7 +52,7 @@ schema. Writes are still not enabled by default.
 ### Verified
 
 - Byte-identity on an empty overlay, plus full-visit keyset pagination and `$filter` traversal,
-  re-validated against a ~520K-resource mixed baseline/overlay/tombstone estate — no regression
+  re-validated against a ~500K-resource mixed baseline/overlay/tombstone estate — no regression
   from the resolver at scale, and the `EXPLAIN` aggregate-scale gate holds on PostgreSQL 16.
 
 ## 1.3.0 — ARM overlay/tombstone/revision substrate

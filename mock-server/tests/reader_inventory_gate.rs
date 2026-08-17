@@ -345,7 +345,11 @@ fn find_violations(text: &str, lang: &str) -> Vec<(usize, String, String)> {
         if occ_lines.contains(&m) || occ_lines.contains(&(m + 1)) {
             continue;
         }
-        violations.push((m + 1, "floating".to_string(), raw_lines[m].trim().to_string()));
+        violations.push((
+            m + 1,
+            "floating".to_string(),
+            raw_lines[m].trim().to_string(),
+        ));
     }
 
     violations
@@ -412,7 +416,11 @@ fn load_manifest() -> Vec<(String, String, usize)> {
             continue;
         }
         let parts: Vec<&str> = line.split('\t').collect();
-        assert_eq!(parts.len(), 3, "manifest row must be name<TAB>lang<TAB>count: {line:?}");
+        assert_eq!(
+            parts.len(),
+            3,
+            "manifest row must be name<TAB>lang<TAB>count: {line:?}"
+        );
         out.push((
             parts[0].to_string(),
             parts[1].to_string(),
@@ -427,10 +435,19 @@ fn load_manifest() -> Vec<(String, String, usize)> {
 // =========================================================================== //
 #[test]
 fn positive_control_planted_raw_reader_is_flagged() {
-    let content = read_normalized(&repo_root().join("tests").join("fixtures").join("planted_raw_reader.txt"))
-        .expect("planted fixture readable");
+    let content = read_normalized(
+        &repo_root()
+            .join("tests")
+            .join("fixtures")
+            .join("planted_raw_reader.txt"),
+    )
+    .expect("planted fixture readable");
     let v = find_violations(&content, "sql");
-    assert_eq!(v.len(), 1, "planted reader must yield exactly one violation: {v:?}");
+    assert_eq!(
+        v.len(),
+        1,
+        "planted reader must yield exactly one violation: {v:?}"
+    );
     assert_eq!(v[0].1, "unmarked");
 }
 
@@ -440,8 +457,16 @@ fn positive_control_marker_validation() {
         let text = format!("cur.execute(\"SELECT id FROM synthetic.resources\")  # {marker}");
         find_violations(&text, "python").len()
     };
-    assert_eq!(case("SYNRES-ALLOW[reset]: a valid non-empty reason"), 0, "valid marker accepted");
-    assert_eq!(case("SYNRES-ALLOW[bogus]: some reason"), 1, "unknown category rejected");
+    assert_eq!(
+        case("SYNRES-ALLOW[reset]: a valid non-empty reason"),
+        0,
+        "valid marker accepted"
+    );
+    assert_eq!(
+        case("SYNRES-ALLOW[bogus]: some reason"),
+        1,
+        "unknown category rejected"
+    );
     assert_eq!(case("SYNRES-ALLOW[reset]:"), 1, "missing reason rejected");
     assert_eq!(case("SYNRES-ALLOW[reset]"), 1, "bare (no colon) rejected");
 }
@@ -463,9 +488,15 @@ fn positive_control_regex_safety() {
         "SELECT * FROM synthetic.resource_groups",
         "ALTER TABLE x DROP CONSTRAINT resources_pkey",
     ] {
-        assert!(find_violations(probe, "sql").is_empty(), "must not match: {probe}");
+        assert!(
+            find_violations(probe, "sql").is_empty(),
+            "must not match: {probe}"
+        );
     }
-    assert_eq!(find_violations("SELECT * FROM synthetic.resources", "sql").len(), 1);
+    assert_eq!(
+        find_violations("SELECT * FROM synthetic.resources", "sql").len(),
+        1
+    );
 }
 
 /// Negative control: the gate genuinely PANICS when a planted bypass is asserted green — proving
@@ -475,7 +506,10 @@ fn positive_control_regex_safety() {
 fn negative_control_gate_can_fail() {
     let planted = "SELECT id FROM synthetic.resources WHERE 1=1";
     let v = find_violations(planted, "sql");
-    assert!(v.is_empty(), "planted bypass must be caught (this assert is expected to fire)");
+    assert!(
+        v.is_empty(),
+        "planted bypass must be caught (this assert is expected to fire)"
+    );
 }
 
 // =========================================================================== //
@@ -484,12 +518,19 @@ fn negative_control_gate_can_fail() {
 #[test]
 fn parity_golden_fixtures_match_shared_manifest() {
     let manifest = load_manifest();
-    assert!(!manifest.is_empty(), "shared manifest is empty — parity would be vacuous");
+    assert!(
+        !manifest.is_empty(),
+        "shared manifest is empty — parity would be vacuous"
+    );
     for (name, lang, expected) in manifest {
         let path = golden_dir().join(&name);
-        let text = read_normalized(&path).unwrap_or_else(|| panic!("missing golden fixture {name}"));
+        let text =
+            read_normalized(&path).unwrap_or_else(|| panic!("missing golden fixture {name}"));
         let got = find_violations(&text, &lang).len();
-        assert_eq!(got, expected, "parity mismatch on {name}: expected {expected}, got {got}");
+        assert_eq!(
+            got, expected,
+            "parity mismatch on {name}: expected {expected}, got {got}"
+        );
     }
 }
 
@@ -499,7 +540,10 @@ fn parity_golden_fixtures_match_shared_manifest() {
 #[test]
 fn scanner_covers_a_meaningful_number_of_files() {
     let n = candidate_files().len();
-    assert!(n > 50, "only {n} files scanned -- the sweep is not finding the tree");
+    assert!(
+        n > 50,
+        "only {n} files scanned -- the sweep is not finding the tree"
+    );
 }
 
 #[test]

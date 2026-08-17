@@ -39,10 +39,7 @@ const SUB: &str = "11111111-1111-1111-1111-111111111111";
 
 /// Start an ephemeral Postgres container and return a connected pool plus the container
 /// guard (kept alive for the test's duration). Mirrors the `start_pg` in the other suites.
-async fn start_pg() -> (
-    PgPool,
-    testcontainers::ContainerAsync<postgres::Postgres>,
-) {
+async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgres>) {
     let container = postgres::Postgres::default()
         .start()
         .await

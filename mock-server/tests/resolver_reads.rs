@@ -20,8 +20,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serde_json::Value;
-use sqlx::PgPool;
 use sqlx::Executor;
+use sqlx::PgPool;
 use tenantless_server::{build_router, metrics::Metrics, state::AppState};
 use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
 use tower::ServiceExt;
@@ -243,7 +243,11 @@ async fn tombstone_absent_from_list_and_404_on_detail() {
     let app = seeded_router(pool);
 
     // rg-scoped list omits the tombstoned id, keeps the live one.
-    let (_s, list) = get_json(&app, &format!("/subscriptions/{SUB}/resourceGroups/rg-t/resources")).await;
+    let (_s, list) = get_json(
+        &app,
+        &format!("/subscriptions/{SUB}/resourceGroups/rg-t/resources"),
+    )
+    .await;
     let seen = ids(&list);
     assert!(seen.contains(&live), "live id present: {seen:?}");
     assert!(!seen.contains(&gone), "tombstoned id omitted: {seen:?}");
@@ -276,14 +280,27 @@ async fn overlay_replace_returns_overlay_body() {
     let (status, body) = get_json(&app, &id).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["tags"]["env"], "drifted", "overlay tags win on detail");
-    assert_eq!(body["location"], "westus", "overlay location wins on detail");
+    assert_eq!(
+        body["location"], "westus",
+        "overlay location wins on detail"
+    );
 
     // rg-scoped list returns the overlay body for the same id (exactly once).
-    let (_s, list) = get_json(&app, &format!("/subscriptions/{SUB}/resourceGroups/rg-r/resources")).await;
+    let (_s, list) = get_json(
+        &app,
+        &format!("/subscriptions/{SUB}/resourceGroups/rg-r/resources"),
+    )
+    .await;
     let arr = list["value"].as_array().unwrap();
-    let matches: Vec<&Value> = arr.iter().filter(|r| r["id"] == Value::String(id.clone())).collect();
+    let matches: Vec<&Value> = arr
+        .iter()
+        .filter(|r| r["id"] == Value::String(id.clone()))
+        .collect();
     assert_eq!(matches.len(), 1, "the replaced id appears exactly once");
-    assert_eq!(matches[0]["tags"]["env"], "drifted", "overlay tags win in list");
+    assert_eq!(
+        matches[0]["tags"]["env"], "drifted",
+        "overlay tags win in list"
+    );
 }
 
 // --------------------------------------------------------------------------------------- //
@@ -298,7 +315,13 @@ async fn overlay_appear_present_in_scoped_list_and_detail() {
 
     // No baseline row for this id — the overlay is the ONLY source (create-forward shape).
     let id = res_id("rg-appear", "sa-new");
-    insert_overlay(&pool, &id, true, Some(overlay_body(&id, "sa-new", "appeared"))).await;
+    insert_overlay(
+        &pool,
+        &id,
+        true,
+        Some(overlay_body(&id, "sa-new", "appeared")),
+    )
+    .await;
 
     let app = seeded_router(pool);
 
@@ -308,8 +331,11 @@ async fn overlay_appear_present_in_scoped_list_and_detail() {
     assert_eq!(body["tags"]["env"], "appeared");
 
     // rg-scoped list includes it (resource_group_name derived from the id).
-    let (_s, list) =
-        get_json(&app, &format!("/subscriptions/{SUB}/resourceGroups/rg-appear/resources")).await;
+    let (_s, list) = get_json(
+        &app,
+        &format!("/subscriptions/{SUB}/resourceGroups/rg-appear/resources"),
+    )
+    .await;
     assert!(ids(&list).contains(&id), "appear id in rg-scoped list");
 
     // sub-scoped list includes it (subscription_id derived from the id).
@@ -339,8 +365,11 @@ async fn drift_deleted_at_is_not_consulted() {
         StatusCode::OK,
         "a drift_deleted_at row with no overlay tombstone is LIVE (oracle retired)"
     );
-    let (_s, list) =
-        get_json(&app, &format!("/subscriptions/{SUB}/resourceGroups/rg-legacy/resources")).await;
+    let (_s, list) = get_json(
+        &app,
+        &format!("/subscriptions/{SUB}/resourceGroups/rg-legacy/resources"),
+    )
+    .await;
     assert!(
         ids(&list).contains(&id),
         "drift_deleted_at row still listed (drift_deleted_at not consulted)"
@@ -372,10 +401,20 @@ async fn full_visit_pagination_interleaved_returns_each_live_id_once() {
     let app = seeded_router(pool);
 
     // Walk with a small page size so the cursor interleaves around the mutations.
-    let walked = walk_all_ids(&app, &format!("/subscriptions/{SUB}/resourceGroups/rg-page/resources?$top=2")).await;
+    let walked = walk_all_ids(
+        &app,
+        &format!("/subscriptions/{SUB}/resourceGroups/rg-page/resources?$top=2"),
+    )
+    .await;
 
     // Each LIVE id appears exactly once, tombstoned b is absent, order is ascending by id.
     let expected = vec![a.clone(), c.clone(), d.clone(), e.clone()];
-    assert_eq!(walked, expected, "full-visit returns each live id once, ORDER BY id");
-    assert!(!walked.contains(&b), "tombstoned id never appears in a full walk");
+    assert_eq!(
+        walked, expected,
+        "full-visit returns each live id once, ORDER BY id"
+    );
+    assert!(
+        !walked.contains(&b),
+        "tombstoned id never appears in a full walk"
+    );
 }

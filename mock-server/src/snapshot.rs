@@ -402,7 +402,9 @@ pub async fn restore_with_timeout(
             Ok(v) => Some(v),
             Err(e) => {
                 job::with_job(&cp, job_id, |j| {
-                    j.push_log(format!("read of arm_overlay_revision_seq last_value failed: {e}"));
+                    j.push_log(format!(
+                        "read of arm_overlay_revision_seq last_value failed: {e}"
+                    ));
                     j.status = JobStatus::Failed;
                 });
                 return;

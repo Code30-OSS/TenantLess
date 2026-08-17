@@ -34,10 +34,7 @@ use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
 
 /// Start an ephemeral Postgres container and return a connected pool plus the container
 /// guard (kept alive for the test's duration). Mirrors the `start_pg` in the other suites.
-async fn start_pg() -> (
-    PgPool,
-    testcontainers::ContainerAsync<postgres::Postgres>,
-) {
+async fn start_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::Postgres>) {
     let container = postgres::Postgres::default()
         .start()
         .await
@@ -68,7 +65,9 @@ async fn seed_resolver_first_boot(pool: &PgPool) {
 const SUB: &str = "11111111-1111-1111-1111-111111111111";
 
 fn res_id(rg: &str, name: &str) -> String {
-    format!("/subscriptions/{SUB}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}")
+    format!(
+        "/subscriptions/{SUB}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}"
+    )
 }
 
 /// Insert a baseline subscription + resource_group + resource so the view's baseline branch
@@ -240,7 +239,14 @@ async fn resolver_views_shape_matches_base_tables() {
 
     // RG view: id/name/location/tags/provisioning_state equal synthetic.resource_groups';
     // subscription_id is internal (uuid) and matches the base sub column type.
-    for col in ["id", "name", "location", "tags", "provisioning_state", "subscription_id"] {
+    for col in [
+        "id",
+        "name",
+        "location",
+        "tags",
+        "provisioning_state",
+        "subscription_id",
+    ] {
         let base = col_type(&pool, "resource_groups", col).await;
         let view = col_type(&pool, "arm_resolved_resource_groups", col).await;
         assert!(base.is_some(), "base resource_groups.{col} exists");
@@ -253,7 +259,9 @@ async fn resolver_views_shape_matches_base_tables() {
     // The RG view MUST NOT expose a served `type` column (ResourceGroupRow synthesizes the
     // const in Rust) nor `managed_by`.
     assert!(
-        col_type(&pool, "arm_resolved_resource_groups", "type").await.is_none(),
+        col_type(&pool, "arm_resolved_resource_groups", "type")
+            .await
+            .is_none(),
         "the RG view must not carry a `type` column"
     );
 }
@@ -300,13 +308,12 @@ async fn resource_view_decodes_as_resource_row() {
     assert_eq!(location, "westus", "overlay location wins");
 
     // Exactly one row is served for the id (no duplication across branches).
-    let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM synthetic.arm_resolved_resources WHERE id = $1",
-    )
-    .bind(&base_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_resolved_resources WHERE id = $1")
+            .bind(&base_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(n, 1, "the anti-join yields exactly one resolved row per id");
 }
 
@@ -395,13 +402,16 @@ async fn overlay_only_malformed_id_fails_closed() {
     .await
     .unwrap();
     let (sub, rg) = scope.expect("the well-formed overlay-only row is served");
-    assert_eq!(sub, uuid::Uuid::parse_str(SUB).unwrap(), "subscription derived");
+    assert_eq!(
+        sub,
+        uuid::Uuid::parse_str(SUB).unwrap(),
+        "subscription derived"
+    );
     assert_eq!(rg, "rg-derived", "resource_group derived from the id");
 
     // A malformed-id overlay present row (subscription segment is NOT a UUID) is EXCLUDED —
     // never served with a NULL / out-of-scope subscription.
-    let bad_id =
-        "/subscriptions/not-a-uuid/resourceGroups/rg-x/providers/Microsoft.Storage/storageAccounts/res-bad";
+    let bad_id = "/subscriptions/not-a-uuid/resourceGroups/rg-x/providers/Microsoft.Storage/storageAccounts/res-bad";
     insert_overlay(
         &pool,
         bad_id,
@@ -411,14 +421,16 @@ async fn overlay_only_malformed_id_fails_closed() {
     )
     .await
     .expect("the overlay INSERT itself is accepted (id shape is not a sql/009 CHECK)");
-    let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM synthetic.arm_resolved_resources WHERE id = $1",
-    )
-    .bind(bad_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(n, 0, "a malformed-id overlay row fails closed (zero rows served)");
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_resolved_resources WHERE id = $1")
+            .bind(bad_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        n, 0,
+        "a malformed-id overlay row fails closed (zero rows served)"
+    );
 
     // And it NEVER leaks a NULL-scope row into the resolved view.
     let null_scope: i64 = sqlx::query_scalar(
@@ -427,7 +439,10 @@ async fn overlay_only_malformed_id_fails_closed() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(null_scope, 0, "no resolved resource row ever has a NULL subscription");
+    assert_eq!(
+        null_scope, 0,
+        "no resolved resource row ever has a NULL subscription"
+    );
 }
 
 // --------------------------------------------------------------------------------------- //

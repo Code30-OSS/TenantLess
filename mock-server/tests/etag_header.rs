@@ -195,13 +195,17 @@ fn etag_of(headers: &HeaderMap) -> Option<String> {
 
 /// Assert a strong, quoted `"b-<64 lowercase hex>"` token.
 fn assert_b_token(tok: &str) {
-    assert!(tok.starts_with("\"b-"), "not b-prefixed inside quotes: {tok}");
+    assert!(
+        tok.starts_with("\"b-"),
+        "not b-prefixed inside quotes: {tok}"
+    );
     assert!(tok.ends_with('"'), "not quoted: {tok}");
     assert!(!tok.starts_with("W/"), "must never be weak: {tok}");
     let hex = &tok[3..tok.len() - 1];
     assert_eq!(hex.len(), 64, "b- hash must be 64 hex chars: {tok}");
     assert!(
-        hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        hex.chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
         "b- hash must be lowercase hex: {tok}"
     );
 }
@@ -230,7 +234,14 @@ async fn resource_detail_overlay_emits_o_etag() {
     seed_reads_first_boot(&pool).await;
     seed_scope(&pool, "rg-e").await;
     let id = seed_baseline_resource(&pool, "rg-e", "sa-drift").await;
-    insert_overlay(&pool, &id, "resource", true, Some(resource_overlay_body(&id, "sa-drift"))).await;
+    insert_overlay(
+        &pool,
+        &id,
+        "resource",
+        true,
+        Some(resource_overlay_body(&id, "sa-drift")),
+    )
+    .await;
     let rev = overlay_revision(&pool, &id).await;
 
     let app = seeded_router(pool);
@@ -283,7 +294,14 @@ async fn rg_detail_overlay_emits_o_etag() {
     seed_scope(&pool, "rg-over").await;
     let id = rg_id("rg-over");
     // Exercise the RG overlay branch directly (no product RG writer in P21 — test-only).
-    insert_overlay(&pool, &id, "resource_group", true, Some(rg_overlay_body(&id, "rg-over"))).await;
+    insert_overlay(
+        &pool,
+        &id,
+        "resource_group",
+        true,
+        Some(rg_overlay_body(&id, "rg-over")),
+    )
+    .await;
     let rev = overlay_revision(&pool, &id).await;
 
     let app = seeded_router(pool);
@@ -323,17 +341,29 @@ async fn list_responses_carry_no_etag_field_or_header() {
     // Resource list (sub-scoped): no ETag header, no per-item etag field.
     let (status, headers, body) = get_full(&app, &format!("/subscriptions/{SUB}/resources")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(etag_of(&headers).is_none(), "resource list carries no ETag header");
+    assert!(
+        etag_of(&headers).is_none(),
+        "resource list carries no ETag header"
+    );
     for item in body["value"].as_array().unwrap() {
-        assert!(item.get("etag").is_none(), "no per-item etag field in the resource list");
+        assert!(
+            item.get("etag").is_none(),
+            "no per-item etag field in the resource list"
+        );
     }
 
     // RG list: same.
     let (status, headers, body) =
         get_full(&app, &format!("/subscriptions/{SUB}/resourceGroups")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(etag_of(&headers).is_none(), "rg list carries no ETag header");
+    assert!(
+        etag_of(&headers).is_none(),
+        "rg list carries no ETag header"
+    );
     for item in body["value"].as_array().unwrap() {
-        assert!(item.get("etag").is_none(), "no per-item etag field in the rg list");
+        assert!(
+            item.get("etag").is_none(),
+            "no per-item etag field in the rg list"
+        );
     }
 }

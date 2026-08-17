@@ -145,10 +145,8 @@ pub fn assert_no_sort_over(root: &Value, min_rows: u64) {
 /// so this is scoped to a single named relation.
 pub fn assert_no_seqscan_on_relation(root: &Value, schema: &str, relation: &str) {
     let offending = any_node(root, |n| {
-        let is_seq_scan =
-            n.get("Node Type").and_then(|t| t.as_str()) == Some("Seq Scan");
-        let hits_relation =
-            n.get("Relation Name").and_then(|r| r.as_str()) == Some(relation);
+        let is_seq_scan = n.get("Node Type").and_then(|t| t.as_str()) == Some("Seq Scan");
+        let hits_relation = n.get("Relation Name").and_then(|r| r.as_str()) == Some(relation);
         // `Schema` is present on FORMAT-JSON scan nodes; if absent, fall back to the
         // relation-name match (the only `resources` relation is `synthetic.resources`).
         let hits_schema = match n.get("Schema").and_then(|s| s.as_str()) {
@@ -208,10 +206,10 @@ pub fn assert_limit_above_mergeappend(root: &Value) {
 /// Assert the plan contains an ORDER-PRESERVING (Nested Loop) Anti join — the resolved view's
 /// baseline branch is `synthetic.resources b WHERE NOT EXISTS (SELECT 1 FROM arm_overlay o
 /// WHERE o.id_lower = lower(b.id) AND o.target_kind = 'resource')`, i.e. a single anti-join
-/// covering both replace AND tombstone. At 520K the ONLY order-preserving choice is a Nested
+/// covering both replace AND tombstone. At 500K the ONLY order-preserving choice is a Nested
 /// Loop Anti join (baseline scanned in `id` order via `resources_pkey`, the tiny overlay
 /// index-probed per row through `idx_arm_overlay_kind_id`). A `Hash Anti Join` or `Merge Anti
-/// Join` that materializes/re-sorts the 520K baseline would force the full Sort — so
+/// Join` that materializes/re-sorts the 500K baseline would force the full Sort — so
 /// this assertion is what pins the shape. Postgres tags an anti-join with `"Join Type":"Anti"`.
 pub fn assert_order_preserving_anti_join(root: &Value) {
     assert!(
@@ -220,7 +218,7 @@ pub fn assert_order_preserving_anti_join(root: &Value) {
                 && n.get("Node Type").and_then(|t| t.as_str()) == Some("Nested Loop")
         }),
         "expected an ORDER-PRESERVING (Nested Loop) Anti join on the baseline branch; a Hash/\
-         Merge Anti Join would break the MergeAppend ordering and re-sort the 520K baseline \
+         Merge Anti Join would break the MergeAppend ordering and re-sort the 500K baseline \
          If the planner regressed here, DO NOT auto-apply a fix — surface the plan \
          and consider the pre-authorized MATERIALIZED-resolver fallback."
     );
@@ -235,7 +233,7 @@ pub fn assert_order_preserving_anti_join(root: &Value) {
 // on synthetic.resources is EXPECTED, not the regression — same carve-out the total
 // count already gets). What we assert instead is that the resolver does not turn a linear
 // full-estate aggregate into something super-linear: (a) no unbounded Sort (a Sort-based
-// GroupAggregate over the 520K baseline would trip assert_no_sort_over — the group-by must
+// GroupAggregate over the 500K baseline would trip assert_no_sort_over — the group-by must
 // stay a HashAggregate), (b) no Nested-Loop anti-join looping once per baseline row (the
 // quadratic blowup), and (c) the resolved total-count wall-clock stays within a bounded ratio
 // of the raw baseline count. These are invariant-style bounds (measured-then-locked, per the
@@ -259,10 +257,7 @@ fn max_nested_loop_loops(root: &Value) -> u64 {
     let mut worst = 0u64;
     walk(root, &mut |n| {
         if n.get("Node Type").and_then(|t| t.as_str()) == Some("Nested Loop") {
-            let loops = n
-                .get("Actual Loops")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let loops = n.get("Actual Loops").and_then(|v| v.as_u64()).unwrap_or(0);
             if loops > worst {
                 worst = loops;
             }
@@ -273,7 +268,7 @@ fn max_nested_loop_loops(root: &Value) -> u64 {
 
 /// Assert NO `Nested Loop` node iterates at least `max_loops` times — i.e. the baseline↔overlay
 /// anti-join of an UNBOUNDED aggregate did not degrade into a per-baseline-row nested loop
-/// (which would go quadratic over the 520K estate). The healthy shape is a Hash Anti Join.
+/// (which would go quadratic over the 500K estate). The healthy shape is a Hash Anti Join.
 pub fn assert_no_nested_loop_blowup(root: &Value, max_loops: u64) {
     let worst = max_nested_loop_loops(root);
     assert!(
@@ -303,7 +298,7 @@ pub fn assert_time_within_ratio(resolved_ms: f64, baseline_ms: f64, ratio: f64, 
     assert!(
         resolved_ms <= baseline_ms * ratio,
         "resolved total-count took {resolved_ms:.3}ms > {ratio}× the raw baseline count(*) \
-         ({baseline_ms:.3}ms); the resolver added a super-linear cost at 520K scale"
+         ({baseline_ms:.3}ms); the resolver added a super-linear cost at 500K scale"
     );
 }
 
@@ -342,12 +337,12 @@ pub fn assert_groups_match(
 // ---------------------------------------------------------------------------
 
 /// The row count above which a `Sort` node is treated as the regression. The gate
-/// tenant is ~520K baseline rows with a small overlay, so any sort processing >= this many rows
+/// tenant is ~500K baseline rows with a small overlay, so any sort processing >= this many rows
 /// is a full-baseline sort (a tiny sort over the overlay branch is permitted).
 const BASELINE_SORT_FLOOR: u64 = 100_000;
 
 /// Scale gate: the RESOLVED keyset/detail/rg/`$filter` queries stay
-/// index-driven at ~520K — no full baseline Sort; the UNION-ALL view collapses into a
+/// index-driven at ~500K — no full baseline Sort; the UNION-ALL view collapses into a
 /// MergeAppend + an order-preserving Nested Loop Anti join, with the functional indexes hit.
 ///
 /// Runs ONLY when `TENANTLESS_EXPLAIN_GATE_DSN` points at a realistically-scaled **PG16**
@@ -367,9 +362,9 @@ async fn resolver_keyset_index_driven() {
         _ => {
             eprintln!(
                 "SKIP resolver_keyset_index_driven: TENANTLESS_EXPLAIN_GATE_DSN unset -- the \
-                 query-plan gate needs a ~520K PG16 tenant; the PG11 testcontainers fixture is \
+                 query-plan gate needs a ~500K PG16 tenant; the PG11 testcontainers fixture is \
                  NOT plan-representative. A skip is LOCAL-ONLY: the phase gate \
-                 REQUIRES this green against a real 520K PG16 tenant (BLOCKER at phase close)."
+                 REQUIRES this green against a real 500K PG16 tenant (BLOCKER at phase close)."
             );
             return;
         }
@@ -511,9 +506,9 @@ fn gate_dsn(test_name: &str) -> Option<String> {
         _ => {
             eprintln!(
                 "SKIP {test_name}: TENANTLESS_EXPLAIN_GATE_DSN unset -- the aggregate scale gate \
-                 needs a ~520K PG16 mixed baseline/overlay/tombstone tenant; the PG11 \
+                 needs a ~500K PG16 mixed baseline/overlay/tombstone tenant; the PG11 \
                  testcontainers fixture is NOT plan-representative. A skip is \
-                 LOCAL-ONLY: the phase gate REQUIRES this green against a real 520K PG16 tenant \
+                 LOCAL-ONLY: the phase gate REQUIRES this green against a real 500K PG16 tenant \
                  (BLOCKER at phase close)."
             );
             None
@@ -611,13 +606,13 @@ fn overlay_body(id: &str, name: &str, ty: &str, loc: &str) -> Value {
 }
 
 // The bound constants — MEASURED-then-LOCKED per the relaxation discipline. On a real
-// 520K PG16 mixed tenant these MUST be validated at the phase-close gate run and tightened to
+// 500K PG16 mixed tenant these MUST be validated at the phase-close gate run and tightened to
 // the observed numbers with an inline rationale (they are intentionally generous here so the
 // gate proves the STRUCTURAL invariant — no quadratic blowup, no unbounded sort — without a
 // brittle absolute pin the planner could legitimately drift past).
 
-/// A Nested Loop over the whole baseline would loop ~520K times; the SCOPED shapes loop
-/// only over the few scoped rows (≤ ~2080 per-sub at 520K). 100K sits well above any legitimate
+/// A Nested Loop over the whole baseline would loop ~500K times; the SCOPED shapes loop
+/// only over the few scoped rows (≤ ~2000 per-sub at 500K). 100K sits well above any legitimate
 /// scoped loop and well below a full-baseline blowup — the same floor `assert_no_sort_over`
 /// uses for "this touched the whole baseline".
 const NESTED_LOOP_BLOWUP_LOOPS: u64 = 100_000;
@@ -637,7 +632,7 @@ const NESTED_LOOP_BLOWUP_LOOPS: u64 = 100_000;
 const TOTAL_COUNT_TIME_CEILING_MS: f64 = 1500.0;
 
 /// The migrated console aggregates are PROVABLY CORRECT at
-/// 520K: for the total count and EACH GROUP BY key (type, location) and per-subscription, the
+/// 500K: for the total count and EACH GROUP BY key (type, location) and per-subscription, the
 /// resolved aggregate over `synthetic.arm_resolved_resources` equals the independent canonical
 /// reference SET `reference_rows := (baseline NOT shadowed) UNION ALL (present overlay)` grouped
 /// by the RESOLVED field — ZERO mismatching groups. A drift-MODIFIED row (an existing baseline id
@@ -660,11 +655,17 @@ async fn aggregate_reference_calc_matches_resolved_view() {
     let pool = PgPool::connect(&dsn)
         .await
         .expect("connect to the EXPLAIN-gate PG16 substrate");
-    let mut conn = pool.acquire().await.expect("acquire a dedicated connection");
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("acquire a dedicated connection");
 
     // One serializable-enough snapshot: my own inserts are visible to me, concurrent commits
     // are not, so the before/after deltas isolate EXACTLY my seeded rows.
-    sqlx::query("BEGIN").execute(&mut *conn).await.expect("BEGIN");
+    sqlx::query("BEGIN")
+        .execute(&mut *conn)
+        .await
+        .expect("BEGIN");
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         .execute(&mut *conn)
         .await
@@ -712,7 +713,10 @@ async fn aggregate_reference_calc_matches_resolved_view() {
     .fetch_one(&mut *conn)
     .await
     .expect("tenant has a second subscription for the relocation destination");
-    assert_ne!(dest_sub, tomb_sub, "relocation must cross a subscription boundary");
+    assert_ne!(
+        dest_sub, tomb_sub,
+        "relocation must cross a subscription boundary"
+    );
 
     // The drift-MODIFIED resolved fields (deliberately new, distinct buckets).
     let new_type = "Microsoft.Gate/refcalcModified";
@@ -748,7 +752,12 @@ async fn aggregate_reference_calc_matches_resolved_view() {
         &mut conn,
         &appear_id,
         true,
-        Some(overlay_body(&appear_id, "gate-refcalc-appear", new_type, new_loc)),
+        Some(overlay_body(
+            &appear_id,
+            "gate-refcalc-appear",
+            new_type,
+            new_loc,
+        )),
     )
     .await;
 
@@ -769,9 +778,15 @@ async fn aggregate_reference_calc_matches_resolved_view() {
     .fetch_one(&mut *conn)
     .await
     .expect("count overlay kinds");
-    assert!(overlay_kinds.0 >= 2, "estate must have present overlays (modify + appear)");
+    assert!(
+        overlay_kinds.0 >= 2,
+        "estate must have present overlays (modify + appear)"
+    );
     assert!(overlay_kinds.1 >= 1, "estate must have a tombstone");
-    assert!(overlay_kinds.2 >= 1, "estate must have a drift-MODIFIED (present, shadows baseline) row");
+    assert!(
+        overlay_kinds.2 >= 1,
+        "estate must have a drift-MODIFIED (present, shadows baseline) row"
+    );
 
     // --- DRIFT-MODIFIED rebucketing: OLD type/location −1, NEW type/location +1. ---
     let g = |m: &BTreeMap<String, i64>, k: &str| m.get(k).copied().unwrap_or(0);
@@ -845,15 +860,24 @@ async fn aggregate_reference_calc_matches_resolved_view() {
             .fetch_one(&mut *conn)
             .await
             .expect("view total");
-    assert_eq!(ref_total, view_total, "TOTAL count: reference_rows == resolved view");
+    assert_eq!(
+        ref_total, view_total,
+        "TOTAL count: reference_rows == resolved view"
+    );
     // Sanity vs the pre-seed total: tombstone −1, appear +1 → net zero; modify is net zero.
-    assert_eq!(view_total, before_total, "modify+tombstone+appear net to zero total change");
+    assert_eq!(
+        view_total, before_total,
+        "modify+tombstone+appear net to zero total change"
+    );
 
     // Leave the shared tenant pristine (rollback drops every seeded overlay row).
-    sqlx::query("ROLLBACK").execute(&mut *conn).await.expect("ROLLBACK");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *conn)
+        .await
+        .expect("ROLLBACK");
 }
 
-/// The migrated console aggregates stay INDEX-SANE at 520K:
+/// The migrated console aggregates stay INDEX-SANE at 500K:
 /// no unbounded Sort, no quadratic nested-loop anti-join, and the resolved total-count stays
 /// within a bounded ratio of the raw baseline count. Captures `EXPLAIN (ANALYZE, BUFFERS, FORMAT
 /// JSON)` for each migrated shape (total count, GROUP BY type, GROUP BY location, per-sub,
@@ -883,8 +907,14 @@ async fn aggregate_scale_gate_index_sane() {
         .await
         .expect("ANALYZE synthetic.resources");
 
-    let mut conn = pool.acquire().await.expect("acquire a dedicated connection");
-    sqlx::query("BEGIN").execute(&mut *conn).await.expect("BEGIN");
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("acquire a dedicated connection");
+    sqlx::query("BEGIN")
+        .execute(&mut *conn)
+        .await
+        .expect("BEGIN");
 
     // Seed a small mixed estate on THIS connection (visible to same-txn EXPLAIN ANALYZE, rolled
     // back at the end). Shadow a couple of real baseline ids + appear one overlay-only row.
@@ -902,24 +932,35 @@ async fn aggregate_scale_gate_index_sane() {
             &mut conn,
             &picks[0].0,
             true,
-            Some(overlay_body(&picks[0].0, "gate-agg-mod", "Microsoft.Gate/aggModified", "gate-westus")),
+            Some(overlay_body(
+                &picks[0].0,
+                "gate-agg-mod",
+                "Microsoft.Gate/aggModified",
+                "gate-westus",
+            )),
         )
         .await;
         seed_overlay_row(&mut conn, &picks[1].0, false, None).await;
     }
 
     // A real subscription to scope the search shape (index-driven via idx_res_sub).
-    let sub: String = sqlx::query_scalar("SELECT subscription_id::text FROM synthetic.resources LIMIT 1")
-        .fetch_one(&mut *conn)
-        .await
-        .expect("substrate has a subscription");
+    let sub: String =
+        sqlx::query_scalar("SELECT subscription_id::text FROM synthetic.resources LIMIT 1")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("substrate has a subscription");
 
     // ---- Shape A: UNBOUNDED total count(*) (carve-out: a full baseline scan is
     //      legitimate). Gate on a REPRODUCIBLE bound: no large Sort, no nested-loop blowup, and
     //      resolved time <= RATIO × the raw baseline count(*) time on the SAME tenant. ----
-    let raw_total = run_explain_conn(&mut conn, "SELECT count(*) FROM synthetic.resources", &[]).await;
-    let resolved_total =
-        run_explain_conn(&mut conn, "SELECT count(*) FROM synthetic.arm_resolved_resources", &[]).await;
+    let raw_total =
+        run_explain_conn(&mut conn, "SELECT count(*) FROM synthetic.resources", &[]).await;
+    let resolved_total = run_explain_conn(
+        &mut conn,
+        "SELECT count(*) FROM synthetic.arm_resolved_resources",
+        &[],
+    )
+    .await;
     assert_no_sort_over(&resolved_total, BASELINE_SORT_FLOOR);
     assert_no_nested_loop_blowup(&resolved_total, NESTED_LOOP_BLOWUP_LOOPS);
     // The two structural invariants above are the real regression teeth (a super-linear resolver
@@ -937,7 +978,7 @@ async fn aggregate_scale_gate_index_sane() {
     );
 
     // ---- Shape B: GROUP BY type (unbounded → HashAggregate over a full baseline scan). The
-    //      regression to catch is a Sort-based GroupAggregate over 520K (→ assert_no_sort_over)
+    //      regression to catch is a Sort-based GroupAggregate over 500K (→ assert_no_sort_over)
     //      or a per-row nested-loop anti-join. A Seq Scan on the baseline is EXPECTED here. ----
     let by_type = "SELECT type, count(*) c FROM synthetic.arm_resolved_resources \
                    GROUP BY type ORDER BY c DESC, type ASC LIMIT 500";
@@ -986,7 +1027,10 @@ async fn aggregate_scale_gate_index_sane() {
     assert_no_sort_over(&root, BASELINE_SORT_FLOOR);
     assert_no_seqscan_on_relation(&root, "synthetic", "resources");
 
-    sqlx::query("ROLLBACK").execute(&mut *conn).await.expect("ROLLBACK");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *conn)
+        .await
+        .expect("ROLLBACK");
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1057,7 @@ mod helper_tests {
                     "Plans": [
                         {
                             // Baseline branch: an ORDER-PRESERVING Nested Loop Anti join —
-                            // index-scan the 520K baseline in id order, probe the tiny overlay.
+                            // index-scan the 500K baseline in id order, probe the tiny overlay.
                             "Node Type": "Nested Loop",
                             "Join Type": "Anti",
                             "Actual Rows": 47,
@@ -1046,8 +1090,8 @@ mod helper_tests {
     #[test]
     fn assertions_accept_a_healthy_index_driven_plan() {
         let plan = healthy_plan();
-        // No sort processes >= 520K rows (the small overlay sort of 3 rows is fine).
-        assert_no_sort_over(&plan, 520_000);
+        // No sort processes >= 500K rows (the small overlay sort of 3 rows is fine).
+        assert_no_sort_over(&plan, 500_000);
         assert_has_merge_append(&plan);
         assert_uses_index(&plan, "idx_res_lower_id");
         assert_limit_above_mergeappend(&plan);
@@ -1067,7 +1111,7 @@ mod helper_tests {
                     "Node Type": "Hash Join",
                     "Join Type": "Anti",
                     "Actual Rows": 47,
-                    "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 520_000 } ]
+                    "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 500_000 } ]
                 }
             ]
         });
@@ -1081,11 +1125,11 @@ mod helper_tests {
             "Node Type": "Limit",
             "Actual Rows": 50,
             "Plans": [
-                { "Node Type": "Sort", "Actual Rows": 520_009,
-                  "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 520_009 } ] }
+                { "Node Type": "Sort", "Actual Rows": 500_009,
+                  "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 500_009 } ] }
             ]
         });
-        // A 520K sort under the Limit is exactly the regression.
+        // A 500K sort under the Limit is exactly the regression.
         assert_no_sort_over(&bad, 10_000);
     }
 
@@ -1124,7 +1168,7 @@ mod helper_tests {
     #[test]
     #[should_panic(expected = "found a Seq Scan on synthetic.resources")]
     fn no_seqscan_rejects_a_baseline_seq_scan() {
-        // A full sequential scan of the 520K baseline is exactly the regression to catch.
+        // A full sequential scan of the 500K baseline is exactly the regression to catch.
         let bad = json!({
             "Node Type": "Limit",
             "Plans": [
@@ -1148,10 +1192,10 @@ mod helper_tests {
             "Plans": [
                 {
                     "Node Type": "Hash Anti Join",
-                    "Actual Rows": 520_000,
+                    "Actual Rows": 500_000,
                     "Plans": [
                         { "Node Type": "Seq Scan", "Schema": "synthetic",
-                          "Relation Name": "resources", "Actual Rows": 520_003, "Actual Loops": 1 },
+                          "Relation Name": "resources", "Actual Rows": 500_003, "Actual Loops": 1 },
                         { "Node Type": "Hash", "Actual Rows": 3, "Plans": [
                             { "Node Type": "Seq Scan", "Schema": "synthetic",
                               "Relation Name": "arm_overlay", "Actual Rows": 3, "Actual Loops": 1 }
@@ -1172,7 +1216,7 @@ mod helper_tests {
     #[test]
     #[should_panic(expected = "must not go quadratic")]
     fn nested_loop_blowup_rejects_a_per_baseline_row_loop() {
-        // A Nested Loop anti-join re-probing the overlay once per baseline row (520K loops) is
+        // A Nested Loop anti-join re-probing the overlay once per baseline row (500K loops) is
         // the quadratic blowup on an UNBOUNDED aggregate.
         let bad = json!({
             "Node Type": "Aggregate",
@@ -1180,9 +1224,9 @@ mod helper_tests {
                 {
                     "Node Type": "Nested Loop",
                     "Join Type": "Anti",
-                    "Actual Loops": 520_000,
+                    "Actual Loops": 500_000,
                     "Actual Rows": 519_997,
-                    "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 520_000, "Actual Loops": 1 } ]
+                    "Plans": [ { "Node Type": "Seq Scan", "Actual Rows": 500_000, "Actual Loops": 1 } ]
                 }
             ]
         });

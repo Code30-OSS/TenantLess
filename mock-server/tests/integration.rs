@@ -3233,12 +3233,14 @@ mod jwt_identity_refresh {
         let _drift = common::seed_drift_rows(&pool).await;
 
         // Pre-wipe ground truth: the overlay + ledger are non-empty and the revision cursor S0.
-        let overlay_before: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
-                .fetch_one(&pool)
-                .await
-                .expect("count overlay pre-reset");
-        assert!(overlay_before > 0, "precondition: a present overlay row is seeded");
+        let overlay_before: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+            .fetch_one(&pool)
+            .await
+            .expect("count overlay pre-reset");
+        assert!(
+            overlay_before > 0,
+            "precondition: a present overlay row is seeded"
+        );
         let records_before: i64 =
             sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_records")
                 .fetch_one(&pool)
@@ -3276,26 +3278,32 @@ mod jwt_identity_refresh {
         );
 
         // (1) The overlay is cleared — no phantom `present=true` resource survives the reset.
-        let overlay_after: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
-                .fetch_one(&pool)
-                .await
-                .expect("count overlay post-reset");
-        assert_eq!(overlay_after, 0, "run_reset must clear synthetic.arm_overlay");
+        let overlay_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+            .fetch_one(&pool)
+            .await
+            .expect("count overlay post-reset");
+        assert_eq!(
+            overlay_after, 0,
+            "run_reset must clear synthetic.arm_overlay"
+        );
 
         // (2)/(3) The drift ledger is cleared.
-        let records_after: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_records")
-                .fetch_one(&pool)
-                .await
-                .expect("count drift_records post-reset");
-        let batches_after: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_batches")
-                .fetch_one(&pool)
-                .await
-                .expect("count drift_batches post-reset");
-        assert_eq!(records_after, 0, "run_reset must clear synthetic.drift_records");
-        assert_eq!(batches_after, 0, "run_reset must clear synthetic.drift_batches");
+        let records_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_records")
+            .fetch_one(&pool)
+            .await
+            .expect("count drift_records post-reset");
+        let batches_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_batches")
+            .fetch_one(&pool)
+            .await
+            .expect("count drift_batches post-reset");
+        assert_eq!(
+            records_after, 0,
+            "run_reset must clear synthetic.drift_records"
+        );
+        assert_eq!(
+            batches_after, 0,
+            "run_reset must clear synthetic.drift_batches"
+        );
 
         // (4) The monotonic revision sequence is PRESERVED (never rewound by RESTART IDENTITY —
         // the sequence is standalone/UNOWNED, sql/009).

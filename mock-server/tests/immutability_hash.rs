@@ -57,12 +57,7 @@ async fn immutability_hash_is_deterministic() {
         !h1.is_empty(),
         "the digest must be a non-empty md5 hex over the seeded baseline"
     );
-    assert_eq!(
-        h1.len(),
-        32,
-        "md5 hex is 32 chars (got {}): {h1}",
-        h1.len()
-    );
+    assert_eq!(h1.len(), 32, "md5 hex is 32 chars (got {}): {h1}", h1.len());
     assert_eq!(
         h1, h2,
         "the shared immutability-hash SQL must be deterministic across repeated \

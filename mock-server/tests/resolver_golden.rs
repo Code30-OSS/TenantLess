@@ -112,8 +112,7 @@ fn assert_byte_identical(name: &str, live: &[u8]) {
     }
     let frozen = std::fs::read(&path).expect("read frozen golden");
     assert_eq!(
-        frozen,
-        live,
+        frozen, live,
         "pre-v3 byte-identity broken for {name}: the live response body diverged from the \
          frozen golden. Through the resolver with an EMPTY overlay this MUST match."
     );
@@ -170,7 +169,7 @@ async fn detail_body_byte_identical_to_pre_v3_golden() {
 // boundary (the real keyset risk across the baseline+overlay branches) — with the
 // tombstone absent, the appeared overlay row present, and a `$filter` evaluated POST-resolution.
 // Runs natively on the PG11 testcontainer (Docker): correctness at real fixture density, not
-// 520K scale (the scale invariant lives in the DSN-gated `explain_plan_gate.rs`).
+// 500K scale (the scale invariant lives in the DSN-gated `explain_plan_gate.rs`).
 // =====================================================================================
 
 /// RFC3986 percent-encode a `$filter` value for a query string (mirrors `integration.rs::enc`).
