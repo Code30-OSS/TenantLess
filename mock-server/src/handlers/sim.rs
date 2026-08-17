@@ -1105,7 +1105,7 @@ const MAX_SEARCH_TERM_CHARS: usize = 200;
 /// matches the term (RG-name search; `[]` when none match) — resources are named unlike their
 /// RGs, so an RG-name query (e.g. `rg-corp-...`) matches zero resource rows and surfaces here.
 /// `nextLink` carries the opaque `$skiptoken` continuation (plus `q` + optional `subscription`
-/// + api-version) when more rows exist.
+/// and api-version) when more rows exist.
 #[derive(Serialize)]
 pub struct ResourceSearchList {
     count: i64,

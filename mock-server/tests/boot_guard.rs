@@ -21,9 +21,9 @@
 //!   * `reverted_synthetic_batch_boots`              — a REVERTED legacy batch (reverted_at set) → Ok (reverted_at conjunct).
 //!   * `guard_reset_between_scenarios_is_reusable`   — dirty → Err, TRUNCATE → Ok, overlay-active → Ok on one pool.
 //!   * `post_reset_state_boots_direct_sql_simulation` — seed legacy batch + present overlay → Err, then
-//!       DIRECT-SQL simulate reset's DELETE scope (drift_records → drift_batches → arm_overlay) → Ok. This is a
-//!       DB-side simulation of reset's documented DELETE scope, COMPLEMENTARY to the authoritative Python `reset`
-//!       proof in `tests/test_reset.py` — it does NOT invoke the Python command (no cross-language process calls).
+//!     DIRECT-SQL simulate reset's DELETE scope (drift_records → drift_batches → arm_overlay) → Ok. This is a
+//!     DB-side simulation of reset's documented DELETE scope, COMPLEMENTARY to the authoritative Python `reset`
+//!     proof in `tests/test_reset.py` — it does NOT invoke the Python command (no cross-language process calls).
 
 mod common;
 

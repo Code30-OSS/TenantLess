@@ -20,6 +20,7 @@
 //!     re-opened divergence / resolver bypass — which the reader-inventory gate also forbids);
 //!   * if an ARM reader regressed to the raw baseline, the "ARM sees the drift" assertions
 //!     would FAIL.
+//!
 //! The raw `synthetic.resources` baseline row stays byte-unmutated under drift — it
 //! is simply no longer what the console READS.
 
