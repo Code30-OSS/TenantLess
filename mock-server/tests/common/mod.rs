@@ -134,7 +134,7 @@ pub async fn seed_overlay_first_boot(pool: &PgPool) {
 /// Insert ONE `present=true` `synthetic.arm_overlay` resource row (the copy-on-write
 /// snapshot a drift apply writes). The body is built server-side with `jsonb_build_object`
 /// so it satisfies the sql/009 row-model CHECKs (present ⇒ body present + `body->>'id' = id`
-/// + string envelope + object `tags`/`properties`); `revision` is a placeholder overwritten
+/// plus string envelope + object `tags`/`properties`); `revision` is a placeholder overwritten
 /// by the BEFORE trigger's `nextval`. `id` is the only bound value ($N); the rest is a fixed
 /// SQL fragment (no external input spliced — memory [[mock-server-sql-injection-bar]]).
 ///

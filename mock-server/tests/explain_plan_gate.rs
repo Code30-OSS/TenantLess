@@ -11,7 +11,7 @@
 //! GATE CONTRACT (relaxed 2026-08-11 after the 202K PG16 evidence run): the gate asserts the
 //! performance INVARIANT, not one
 //! specific plan shape. For each production read shape it requires (1) no `Sort` over
-//! >= `BASELINE_SORT_FLOOR` rows, (2) NO `Seq Scan` on `synthetic.resources`, (3) the
+//! `BASELINE_SORT_FLOOR` or more rows, (2) NO `Seq Scan` on `synthetic.resources`, (3) the
 //! functional indexes hit for the detail (`idx_res_lower_id`) + rg-scoped (`idx_res_rg_lower`)
 //! reads. It ACCEPTS both a `MergeAppend` + nested-loop-anti plan AND an
 //! indexed-subscription-scan + tiny top-N sort: with a subscription index present and moderate

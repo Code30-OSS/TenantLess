@@ -7,7 +7,7 @@
 //! marker association, and the same source-aware Rust/Python/SQL comment + docstring stripping with
 //! executable SQL string literals kept in scope — over the SAME shipped source set, and asserts the
 //! IDENTICAL violation set over the shared golden fixtures (`tests/fixtures/reader_inventory_golden/`
-//! + its committed `expected_violations.tsv` manifest). The enforcement boundary cannot diverge
+//! plus its committed `expected_violations.tsv` manifest). The enforcement boundary cannot diverge
 //! between the two CI jobs.
 //!
 //! DB-free (pure source scan) and non-vacuous: the file-count floor + the golden-fixture positive
@@ -142,9 +142,9 @@ fn blank_cfg_test(text: &str) -> String {
             }
             i += 1;
         }
-        for x in start..end.min(n) {
-            if out[x] != '\n' {
-                out[x] = ' ';
+        for slot in out.iter_mut().take(end.min(n)).skip(start) {
+            if *slot != '\n' {
+                *slot = ' ';
             }
         }
         search = end;
@@ -178,8 +178,8 @@ fn blank_comments(text: &str, lang: &str) -> String {
                 m += 1;
             }
             let end = if m + 1 < n { m + 2 } else { n };
-            for k in i..end {
-                out.push(if chars[k] == '\n' { '\n' } else { ' ' });
+            for c in chars.iter().take(end).skip(i) {
+                out.push(if *c == '\n' { '\n' } else { ' ' });
             }
             i = end;
             continue;
@@ -194,8 +194,8 @@ fn blank_comments(text: &str, lang: &str) -> String {
                 m += 1;
             }
             let end = if m + 2 < n { m + 3 } else { n };
-            for k in i..end {
-                out.push(if chars[k] == '\n' { '\n' } else { ' ' });
+            for c in chars.iter().take(end).skip(i) {
+                out.push(if *c == '\n' { '\n' } else { ' ' });
             }
             i = end;
             continue;
@@ -255,10 +255,11 @@ fn line_has_valid_marker(line: &str) -> bool {
         if let Some(close_rel) = line[s..].find(']') {
             let cat = line[s..s + close_rel].trim();
             let after = &line[s + close_rel + 1..];
-            if let Some(reason) = after.strip_prefix(':') {
-                if is_category(cat) && reason.trim().chars().count() >= MIN_REASON_CHARS {
-                    return true;
-                }
+            if let Some(reason) = after.strip_prefix(':')
+                && is_category(cat)
+                && reason.trim().chars().count() >= MIN_REASON_CHARS
+            {
+                return true;
             }
         }
         idx = s;
@@ -310,10 +311,10 @@ fn find_violations(text: &str, lang: &str) -> Vec<(usize, String, String)> {
         for (start, m) in sl.match_indices(OCC) {
             let end = start + m.len();
             // lookahead (?![_a-z])
-            if let Some(ch) = sl[end..].chars().next() {
-                if ch == '_' || ch.is_ascii_lowercase() {
-                    continue;
-                }
+            if let Some(ch) = sl[end..].chars().next()
+                && (ch == '_' || ch.is_ascii_lowercase())
+            {
+                continue;
             }
             if is_ddl_definition(sl, start, end) {
                 continue;
