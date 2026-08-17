@@ -430,8 +430,8 @@ pub async fn restore_with_timeout(
         // `$1`; the sequence name is a STATIC literal. Skipped when the sequence was absent
         // pre-load (subset-migration fixture). A clamp failure fails the job (never silently
         // leave a rewound counter).
-        if let Some(pre) = pre_revision {
-            if let Err(e) = sqlx::query(
+        if let Some(pre) = pre_revision
+            && let Err(e) = sqlx::query(
                 "SELECT setval('synthetic.arm_overlay_revision_seq', \
                         GREATEST($1, (SELECT last_value FROM synthetic.arm_overlay_revision_seq)), \
                         true)",
@@ -439,15 +439,14 @@ pub async fn restore_with_timeout(
             .bind(pre)
             .execute(&cp.pool)
             .await
-            {
-                job::with_job(&cp, job_id, |j| {
-                    j.push_log(format!(
-                        "snapshot restored but revision-seq forward-clamp failed: {e}"
-                    ));
-                    j.status = JobStatus::Failed;
-                });
-                return;
-            }
+        {
+            job::with_job(&cp, job_id, |j| {
+                j.push_log(format!(
+                    "snapshot restored but revision-seq forward-clamp failed: {e}"
+                ));
+                j.status = JobStatus::Failed;
+            });
+            return;
         }
         // Succeeded only AFTER psql committed the single TRUNCATE+load transaction. Restore
         // REPLACES the tenant → refresh the served identity to the restored tenant BEFORE
