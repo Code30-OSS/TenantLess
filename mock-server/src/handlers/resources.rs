@@ -1,20 +1,20 @@
 //! `GET /subscriptions/{sub}/resources` — keyset-paginated ARM resource list with
-//! `$top` clamp + opaque `$skiptoken` continuation + absolute `nextLink` (MOCK-03,
-//! MOCK-08), plus OData `$filter` (MOCK-06, D-03: both list endpoints).
+//! `$top` clamp + opaque `$skiptoken` continuation + absolute `nextLink`,
+//! plus OData `$filter` (on both list endpoints).
 //!
 //! Mirrors `list_resource_groups`: keyset over the `id` PK (`WHERE subscription_id
 //! = $1 AND ($2 IS NULL OR id > $2) ORDER BY id LIMIT $3`, `$3 = clamp_top + 1`), the
 //! surplus row driving `nextLink` emission. `{sub}` is parsed as `Uuid` and the
-//! decoded cursor is `.bind()`-bound — never spliced into SQL (T-03-06/T-03-09). The
+//! decoded cursor is `.bind()`-bound — never spliced into SQL. The
 //! explicit column projection keeps the response shape stable (no `SELECT *`).
 //!
 //! `$filter` is the one place this crate builds a list query string at runtime. The
 //! dynamic conjunct is **placeholders-only**: [`filter::Filter::to_sql`] emits a
 //! fragment whose only non-column-name tokens are `$N` placeholders + boolean
 //! keywords + parens, and every user literal flows through the parallel bound-args
-//! `Vec` into the `for a in args` bind loop — never `format!`-ed into SQL text
-//! (T-04-10, extending T-03-09/10). A malformed `$filter` short-circuits to a 400
-//! via `?` BEFORE any SQL is built (D-04). The injection-safety invariant is pinned
+//! `Vec` into the `for a in args` bind loop — never `format!`-ed into SQL text.
+//! A malformed `$filter` short-circuits to a 400
+//! via `?` BEFORE any SQL is built. The injection-safety invariant is pinned
 //! directly here by [`tests::filter_conjunct_is_placeholders_only_even_with_sql_metachars`].
 
 use crate::{
@@ -39,7 +39,7 @@ use uuid::Uuid;
 /// placeholder index, seeded PAST the handler's fixed binds (`4` unscoped / `5`
 /// rg-scoped); it is advanced as args are pushed so `#($N) == args.len()`.
 ///
-/// This is the per-handler injection-safety boundary (T-04-10): because the fragment
+/// This is the per-handler injection-safety boundary: because the fragment
 /// is assembled solely from `filter::Filter::to_sql`'s closed column `match` + `$N`
 /// tokens, no `value`/`key`/`field` text ever reaches the SQL string.
 fn filter_conjunct(parsed: &Option<Filter>, next: i32) -> (String, Vec<String>) {
@@ -63,15 +63,20 @@ pub async fn list_resources(
     let cursor = params.skiptoken.as_deref().map(decode_token).transpose()?;
 
     // Parse `$filter` BEFORE building any SQL — a parse error short-circuits to a
-    // fixed-string 400 via `?` before a query ever runs (D-04, T-04-11).
+    // fixed-string 400 via `?` before a query ever runs.
     let parsed = params.filter.as_deref().map(filter::parse).transpose()?;
     // Fixed binds are $1 sub, $2 cursor, $3 top+1 → filter placeholders start at $4.
     let (where_extra, filter_args) = filter_conjunct(&parsed, 4);
 
+    // Read FROM the resolved view (baseline ∪ overlay(present) − tombstones), not
+    // raw `synthetic.resources`. The legacy soft-delete conjunct is DROPPED (the
+    // oracle is retired; liveness is decided INSIDE the view). The keyset predicate,
+    // `ORDER BY id`, `LIMIT $3`, and the `$filter` seeding ($4) are preserved verbatim, and
+    // `$filter` now evaluates post-resolution over the view.
     let sql = format!(
         "SELECT id, name, type, location, tags, sku, kind, properties
-         FROM synthetic.resources
-         WHERE subscription_id = $1 AND ($2::text IS NULL OR id > $2) AND drift_deleted_at IS NULL{where_extra}
+         FROM synthetic.arm_resolved_resources
+         WHERE subscription_id = $1 AND ($2::text IS NULL OR id > $2){where_extra}
          ORDER BY id
          LIMIT $3"
     );
@@ -104,8 +109,8 @@ pub async fn list_resources(
     Ok(Json(response))
 }
 
-/// List a single resource group's resources in the ARM envelope (MOCK-04), optionally
-/// `$filter`ed (D-03).
+/// List a single resource group's resources in the ARM envelope, optionally
+/// `$filter`ed.
 ///
 /// Identical to [`list_resources`] plus one bound predicate: `AND
 /// lower(resource_group_name) = lower($4)`. The comparison is case-insensitive so a
@@ -113,7 +118,7 @@ pub async fn list_resources(
 /// group — the same rule the resource-detail lookup applies to the whole id
 /// (`lower(id) = lower($1)`), so a scanner that lists an RG's resources and one that
 /// fetches a resource by id agree on which RG a path names. `{rg}` is bound as a
-/// parameter — never spliced into SQL (T-03-10). An unknown `{sub}` or `{rg}` simply
+/// parameter — never spliced into SQL. An unknown `{sub}` or `{rg}` simply
 /// yields zero rows, so the envelope is `{ "value": [] }` (no existence pre-check, no
 /// 404 — locked decision). Because `rg` keeps `$4`, the `$filter` placeholders seed at
 /// `$5`.
@@ -125,16 +130,20 @@ pub async fn list_rg_resources(
     let top = clamp_top(params.top);
     let cursor = params.skiptoken.as_deref().map(decode_token).transpose()?;
 
-    // Parse `$filter` BEFORE building any SQL (D-04, T-04-11).
+    // Parse `$filter` BEFORE building any SQL.
     let parsed = params.filter.as_deref().map(filter::parse).transpose()?;
     // Fixed binds are $1 sub, $2 cursor, $3 top+1, $4 rg → filter placeholders start at $5.
     let (where_extra, filter_args) = filter_conjunct(&parsed, 5);
 
+    // Resolved-view swap (same as `list_resources`); the legacy soft-delete
+    // conjunct is DROPPED. The rg predicate `AND lower(resource_group_name) = lower($4)` and
+    // the $5 filter seeding are preserved verbatim; `resource_group_name` on an overlay-only
+    // row is derived inside the view, so the scoped list resolves appear/replace/tombstone too.
     let sql = format!(
         "SELECT id, name, type, location, tags, sku, kind, properties
-         FROM synthetic.resources
+         FROM synthetic.arm_resolved_resources
          WHERE subscription_id = $1 AND ($2::text IS NULL OR id > $2)
-           AND lower(resource_group_name) = lower($4) AND drift_deleted_at IS NULL{where_extra}
+           AND lower(resource_group_name) = lower($4){where_extra}
          ORDER BY id
          LIMIT $3"
     );
@@ -172,7 +181,7 @@ pub async fn list_rg_resources(
 mod tests {
     use super::*;
 
-    /// The handler's injection-safety invariant, pinned DB-free (T-04-10): for a
+    /// The handler's injection-safety invariant, pinned DB-free: for a
     /// filter whose tag value carries a SQL metacharacter (`'; DROP`), the WHERE
     /// conjunct fragment must contain ONLY `$N` placeholders, column names, boolean
     /// keywords, and parens — NEVER the user literal — while that literal appears

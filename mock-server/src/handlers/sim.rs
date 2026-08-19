@@ -1,37 +1,37 @@
 //! `GET /_sim/violations`, `/_sim/dependencies`, `/_sim/summary`, `/_sim/subscriptions` —
-//! the bearer-EXEMPT, read-only `/_sim` projection surface for the Web Console (WAPI-01..04).
+//! the bearer-EXEMPT, read-only `/_sim` projection surface for the Web Console.
 //!
-//! `/_sim/subscriptions` (D-15, GAP-14-03) is the keyset-paginated full-enumeration companion
+//! `/_sim/subscriptions` is the keyset-paginated full-enumeration companion
 //! to the bounded inline `summary.subscriptions[]` preview — it walks EVERY subscription via a
-//! UUID keyset on `subscription_id`, closing the T-14-05 unbounded-response residual.
+//! UUID keyset on `subscription_id`, closing the preview's unbounded-response residual.
 //!
 //! These endpoints expose simulator-internal projections that have NO ARM
 //! equivalent: governance violations, cross-subscription dependencies, and a
 //! tenant-summary aggregate. Unlike the drift audit reads (which sit INSIDE the bearer
-//! gate — Ph11 D-15), `/_sim` is served OUTSIDE the ARM Bearer layer, merged on the same
-//! exempt seam as `/_console` and `/token` (WAPI-04). Read-only is enforced STRUCTURALLY:
+//! gate), `/_sim` is served OUTSIDE the ARM Bearer layer, merged on the same
+//! exempt seam as `/_console` and `/token`. Read-only is enforced STRUCTURALLY:
 //! only GET handlers are registered, so axum's `MethodRouter` returns 405 for any
 //! mutating method (see [`crate::sim`]).
 //!
-//! Filter safety (D-09, project SQL bar): every collection read binds every filter value
+//! Filter safety (project SQL bar): every collection read binds every filter value
 //! as `$N` behind a CLOSED field→column allowlist — user values NEVER splice into SQL.
 //! `subscription` is parsed to a `Uuid` BEFORE it reaches SQL; a malformed value is a
 //! fixed 400. Case behavior is explicit: `code`/`severity`/`type` compare via
-//! `lower(col) = lower($N)` (Pitfall 6). The `violations` table has NO `subscription_id`
-//! column, so the `?subscription=` filter and `subscriptionId` field come from a
-//! `LEFT JOIN synthetic.resources r ON r.id = v.resource_id` — LEFT (not INNER) so a
-//! violation whose resource is soft-deleted/dangling is not silently dropped. The join
-//! key is exact: the violations writer stores `resource_id = r.id` (the full ARM id;
-//! `generator/violations.py` `"resource_id": r.id`).
+//! `lower(col) = lower($N)`. The `violations` table has NO `subscription_id`
+//! column, so the `?subscription=` filter and `subscriptionId` field come from an
+//! `INNER JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id` (a finding on a
+//! tombstoned/non-live resource is EXCLUDED — console presence == resolver
+//! liveness). The join key is exact: the violations writer stores `resource_id = r.id`
+//! (the full ARM id; `generator/violations.py` `"resource_id": r.id`).
 //!
-//! Casing (D-10): responses use EXPLICIT per-field camelCase DTOs — never a recursive
+//! Casing: responses use EXPLICIT per-field camelCase DTOs — never a recursive
 //! key transform — so the violations `detail` JSONB (`{field, observed, ...}`) passes
 //! through with its inner keys VERBATIM.
 //!
-//! `summary` (WAPI-03) is the one unpaginated aggregate (D-07): it assembles `totals`,
+//! `summary` is the one unpaginated aggregate: it assembles `totals`,
 //! per-subscription rollups, `byType[]`, and `byLocation[]` inside a SINGLE
 //! `REPEATABLE READ, READ ONLY` snapshot so the sections cannot disagree under concurrent
-//! generation (D-11). `byType[].type` is canonicalized (`casing::canonical_type`); an empty
+//! generation. `byType[].type` is canonicalized (`casing::canonical_type`); an empty
 //! (schema-only) tenant returns zeros + null metadata rather than a 500.
 
 use crate::{
@@ -55,7 +55,7 @@ use sqlx::types::Json as SqlxJson;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------------
-// Shared filter machinery (the SQL-safety bar, D-09).
+// Shared filter machinery (the SQL-safety bar).
 // ---------------------------------------------------------------------------------
 
 /// One bound filter value. Kept type-tagged (rather than a `Vec<String>`) because the
@@ -68,9 +68,9 @@ enum Bind {
 }
 
 // ---------------------------------------------------------------------------------
-// Fail-closed query parsing (D-16 / T-14-03).
+// Fail-closed query parsing.
 //
-// `/_sim` is a STRICT surface (unlike ARM's lenient unknown-param ignore, MOCK-11): a
+// `/_sim` is a STRICT surface (unlike ARM's lenient unknown-param ignore): a
 // query param OUTSIDE the documented set for the endpoint, an out-of-domain filter value,
 // or a malformed `$top`/`$skiptoken` ALL return the SAME fixed JSON `ApiError` 400 — never
 // axum's default `Query` plain-text rejection, and never a misleading empty page. To make
@@ -86,9 +86,9 @@ enum Bind {
 /// counterpart to [`crate::pagination::percent_encode_query`] (which BUILDS `nextLink`), so
 /// a filtered page replayed via its own `nextLink` round-trips byte-for-byte.
 ///
-/// WR-01: a decoded ASCII control character (the C0 range `0x00..=0x1F` and DEL `0x7F`) is
+/// A decoded ASCII control character (the C0 range `0x00..=0x1F` and DEL `0x7F`) is
 /// ALSO a fixed JSON 400. A `%00` NUL decodes to valid UTF-8, so without this guard it would
-/// bind and Postgres would reject it with an HTTP 500 — a reachable breach of the D-16
+/// bind and Postgres would reject it with an HTTP 500 — a reachable breach of the
 /// "every bad-input path is a fixed 400" invariant. Rejecting at this single choke point
 /// (which every `/_sim` query key AND value passes through before binding) guarantees no
 /// control byte — however encoded — reaches SQL, for any parameter.
@@ -127,7 +127,7 @@ fn percent_decode_query(s: &str) -> Result<String, ApiError> {
     }
     let decoded =
         String::from_utf8(out).map_err(|_| ApiError::bad_request("invalid query encoding"))?;
-    // WR-01: reject any decoded ASCII control char (C0 + DEL). `char::is_ascii_control`
+    // Reject any decoded ASCII control char (C0 + DEL). `char::is_ascii_control`
     // covers `0x00..=0x1F` and `0x7F` — including NUL, which is otherwise valid UTF-8 and
     // would bind through to a Postgres 500. Stopped here, it is the same fixed JSON 400.
     if decoded.chars().any(|c| c.is_ascii_control()) {
@@ -136,11 +136,11 @@ fn percent_decode_query(s: &str) -> Result<String, ApiError> {
     Ok(decoded)
 }
 
-/// A fail-closed view of a `/_sim` collection endpoint's query string (D-16). Built from
+/// A fail-closed view of a `/_sim` collection endpoint's query string. Built from
 /// `axum::extract::RawQuery`: it parses the raw string into percent-decoded pairs, REJECTS
 /// any key outside the documented set (the pagination trio + the caller's `filter_keys`)
 /// with a fixed JSON 400, and parses `$top` as an `i64` HERE so a non-integer is the fixed
-/// JSON 400 (T-14-03) rather than axum's plain-text `Query` rejection. `$skiptoken`,
+/// JSON 400 rather than axum's plain-text `Query` rejection. `$skiptoken`,
 /// `api-version`, and the filter values are carried through verbatim for the handler (which
 /// then applies the existing `subscription` UUID parse / `cursor_from_token` fixed-400s).
 struct SimQuery {
@@ -202,7 +202,7 @@ impl SimQuery {
 /// Build the absolute `nextLink` for a `/_sim` collection page. The shared
 /// [`next_link`] handles `$top`/`$skiptoken`/`api-version`; the discrete `/_sim` filter
 /// params (which are NOT OData `$filter`) are appended here so page 2+ re-applies the
-/// SAME predicate (D-06). Each value is percent-encoded with the SAME SEC-MED-2 bar the
+/// SAME predicate. Each value is percent-encoded with the SAME bar the
 /// pagination codec uses, so a hostile value cannot inject a second query parameter.
 fn sim_next_link(
     base_url: &str,
@@ -220,10 +220,10 @@ fn sim_next_link(
 }
 
 // ---------------------------------------------------------------------------------
-// WAPI-01 — list_violations
+// list_violations
 // ---------------------------------------------------------------------------------
 
-/// Parsed + validated violation filters (subscription already `Uuid`-parsed — D-09).
+/// Parsed + validated violation filters (subscription already `Uuid`-parsed).
 struct ViolationFilters {
     subscription: Option<Uuid>,
     code: Option<String>,
@@ -232,13 +232,13 @@ struct ViolationFilters {
 }
 
 /// Build the `WHERE`-conjunct fragment + the parallel bound-value list for the violation
-/// filters (D-09). The SQL string carries ONLY column names, boolean keywords, and `$N`
+/// filters. The SQL string carries ONLY column names, boolean keywords, and `$N`
 /// placeholders — every user value is returned as a [`Bind`] for the handler to `.bind()`.
 /// `start_idx` is the LAST placeholder already consumed by the caller: the page query passes
 /// `2` ( `$1` = keyset cursor, `$2` = LIMIT top+1 ) so filters begin at `$3`; the cursor-less
 /// COUNT query passes `0` so the SAME filters begin at `$1`. The field→column allowlist and
-/// the `$N`-bind guarantee are IDENTICAL across both bases (D-13 / T-14-01). Case-insensitive
-/// exact match for `code`/`severity` via `lower()=lower()` (Pitfall 6).
+/// the `$N`-bind guarantee are IDENTICAL across both bases. Case-insensitive
+/// exact match for `code`/`severity` via `lower()=lower()`.
 fn violation_where(f: &ViolationFilters, start_idx: i32) -> (String, Vec<Bind>) {
     let mut conj: Vec<String> = Vec::new();
     let mut binds: Vec<Bind> = Vec::new();
@@ -271,10 +271,12 @@ fn violation_where(f: &ViolationFilters, start_idx: i32) -> (String, Vec<Bind>) 
     (where_extra, binds)
 }
 
-/// One governance violation (WAPI-01). `code` ← `violation_type` (UPPER_SNAKE);
-/// `subscriptionId` comes from the LEFT JOIN (`None` if the resource was removed);
+/// One governance violation. `code` ← `violation_type` (UPPER_SNAKE);
+/// `subscriptionId` comes from the INNER join through `synthetic.arm_resolved_resources`
+/// (a finding on a tombstoned/non-live resource is EXCLUDED, so the join is
+/// INNER; the field stays `Option` for the DTO shape but is always populated for served rows);
 /// `detail` is the raw JSONB PASSTHROUGH — serde renames STRUCT fields only, so the
-/// inner `{field, observed, ...}` keys are emitted verbatim (D-10).
+/// inner `{field, observed, ...}` keys are emitted verbatim.
 #[derive(Serialize)]
 pub struct ViolationDto {
     #[serde(rename = "resourceId")]
@@ -292,7 +294,7 @@ pub struct ViolationDto {
 #[derive(Serialize)]
 pub struct ViolationList {
     /// Total rows MATCHING THE ACTIVE FILTER (a `COUNT(*)` over the same predicate as the
-    /// page query — NOT the unfiltered table total, NOT the page size). Spec-required (D-13).
+    /// page query — NOT the unfiltered table total, NOT the page size). Spec-required.
     count: i64,
     value: Vec<ViolationDto>,
     #[serde(rename = "nextLink", skip_serializing_if = "Option::is_none")]
@@ -311,22 +313,23 @@ fn violation_dto(row: &PgRow) -> Result<ViolationDto, ApiError> {
     })
 }
 
-/// `GET /_sim/violations` — governance violations, keyset-paginated (WAPI-01).
+/// `GET /_sim/violations` — governance violations, keyset-paginated.
 ///
-/// SERIAL `id` is cast `::bigint` so the shared i64 keyset helpers apply (Pitfall 7). The
-/// `?subscription=` filter narrows via `LEFT JOIN synthetic.resources` on `r.subscription_id`
-/// (Pitfall 2). The cursor binds as `$1::bigint` (NULL on page 1), the limit as `$2`, then
+/// SERIAL `id` is cast `::bigint` so the shared i64 keyset helpers apply. The
+/// `?subscription=` filter narrows via `INNER JOIN synthetic.arm_resolved_resources` on
+/// `r.subscription_id` (which excludes non-live resources' findings).
+/// The cursor binds as `$1::bigint` (NULL on page 1), the limit as `$2`, then
 /// the filter values in push order — none is ever spliced (project SQL bar).
 pub async fn list_violations(
     State(state): State<AppState>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<ViolationList>, ApiError> {
-    // Fail-closed parse (D-16): reject unknown params + malformed `$top` as the fixed JSON
+    // Fail-closed parse: reject unknown params + malformed `$top` as the fixed JSON
     // 400 (the documented set = the pagination trio + this endpoint's discrete filters).
     let qs = SimQuery::parse(raw, &["subscription", "code", "resource", "severity"])?;
 
     // `severity` is a CLOSED domain {High, Medium, Low}, case-insensitive: an out-of-domain
-    // value is a fixed 400, NOT a misleading empty page (D-16). `code`/`resource` stay
+    // value is a fixed 400, NOT a misleading empty page. `code`/`resource` stay
     // OPEN-domain (an unknown value legitimately yields an empty page) — case-insensitive.
     if let Some(sev) = qs.filter("severity")
         && !matches!(sev.to_ascii_lowercase().as_str(), "high" | "medium" | "low")
@@ -334,7 +337,7 @@ pub async fn list_violations(
         return Err(ApiError::bad_request("invalid severity"));
     }
 
-    // Parse subscription to Uuid BEFORE SQL (D-09); a malformed value is a fixed 400.
+    // Parse subscription to Uuid BEFORE SQL; a malformed value is a fixed 400.
     let sub = match qs.filter("subscription") {
         Some(s) => {
             Some(Uuid::parse_str(s).map_err(|_| ApiError::bad_request("invalid subscription"))?)
@@ -353,12 +356,15 @@ pub async fn list_violations(
     // Filtered COUNT(*): the SAME table/JOIN + the SAME allowlist fragment, rebuilt to start
     // at `$1` (no cursor/limit) so `count` = the whole set matching the active filter, not the
     // page. `WHERE 1=1{count_where}` lets the `AND`-prefixed fragment append cleanly (and be
-    // empty when unfiltered). Values are `$N`-bound in push order — never spliced (D-13/T-14-01).
+    // empty when unfiltered). Values are `$N`-bound in push order — never spliced.
+    // The join is now an INNER join THROUGH `synthetic.arm_resolved_resources`
+    // (was `LEFT JOIN synthetic.resources`), so a finding on a tombstoned/non-live resource is
+    // EXCLUDED — console presence == resolver liveness. Applied identically to count AND page.
     let (count_where, count_binds) = violation_where(&filters, 0);
     let count_sql = format!(
         "SELECT count(*) AS n \
          FROM synthetic.violations v \
-         LEFT JOIN synthetic.resources r ON r.id = v.resource_id \
+         JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id \
          WHERE 1=1{count_where}"
     );
     let mut cq = sqlx::query(&count_sql);
@@ -376,7 +382,7 @@ pub async fn list_violations(
         "SELECT v.id::bigint AS id, v.resource_id, v.violation_type, v.severity, v.detail, \
                 r.subscription_id \
          FROM synthetic.violations v \
-         LEFT JOIN synthetic.resources r ON r.id = v.resource_id \
+         JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id \
          WHERE ($1::bigint IS NULL OR v.id > $1){where_extra} \
          ORDER BY v.id LIMIT $2"
     );
@@ -425,22 +431,22 @@ pub async fn list_violations(
 }
 
 // ---------------------------------------------------------------------------------
-// WAPI-02 — list_dependencies
+// list_dependencies
 // ---------------------------------------------------------------------------------
 
-/// Parsed + validated dependency filters (subscription already `Uuid`-parsed — D-09).
+/// Parsed + validated dependency filters (subscription already `Uuid`-parsed).
 struct DependencyFilters {
     subscription: Option<Uuid>,
     dep_type: Option<String>,
 }
 
 /// Build the `WHERE`-conjunct fragment + parallel bound-value list for dependency filters
-/// (D-09). `subscription` matches source OR target via ONE bound value used TWICE
+/// `subscription` matches source OR target via ONE bound value used TWICE
 /// (`(source_subscription = $N OR target_subscription = $N)`) — a single [`Bind`], two
 /// `$N` uses. `type` is case-insensitive (`lower()=lower()`). `start_idx` is the last
 /// placeholder already consumed (page query: `2` so filters begin at `$3`; cursor-less
 /// COUNT query: `0` so the SAME filters begin at `$1`) — the allowlist and single-bind
-/// property hold at either base (D-13 / T-14-01).
+/// property hold at either base.
 fn dependency_where(f: &DependencyFilters, start_idx: i32) -> (String, Vec<Bind>) {
     let mut conj: Vec<String> = Vec::new();
     let mut binds: Vec<Bind> = Vec::new();
@@ -467,8 +473,8 @@ fn dependency_where(f: &DependencyFilters, start_idx: i32) -> (String, Vec<Bind>
 }
 
 /// One endpoint (source or target) of a dependency edge — the nested spec object carrying
-/// the ARM `resourceId` and its owning `subscriptionId` (D-13, `sim-api-spec.md`). Explicit
-/// camelCase per D-10 (the nested reshape touches only field names, never JSONB inner keys).
+/// the ARM `resourceId` and its owning `subscriptionId`. Explicit
+/// camelCase (the nested reshape touches only field names, never JSONB inner keys).
 #[derive(Serialize)]
 pub struct DependencyEndpoint {
     #[serde(rename = "resourceId")]
@@ -477,10 +483,10 @@ pub struct DependencyEndpoint {
     subscription_id: String,
 }
 
-/// One cross-subscription dependency edge (WAPI-02), in the NESTED spec shape (D-13):
+/// One cross-subscription dependency edge, in the NESTED spec shape:
 /// `{ type, source:{resourceId,subscriptionId}, target:{resourceId,subscriptionId},
 /// crossSubscription }`. `type` (NOT the old flat `dependencyType`); `crossSubscription` is
-/// derived in Rust as `source_subscription != target_subscription` (D-08). The two
+/// derived in Rust as `source_subscription != target_subscription`. The two
 /// subscription ids are always present (`NOT NULL` columns).
 #[derive(Serialize)]
 pub struct DependencyDto {
@@ -498,7 +504,7 @@ pub struct DependencyDto {
 #[derive(Serialize)]
 pub struct DependencyList {
     /// Total edges MATCHING THE ACTIVE FILTER (a source-OR-target `COUNT(*)` over the same
-    /// predicate as the page query — NOT the table total, NOT the page size). D-13.
+    /// predicate as the page query — NOT the table total, NOT the page size).
     count: i64,
     value: Vec<DependencyDto>,
     #[serde(rename = "nextLink", skip_serializing_if = "Option::is_none")]
@@ -522,15 +528,19 @@ fn dependency_dto(row: &PgRow) -> Result<DependencyDto, ApiError> {
     })
 }
 
-/// `GET /_sim/dependencies` — cross-subscription dependency edges, keyset-paginated
-/// (WAPI-02). A `list_violations` twin over `synthetic.dependencies`: SERIAL `id` cast
+/// `GET /_sim/dependencies` — cross-subscription dependency edges, keyset-paginated.
+/// A `list_violations` twin over `synthetic.dependencies`: SERIAL `id` cast
 /// `::bigint` for the shared i64 keyset; `?subscription=` matches source OR target (one
-/// bound value, twice); `crossSubscription` derived in Rust.
+/// bound value, twice); `crossSubscription` derived in Rust. An edge is
+/// served only when BOTH endpoints resolve LIVE through `synthetic.arm_resolved_resources`
+/// (a CASE-INSENSITIVE both-endpoint EXISTS predicate carried identically on count, page,
+/// AND the summary totals.dependencies sub-select) — an edge touching a tombstoned resource
+/// drops out, and a casing-only endpoint difference never drops a live edge.
 pub async fn list_dependencies(
     State(state): State<AppState>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<DependencyList>, ApiError> {
-    // Fail-closed parse (D-16): documented set = the pagination trio + subscription/type.
+    // Fail-closed parse: documented set = the pagination trio + subscription/type.
     // An unknown KEY is a fixed JSON 400; a malformed `$top` is the SAME fixed shape. `type`
     // stays OPEN-domain (an unknown type yields an empty page, consistent with violations
     // `code`) — only the KEY set is closed, the `type` VALUE is not.
@@ -551,10 +561,22 @@ pub async fn list_dependencies(
 
     // Filtered COUNT(*): the SAME table + the SAME source-OR-target allowlist fragment, rebuilt
     // to start at `$1` (no cursor/limit). `subscription` is still ONE bound value used twice.
-    // `count` = the whole set matching the active filter, not the page (D-13/T-14-01).
+    // `count` = the whole set matching the active filter, not the page.
+    // An edge is live iff BOTH endpoints resolve LIVE through
+    // `synthetic.arm_resolved_resources`. The endpoint match folds case (`lower(rs.id) =
+    // lower(d.source_resource_id)`) to mirror the resolver's shadow convention (`o.id_lower =
+    // lower(b.id)`) — a casing-only endpoint difference must NOT drop a live
+    // edge. The relation name is a static literal; the predicate binds NO user value.
+    // Carried IDENTICALLY on count, page, AND the summary totals.dependencies sub-select.
+    const DEP_LIVENESS: &str = " \
+        AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rs \
+                    WHERE lower(rs.id) = lower(d.source_resource_id)) \
+        AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rt \
+                    WHERE lower(rt.id) = lower(d.target_resource_id))";
     let (count_where, count_binds) = dependency_where(&filters, 0);
-    let count_sql =
-        format!("SELECT count(*) AS n FROM synthetic.dependencies WHERE 1=1{count_where}");
+    let count_sql = format!(
+        "SELECT count(*) AS n FROM synthetic.dependencies d WHERE 1=1{DEP_LIVENESS}{count_where}"
+    );
     let mut cq = sqlx::query(&count_sql);
     for b in &count_binds {
         cq = match b {
@@ -567,11 +589,11 @@ pub async fn list_dependencies(
     let top = clamp_top(qs.top);
     let cursor = cursor_from_token(qs.skiptoken.as_deref())?;
     let sql = format!(
-        "SELECT id::bigint AS id, dependency_type, source_resource_id, target_resource_id, \
+        "SELECT d.id::bigint AS id, dependency_type, source_resource_id, target_resource_id, \
                 source_subscription, target_subscription \
-         FROM synthetic.dependencies \
-         WHERE ($1::bigint IS NULL OR id > $1){where_extra} \
-         ORDER BY id LIMIT $2"
+         FROM synthetic.dependencies d \
+         WHERE ($1::bigint IS NULL OR d.id > $1){DEP_LIVENESS}{where_extra} \
+         ORDER BY d.id LIMIT $2"
     );
     let mut q = sqlx::query(&sql).bind(cursor).bind(top + 1);
     for b in &binds {
@@ -612,11 +634,12 @@ pub async fn list_dependencies(
 }
 
 // ---------------------------------------------------------------------------------
-// WAPI-03 — summary (the unpaginated tenant-summary aggregate, D-07/D-11)
+// summary (the unpaginated tenant-summary aggregate)
 // ---------------------------------------------------------------------------------
 
-/// Tenant-wide `COUNT(*)` totals. Resource counts EXCLUDE soft-deleted rows
-/// (`drift_deleted_at IS NOT NULL`), matching what ARM serves (A3).
+/// Tenant-wide `COUNT(*)` totals. Resource / violation / dependency counts are computed
+/// THROUGH the resolver (`synthetic.arm_resolved_resources`) so tombstoned resources — and
+/// their findings/edges — are excluded, matching what ARM serves.
 #[derive(Serialize)]
 pub struct SummaryTotals {
     subscriptions: i64,
@@ -627,7 +650,7 @@ pub struct SummaryTotals {
     dependencies: i64,
 }
 
-/// Per-subscription rollup (D-11). Counts come from CTE-per-metric LEFT JOINs so a
+/// Per-subscription rollup. Counts come from CTE-per-metric LEFT JOINs so a
 /// subscription with no resources/RGs/violations still appears with zeros.
 #[derive(Serialize)]
 pub struct SummarySubscription {
@@ -647,7 +670,7 @@ pub struct SummarySubscription {
 /// `summary.subscriptions[]` preview and the paginated `GET /_sim/subscriptions` endpoint —
 /// both SELECT the SAME CTE-per-metric columns (`subscription_id`, `name`, `archetype`,
 /// `resource_count`, `resource_group_count`, `violation_count`), so the DTO extraction is
-/// identical and lives in one place (D-15).
+/// identical and lives in one place.
 fn subscription_row_dto(row: &PgRow) -> Result<SummarySubscription, ApiError> {
     let sid: Uuid = row.try_get("subscription_id")?;
     Ok(SummarySubscription {
@@ -661,7 +684,7 @@ fn subscription_row_dto(row: &PgRow) -> Result<SummarySubscription, ApiError> {
 }
 
 /// One `byType[]` bucket. The `type` string is canonicalized via
-/// [`canonical_type`] (a single-STRING map — NOT the D-10-forbidden recursive transform).
+/// [`canonical_type`] (a single-STRING map — NOT the forbidden recursive transform).
 #[derive(Serialize)]
 pub struct SummaryByType {
     #[serde(rename = "type")]
@@ -676,12 +699,12 @@ pub struct SummaryByLocation {
     count: i64,
 }
 
-/// The `/_sim/summary` payload (D-07: always a single unpaginated object). Tenant
+/// The `/_sim/summary` payload (always a single unpaginated object). Tenant
 /// metadata (`tenantId`/`seed`/`profile`) is flattened at the top level per the
-/// `sim-api-spec.md` shape; every field is `Option` so an empty (schema-only) tenant
-/// serializes them as `null` (Pitfall 5) rather than 500-ing. `profile` is the
+/// spec shape; every field is `Option` so an empty (schema-only) tenant
+/// serializes them as `null` rather than 500-ing. `profile` is the
 /// generation-profile NAME sourced from the nullable `synthetic.tenant.profile_name`
-/// column (D-14, superseding the earlier A1 `profile_version` compromise).
+/// column.
 #[derive(Serialize)]
 pub struct SummaryResponse {
     #[serde(rename = "tenantId")]
@@ -696,34 +719,48 @@ pub struct SummaryResponse {
     by_location: Vec<SummaryByLocation>,
 }
 
-/// `GET /_sim/summary` — the unpaginated tenant-summary aggregate (WAPI-03).
+/// `GET /_sim/summary` — the unpaginated tenant-summary aggregate.
 ///
 /// ALL sections are computed inside ONE `pool.begin()` transaction set to
 /// `REPEATABLE READ, READ ONLY`, so `totals`, the per-subscription rollups, `byType[]`,
 /// and `byLocation[]` share a SINGLE consistent snapshot — they cannot disagree even if a
-/// generation run mutates `synthetic.*` concurrently (D-11 / T-14-07). Resource counts
-/// filter `drift_deleted_at IS NULL` (A3). The tenant row is read with `fetch_optional`,
-/// so a schema-only container yields zeros + null metadata rather than a panic (Pitfall 5).
+/// generation run mutates `synthetic.*` concurrently. Resource / violation /
+/// dependency counts resolve THROUGH `synthetic.arm_resolved_resources`. The
+/// tenant row is read with `fetch_optional`,
+/// so a schema-only container yields zeros + null metadata rather than a panic.
 /// `byType`/`byLocation` are `ORDER BY count DESC, key ASC` (deterministic) and capped at
-/// `LIMIT 500` (D-11 high-cardinality cap / T-14-05). The inline `subscriptions[]` is a
-/// BOUNDED preview too (D-15): `ORDER BY resource_count DESC, subscription_id ASC LIMIT 500`;
+/// `LIMIT 500` (a high-cardinality cap). The inline `subscriptions[]` is a
+/// BOUNDED preview too: `ORDER BY resource_count DESC, subscription_id ASC LIMIT 500`;
 /// full enumeration is served by the keyset-paginated [`list_subscriptions`]
 /// (`GET /_sim/subscriptions`), and the >500-subscription residual is an accepted risk.
 pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryResponse>, ApiError> {
-    // One read-only snapshot for every section (D-11). READ ONLY documents intent and lets
+    // One read-only snapshot for every section. READ ONLY documents intent and lets
     // Postgres optimize; the SET must be the first statement in the transaction.
     let mut tx = state.pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
 
-    // (1) totals — one row of independent sub-selects (soft-deleted resources excluded).
+    // (1) totals — one row of independent sub-selects. The THREE
+    //     resource-facing sub-selects resolve through liveness so `totals` never disagrees with
+    //     the per-sub rollups / paginated lists under drift:
+    //       * resources → `count(*) FROM synthetic.arm_resolved_resources` (tombstones out,
+    //         appears in; the retired `drift_deleted_at IS NULL` conjunct is DROPPED);
+    //       * violations → INNER join through the resolver, so a tombstoned resource's finding
+    //         is excluded (else `totals.violations` drifts ABOVE `sum(per-sub violationCount)`);
+    //       * dependencies → the SAME both-endpoint, CASE-INSENSITIVE liveness predicate the
+    //         paginated `list_dependencies` carries (count-consistency with the list).
     let totals_row = sqlx::query(
         "SELECT (SELECT count(*) FROM synthetic.subscriptions)                            AS subscriptions, \
                 (SELECT count(*) FROM synthetic.resource_groups)                          AS resource_groups, \
-                (SELECT count(*) FROM synthetic.resources WHERE drift_deleted_at IS NULL) AS resources, \
-                (SELECT count(*) FROM synthetic.violations)                               AS violations, \
-                (SELECT count(*) FROM synthetic.dependencies)                             AS dependencies",
+                (SELECT count(*) FROM synthetic.arm_resolved_resources)                   AS resources, \
+                (SELECT count(*) FROM synthetic.violations v \
+                        JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id)  AS violations, \
+                (SELECT count(*) FROM synthetic.dependencies d \
+                        WHERE EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rs \
+                                      WHERE lower(rs.id) = lower(d.source_resource_id)) \
+                          AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rt \
+                                      WHERE lower(rt.id) = lower(d.target_resource_id)))    AS dependencies",
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -736,18 +773,18 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
     };
 
     // (2) subscriptions[] — CTE-per-metric (NOT a triple LEFT JOIN: that would blow up
-    //     cartesian-style at 2000 subs / 500K resources). BOUNDED preview (D-15 / T-14-05):
+    //     cartesian-style at 2000 subs / 500K resources). BOUNDED preview:
     //     deterministically `ORDER BY resource_count DESC, s.subscription_id ASC` and capped
     //     at `LIMIT 500` (the same ceiling as byType/byLocation). The residual — tenants with
-    //     >500 subscriptions don't see every sub inline — is an ACCEPTED risk (14-SECURITY.md),
+    //     >500 subscriptions don't see every sub inline — is an ACCEPTED risk,
     //     mitigated by the keyset-paginated `GET /_sim/subscriptions` for full enumeration.
     let sub_rows = sqlx::query(
-        "WITH res AS (SELECT subscription_id, count(*) c FROM synthetic.resources \
-                      WHERE drift_deleted_at IS NULL GROUP BY 1), \
+        "WITH res AS (SELECT subscription_id, count(*) c FROM synthetic.arm_resolved_resources \
+                      GROUP BY 1), \
               rgs AS (SELECT subscription_id, count(*) c FROM synthetic.resource_groups GROUP BY 1), \
               viol AS (SELECT r.subscription_id, count(*) c \
                        FROM synthetic.violations v \
-                       JOIN synthetic.resources r ON r.id = v.resource_id GROUP BY 1) \
+                       JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id GROUP BY 1) \
          SELECT s.subscription_id, s.display_name AS name, s.archetype, \
                 COALESCE(res.c, 0)  AS resource_count, \
                 COALESCE(rgs.c, 0)  AS resource_group_count, \
@@ -769,7 +806,7 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
     //     resource holds ONE stored casing per type, so post-hoc canonicalization does not
     //     merge distinct DB groups in a real tenant).
     let type_rows = sqlx::query(
-        "SELECT type, count(*) c FROM synthetic.resources WHERE drift_deleted_at IS NULL \
+        "SELECT type, count(*) c FROM synthetic.arm_resolved_resources \
          GROUP BY type ORDER BY c DESC, type ASC LIMIT 500",
     )
     .fetch_all(&mut *tx)
@@ -785,7 +822,7 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
 
     // (4) byLocation[] — capped, deterministic.
     let loc_rows = sqlx::query(
-        "SELECT location, count(*) c FROM synthetic.resources WHERE drift_deleted_at IS NULL \
+        "SELECT location, count(*) c FROM synthetic.arm_resolved_resources \
          GROUP BY location ORDER BY c DESC, location ASC LIMIT 500",
     )
     .fetch_all(&mut *tx)
@@ -800,8 +837,8 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
 
     // (5) tenant metadata — `fetch_optional`, NOT `fetch_one` (empty tenant → None ⇒ null
     //     metadata, never a 500). `profile` maps to the generation-profile NAME
-    //     `profile_name` (D-14 supersedes the A1 `profile_version` compromise) — a nullable
-    //     column, so an un-set / pre-Phase-14 tenant reads NULL ⇒ `profile: null`; `seed`
+    //     `profile_name` — a nullable
+    //     column, so an un-set / older tenant reads NULL ⇒ `profile: null`; `seed`
     //     lives in `scale_params` JSONB.
     let tenant_row = sqlx::query(
         "SELECT tenant_id, profile_name, (scale_params->>'seed')::bigint AS seed \
@@ -816,8 +853,8 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
     let (tenant_id, profile, seed) = match tenant_row {
         Some(row) => {
             let tid: Uuid = row.try_get("tenant_id")?;
-            // `profile_name` is NULLABLE (sql/007): an un-set / pre-Phase-14 tenant reads
-            // NULL ⇒ `profile: null` (never a 500). D-14: this is the profile IDENTITY.
+            // `profile_name` is NULLABLE (sql/007): an un-set / older tenant reads
+            // NULL ⇒ `profile: null` (never a 500). This is the profile IDENTITY.
             let pn: Option<String> = row.try_get("profile_name")?;
             let sd: Option<i64> = row.try_get("seed")?;
             (Some(tid.to_string()), pn, sd)
@@ -837,17 +874,17 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
 }
 
 // ---------------------------------------------------------------------------------
-// WAPI-03 / D-15 — list_subscriptions (the keyset-paginated full-enumeration endpoint)
+// list_subscriptions (the keyset-paginated full-enumeration endpoint)
 // ---------------------------------------------------------------------------------
 
 /// `GET /_sim/subscriptions` envelope — a keyset-paginated page of per-subscription rollups
 /// (the SAME [`SummarySubscription`] shape the inline `summary.subscriptions[]` preview uses).
 /// `nextLink` carries the opaque `$skiptoken` continuation (plus `api-version`) when more
 /// rows exist past this page; omitted on the final page. `count` is the total subscription
-/// count (D-13) — v1 has no filters, so it is the whole-table `COUNT(*)`.
+/// count — v1 has no filters, so it is the whole-table `COUNT(*)`.
 #[derive(Serialize)]
 pub struct SubscriptionList {
-    /// Total subscriptions (D-13). No filters in v1, so this is `COUNT(*)` of the table —
+    /// Total subscriptions. No filters in v1, so this is `COUNT(*)` of the table —
     /// it always reports the FULL tenant size even though the inline summary preview caps at 500.
     count: i64,
     value: Vec<SummarySubscription>,
@@ -856,26 +893,26 @@ pub struct SubscriptionList {
 }
 
 /// `GET /_sim/subscriptions` — full per-subscription enumeration, keyset-paginated on the
-/// UUID PK `subscription_id` (WAPI-03 / D-15, superseding the D-01 three-route scope). This
+/// UUID PK `subscription_id`. This
 /// is the unbounded-enumeration companion to the bounded inline `summary.subscriptions[]`
-/// preview: it walks EVERY subscription across pages, closing the T-14-05 residual.
+/// preview: it walks EVERY subscription across pages, closing the preview's residual.
 ///
 /// The per-subscription rollup SQL is the SAME CTE-per-metric shape as [`summary`], but
 /// keyset-paginated: `WHERE ($1::uuid IS NULL OR s.subscription_id > $1) ORDER BY
 /// s.subscription_id LIMIT $2`. The keyset is the UUID PK (NOT the numeric SERIAL keyset the
 /// collection endpoints use — `subscription_id` is a `UUID`), so the cursor is decoded via
-/// [`cursor_uuid_from_token`] and bound as `$1::uuid` (NULL on page 1). Fail-closed parse
-/// (D-16): the documented param set is the pagination trio ONLY (no filters in v1) — any
+/// [`cursor_uuid_from_token`] and bound as `$1::uuid` (NULL on page 1). Fail-closed parse:
+/// the documented param set is the pagination trio ONLY (no filters in v1) — any
 /// other key, or a malformed `$top`/`$skiptoken`, is the fixed JSON `ApiError` 400.
 pub async fn list_subscriptions(
     State(state): State<AppState>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<SubscriptionList>, ApiError> {
-    // Fail-closed parse (D-16): the documented set is the pagination trio ONLY — this endpoint
+    // Fail-closed parse: the documented set is the pagination trio ONLY — this endpoint
     // has NO filters in v1. Any other key, or a malformed `$top`, is the fixed JSON 400.
     let qs = SimQuery::parse(raw, &[])?;
 
-    // `count` = total subscriptions (D-13). No filter in v1, so it is the whole-table COUNT(*)
+    // `count` = total subscriptions. No filter in v1, so it is the whole-table COUNT(*)
     // — and it always reports the FULL tenant size, unlike the 500-capped inline preview.
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.subscriptions")
         .fetch_one(&state.pool)
@@ -887,12 +924,12 @@ pub async fn list_subscriptions(
     // Keyset on the UUID PK `subscription_id` (deterministic total order — the PK is unique).
     // Same CTE-per-metric rollup as `summary`; the cursor binds as `$1::uuid` (NULL page 1),
     // the limit as `$2`. No user value is ever spliced (project SQL bar).
-    let sql = "WITH res AS (SELECT subscription_id, count(*) c FROM synthetic.resources \
-                            WHERE drift_deleted_at IS NULL GROUP BY 1), \
+    let sql = "WITH res AS (SELECT subscription_id, count(*) c FROM synthetic.arm_resolved_resources \
+                            GROUP BY 1), \
                     rgs AS (SELECT subscription_id, count(*) c FROM synthetic.resource_groups GROUP BY 1), \
                     viol AS (SELECT r.subscription_id, count(*) c \
                              FROM synthetic.violations v \
-                             JOIN synthetic.resources r ON r.id = v.resource_id GROUP BY 1) \
+                             JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id GROUP BY 1) \
                SELECT s.subscription_id, s.display_name AS name, s.archetype, \
                       COALESCE(res.c, 0)  AS resource_count, \
                       COALESCE(rgs.c, 0)  AS resource_group_count, \
@@ -932,20 +969,20 @@ pub async fn list_subscriptions(
 }
 
 // ---------------------------------------------------------------------------------
-// 15-14 (EXPL-01 / EXPL-05) — search_resources (tenant-wide name/type substring search)
+// search_resources (tenant-wide name/type substring search)
 // ---------------------------------------------------------------------------------
 
 /// Parsed + validated search filters. `q` is the non-empty search term (the handler
 /// rejects an absent/all-whitespace term with a fixed 400 BEFORE constructing this — a
-/// fail-closed choice so an empty term can never `ILIKE '%%'` the whole table, T-15-24);
-/// `subscription` is already `Uuid`-parsed (D-09).
+/// fail-closed choice so an empty term can never `ILIKE '%%'` the whole table);
+/// `subscription` is already `Uuid`-parsed.
 struct SearchFilters {
     q: String,
     subscription: Option<Uuid>,
 }
 
-/// Build the `WHERE`-conjunct fragment + parallel bound-value list for the resource search
-/// (T-15-23). The SQL string carries ONLY column names, the `%` wildcard LITERALS, boolean
+/// Build the `WHERE`-conjunct fragment + parallel bound-value list for the resource search.
+/// The SQL string carries ONLY column names, the `%` wildcard LITERALS, boolean
 /// keywords, `ESCAPE '\'` clauses, and `$N` placeholders — every user value is returned as a
 /// [`Bind`]. The search term binds as ONE [`Bind::Text`] referenced THREE times — `(name ILIKE
 /// '%' || $N || '%' ESCAPE '\' OR type ILIKE '%' || $N || '%' ESCAPE '\' OR subscription_id IN
@@ -953,9 +990,9 @@ struct SearchFilters {
 /// ESCAPE '\'))` — with the `%` wildcards WRITTEN INTO the constant SQL, never taken from `q`, so
 /// no metacharacter splices in. The bound term is pre-escaped by [`normalize_search_term`] (`\`,
 /// `%`, `_` → `\\`, `\%`, `\_`) and each clause declares `ESCAPE '\'`, so a `%`/`_` inside `q`
-/// matches LITERALLY instead of acting as a wildcard (WR-02 — `q=%` no longer scans the whole
-/// tenant). The subquery matches a resource whose SUBSCRIPTION name matches the term
-/// (EXPL-GAP-01a). `subscription` binds as `subscription_id = $M`. `start_idx` is the last
+/// matches LITERALLY instead of acting as a wildcard (`q=%` no longer scans the whole
+/// tenant). The subquery matches a resource whose SUBSCRIPTION name matches the term.
+/// `subscription` binds as `subscription_id = $M`. `start_idx` is the last
 /// placeholder already consumed: the page query passes `2` (`$1` cursor, `$2` LIMIT) so filters
 /// begin at `$3`; the cursor-less COUNT passes `0` so the SAME fragment begins at `$1`. The
 /// single-bind-twice + dual-base structure mirrors [`dependency_where`].
@@ -967,12 +1004,12 @@ fn search_where(f: &SearchFilters, start_idx: i32) -> (String, Vec<Bind>) {
         idx += 1;
         let p = idx;
         // The `%` wildcards are CONSTANT SQL text; `$p` (the term) is referenced THREE times —
-        // resource name, resource type, AND the subscription-NAME subquery (EXPL-GAP-01a). The
-        // subquery keys `synthetic.resources.subscription_id` on the FK-matching
+        // resource name, resource type, AND the subscription-NAME subquery. The
+        // subquery keys the outer (resolved-view) `subscription_id` on the FK-matching
         // `synthetic.subscriptions.subscription_id` whose `display_name` ILIKE-matches the SAME
         // bound term, so a term matching a subscription's name returns that subscription's
         // resources. Still ONE `Bind::Text`, never spliced. Each clause declares `ESCAPE '\'` so
-        // the backslash-escaped `%`/`_` in the (pre-normalized) term match literally (WR-02).
+        // the backslash-escaped `%`/`_` in the (pre-normalized) term match literally.
         conj.push(format!(
             "(name ILIKE '%' || ${p} || '%' ESCAPE '\\' \
              OR type ILIKE '%' || ${p} || '%' ESCAPE '\\' \
@@ -997,10 +1034,10 @@ fn search_where(f: &SearchFilters, start_idx: i32) -> (String, Vec<Bind>) {
 /// Normalize a raw search term for `search_resources`: a literal `*` is a plain-substring marker
 /// (NOT an ILIKE wildcard — ILIKE's wildcards are `%`/`_`) and is stripped, so `corp*` searches
 /// for the substring `corp`. The ILIKE metacharacters `%`/`_` (and the escape `\` itself) are then
-/// BACKSLASH-ESCAPED so they match LITERALLY, not as wildcards (WR-02). Every ILIKE clause that
+/// BACKSLASH-ESCAPED so they match LITERALLY, not as wildcards. Every ILIKE clause that
 /// consumes this term pairs it with `ESCAPE '\'`, so `q=%` matches only names containing a literal
 /// `%` — it does NOT collapse to `ILIKE '%%%'` (a whole-tenant scan that would bypass the
-/// empty-term guard's T-15-24 intent). Backslash is escaped FIRST so the `\` prefixes added for
+/// empty-term guard's intent). Backslash is escaped FIRST so the `\` prefixes added for
 /// `%`/`_` are not themselves re-escaped.
 fn normalize_search_term(raw: &str) -> String {
     // Strip every `*` (plain-substring marker), then escape the ILIKE metacharacters so `%`/`_`
@@ -1012,7 +1049,7 @@ fn normalize_search_term(raw: &str) -> String {
 }
 
 /// One resource-search hit — the SAME id/name/type/subscription/RG the tree already exposes
-/// (T-15-25: only synthetic data crosses the boundary). Explicit camelCase per D-10.
+/// (only synthetic data crosses the boundary). Explicit camelCase.
 /// `subscription_id` is stored as a `Uuid` column, surfaced as its string form.
 #[derive(Serialize)]
 pub struct ResourceSearchDto {
@@ -1026,9 +1063,9 @@ pub struct ResourceSearchDto {
     resource_group_name: String,
 }
 
-/// One matching-subscription hit for the search response `subscriptions[]` section
-/// (EXPL-GAP-01b). `id` is the subscription UUID string, `name` its `display_name`. Only
-/// synthetic ids/names cross the boundary (T-15-25); already camelCase.
+/// One matching-subscription hit for the search response `subscriptions[]` section.
+/// `id` is the subscription UUID string, `name` its `display_name`. Only
+/// synthetic ids/names cross the boundary; already camelCase.
 #[derive(Serialize)]
 pub struct SearchSubscriptionDto {
     id: String,
@@ -1036,13 +1073,13 @@ pub struct SearchSubscriptionDto {
 }
 
 /// Upper bound on the `subscriptions` array returned by `search_resources` (the locked
-/// "bounded" requirement, T-15G-02) — used verbatim as the `LIMIT` on the sub-name query.
+/// "bounded" requirement) — used verbatim as the `LIMIT` on the sub-name query.
 const SEARCH_SUBSCRIPTIONS_CAP: i64 = 50;
 
 /// One matching-resource-group hit for the search response `resourceGroups[]` section
-/// (RG-name search, live UAT). A resource group has no standalone UUID — it is addressed by
+/// (RG-name search). A resource group has no standalone UUID — it is addressed by
 /// its `subscriptionId` + `name`, which together are the Miller-column selection key
-/// (`?sub&rg`). Only synthetic ids/names cross the boundary (T-15-25); already camelCase.
+/// (`?sub&rg`). Only synthetic ids/names cross the boundary; already camelCase.
 #[derive(Serialize)]
 pub struct SearchResourceGroupDto {
     name: String,
@@ -1062,13 +1099,13 @@ const SEARCH_RESOURCE_GROUPS_CAP: i64 = 50;
 const MAX_SEARCH_TERM_CHARS: usize = 200;
 
 /// `GET /_sim/resources/search` envelope — a keyset-paginated page of search hits. `count` is
-/// the FULL filtered total (D-13), NOT the page size. `subscriptions` is a BOUNDED, name-ASC
-/// list of subscriptions whose name matches the term (EXPL-GAP-01b; `[]` when none match).
+/// the FULL filtered total, NOT the page size. `subscriptions` is a BOUNDED, name-ASC
+/// list of subscriptions whose name matches the term (`[]` when none match).
 /// `resourceGroups` is the analogous BOUNDED, name-ASC list of resource groups whose name
 /// matches the term (RG-name search; `[]` when none match) — resources are named unlike their
 /// RGs, so an RG-name query (e.g. `rg-corp-...`) matches zero resource rows and surfaces here.
 /// `nextLink` carries the opaque `$skiptoken` continuation (plus `q` + optional `subscription`
-/// + api-version) when more rows exist.
+/// and api-version) when more rows exist.
 #[derive(Serialize)]
 pub struct ResourceSearchList {
     count: i64,
@@ -1081,20 +1118,22 @@ pub struct ResourceSearchList {
 }
 
 /// `GET /_sim/resources/search` — tenant-wide resource search by name OR type substring,
-/// keyset-paginated on the TEXT `id` PK (EXPL-01/EXPL-05, WAPI-04 additive fifth route).
+/// keyset-paginated on the TEXT `id` PK (an additive fifth route).
 ///
-/// Fail-closed (D-16): `SimQuery::parse` allows only the pagination trio + `q`/`subscription`;
+/// Fail-closed: `SimQuery::parse` allows only the pagination trio + `q`/`subscription`;
 /// an unknown key / bad `$top` / malformed `%XX` / ASCII control char is the fixed JSON 400.
-/// `q` is REQUIRED — an absent or all-whitespace term is a fixed 400 (T-15-24, so no `%%`
+/// `q` is REQUIRED — an absent or all-whitespace term is a fixed 400 (so no `%%`
 /// whole-table scan). `subscription` is parsed to `Uuid` BEFORE SQL (a malformed value → fixed
-/// 400, never a 500). Soft-deleted rows are excluded via the parameter-free `drift_deleted_at
-/// IS NULL` predicate. The whole search is a SINGLE-statement read — no long-running txn on
-/// `synthetic.resources` (respects the ALTER ACCESS-EXCLUSIVE startup-lock fragility).
+/// 400, never a 500). Liveness is resolved by reading THROUGH
+/// `synthetic.arm_resolved_resources` (tombstoned rows drop out, appeared
+/// overlay rows show, modified rows report resolved fields — the retired `drift_deleted_at IS
+/// NULL` conjunct is dropped). The whole search is a SINGLE-statement read — no long-running
+/// txn on the baseline (respects the ALTER ACCESS-EXCLUSIVE startup-lock fragility).
 pub async fn search_resources(
     State(state): State<AppState>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<ResourceSearchList>, ApiError> {
-    // Fail-closed parse (D-16): documented set = the pagination trio + `q`/`subscription`.
+    // Fail-closed parse: documented set = the pagination trio + `q`/`subscription`.
     let qs = SimQuery::parse(raw, &["q", "subscription"])?;
 
     // Execution budget: cap the RAW term length BEFORE normalizing (escaping inflates
@@ -1106,14 +1145,14 @@ pub async fn search_resources(
     }
 
     // Normalize the literal `*` (plain-substring marker) BEFORE the empty-term guard so an
-    // all-`*` term collapses to empty and fails-closed to the same fixed 400 (T-15G-03/04).
-    // Require `q`: absent or all-whitespace → fixed 400 (T-15-24, no `%%` whole-table scan).
+    // all-`*` term collapses to empty and fails-closed to the same fixed 400.
+    // Require `q`: absent or all-whitespace → fixed 400 (no `%%` whole-table scan).
     let q = normalize_search_term(raw_term);
     if q.trim().is_empty() {
         return Err(ApiError::bad_request("missing search term"));
     }
 
-    // Parse subscription to Uuid BEFORE SQL (D-09); a malformed value is a fixed 400.
+    // Parse subscription to Uuid BEFORE SQL; a malformed value is a fixed 400.
     let sub = match qs.filter("subscription") {
         Some(s) => {
             Some(Uuid::parse_str(s).map_err(|_| ApiError::bad_request("invalid subscription"))?)
@@ -1126,12 +1165,13 @@ pub async fn search_resources(
     };
 
     // Filtered COUNT(*): the SAME predicate rebuilt to start at `$1` (no cursor/limit) so `count`
-    // is the whole filtered set, not the page (D-13). `drift_deleted_at IS NULL` is a fixed,
-    // parameter-free predicate; the `AND`-prefixed fragment appends after it.
+    // is the whole filtered set, not the page. The read resolves through
+    // `synthetic.arm_resolved_resources`; `WHERE 1=1` is the fixed anchor so the
+    // `AND`-prefixed `search_where` fragment appends cleanly (and is empty when unfiltered).
     let (count_where, count_binds) = search_where(&filters, 0);
     let count_sql = format!(
-        "SELECT count(*) AS n FROM synthetic.resources \
-         WHERE drift_deleted_at IS NULL{count_where}"
+        "SELECT count(*) AS n FROM synthetic.arm_resolved_resources \
+         WHERE 1=1{count_where}"
     );
     let mut cq = sqlx::query(&count_sql);
     for b in &count_binds {
@@ -1149,8 +1189,8 @@ pub async fn search_resources(
     let (where_extra, binds) = search_where(&filters, 2);
     let sql = format!(
         "SELECT id, name, type, subscription_id, resource_group_name \
-         FROM synthetic.resources \
-         WHERE ($1::text IS NULL OR id > $1) AND drift_deleted_at IS NULL{where_extra} \
+         FROM synthetic.arm_resolved_resources \
+         WHERE ($1::text IS NULL OR id > $1){where_extra} \
          ORDER BY id LIMIT $2"
     );
     let mut query = sqlx::query(&sql).bind(cursor).bind(top + 1);
@@ -1172,11 +1212,11 @@ pub async fn search_resources(
             resource_group_name: row.try_get("resource_group_name")?,
         });
     }
-    // Bounded `subscriptions[]` (EXPL-GAP-01b): the subscriptions whose name matches the SAME
-    // normalized term, `$1`-bound (never spliced), name-ASC, capped at `SEARCH_SUBSCRIPTIONS_CAP`
-    // (T-15G-02). Runs on EVERY search — the array is empty when no subscription name matches.
-    // `ESCAPE '\'` mirrors `search_where`: the pre-escaped `%`/`_` in the term match literally
-    // (WR-02), so `q=%` does not name-match every subscription.
+    // Bounded `subscriptions[]`: the subscriptions whose name matches the SAME
+    // normalized term, `$1`-bound (never spliced), name-ASC, capped at `SEARCH_SUBSCRIPTIONS_CAP`.
+    // Runs on EVERY search — the array is empty when no subscription name matches.
+    // `ESCAPE '\'` mirrors `search_where`: the pre-escaped `%`/`_` in the term match literally,
+    // so `q=%` does not name-match every subscription.
     let subs_sql = "SELECT subscription_id, display_name FROM synthetic.subscriptions \
          WHERE display_name ILIKE '%' || $1 || '%' ESCAPE '\\' \
          ORDER BY display_name ASC LIMIT $2";
@@ -1198,7 +1238,7 @@ pub async fn search_resources(
     // SAME normalized term, `$1`-bound (never spliced), name-ASC, capped at
     // `SEARCH_RESOURCE_GROUPS_CAP`. Runs on EVERY search — the array is empty when no RG name
     // matches. `ESCAPE '\'` mirrors `search_where`: the pre-escaped `%`/`_` in the term match
-    // literally (WR-02), so `q=%` does not name-match every RG. Ordered by (name, subscription_id)
+    // literally, so `q=%` does not name-match every RG. Ordered by (name, subscription_id)
     // so a name shared across subscriptions yields a stable, individually-addressable set.
     let rgs_sql = "SELECT subscription_id, name FROM synthetic.resource_groups \
          WHERE name ILIKE '%' || $1 || '%' ESCAPE '\\' \
@@ -1271,7 +1311,7 @@ mod tests {
         assert_eq!(v["subscriptionId"], "11111111-1111-1111-1111-111111111111");
     }
 
-    /// D-10: the violation DTO serializes to the exact camelCase key set, and the `detail`
+    /// The violation DTO serializes to the exact camelCase key set, and the `detail`
     /// JSONB passthrough keeps its inner keys VERBATIM (never camelCase-mangled).
     #[test]
     fn violation_dto_serializes() {
@@ -1297,7 +1337,7 @@ mod tests {
         assert_eq!(v["severity"], "High");
         assert_eq!(v["subscriptionId"], "11111111-1111-1111-1111-111111111111");
 
-        // The JSONB detail's INNER keys survive byte-for-byte (D-10) — NOT renamed to
+        // The JSONB detail's INNER keys survive byte-for-byte — NOT renamed to
         // e.g. `Field`/`Observed` or camelCased in any way.
         assert_eq!(v["detail"]["field"], "publicNetworkAccess");
         assert_eq!(v["detail"]["observed"], "Enabled");
@@ -1307,7 +1347,7 @@ mod tests {
         );
     }
 
-    /// T-14-01: an SQL-metacharacter filter value NEVER reaches the SQL fragment — the
+    /// An SQL-metacharacter filter value NEVER reaches the SQL fragment — the
     /// fragment carries only columns + `$N`, and `'$'.count() == binds.len()`.
     #[test]
     fn violation_filter_is_placeholders_only() {
@@ -1341,7 +1381,7 @@ mod tests {
             "page filters start at $3: {where_extra:?}"
         );
 
-        // COUNT context (D-13): the SAME allowlist rebuilt to start at `$1`. Still `$N`-bound,
+        // COUNT context: the SAME allowlist rebuilt to start at `$1`. Still `$N`-bound,
         // same bind count, first placeholder `$1` (no cursor/limit precede it), no splice.
         let (count_where, count_binds) = violation_where(&f, 0);
         assert!(
@@ -1377,10 +1417,10 @@ mod tests {
         assert!(eb.is_empty());
     }
 
-    /// D-13: the dependency DTO serializes to EXACTLY the nested spec shape
+    /// The dependency DTO serializes to EXACTLY the nested spec shape
     /// `{ type, source:{resourceId,subscriptionId}, target:{...}, crossSubscription }` —
     /// key `type` present, the old flat keys ABSENT; nested objects carry `resourceId` +
-    /// `subscriptionId`. `crossSubscription` = (source != target) computed in Rust (D-08).
+    /// `subscriptionId`. `crossSubscription` = (source != target) computed in Rust.
     #[test]
     fn dependency_dto_serializes() {
         let cross = DependencyDto {
@@ -1449,7 +1489,7 @@ mod tests {
         assert_eq!(iv["crossSubscription"], serde_json::Value::Bool(false));
     }
 
-    /// T-14-01: the dependency `?subscription=` filter reaches SQL as a SINGLE bound value
+    /// The dependency `?subscription=` filter reaches SQL as a SINGLE bound value
     /// used TWICE (`(source_subscription = $N OR target_subscription = $N)`); `?type` is
     /// one more `$N`. No user value ever splices in.
     #[test]
@@ -1488,7 +1528,7 @@ mod tests {
             "one subscription bind (used twice) + one type bind"
         );
 
-        // COUNT context (D-13): the SAME source-OR-target allowlist rebuilt to start at `$1`.
+        // COUNT context: the SAME source-OR-target allowlist rebuilt to start at `$1`.
         // The single subscription bind is still referenced twice; type is one more `$N`.
         let (count_where, count_binds) = dependency_where(&f, 0);
         assert!(
@@ -1536,10 +1576,10 @@ mod tests {
         assert!(eb.is_empty());
     }
 
-    /// WR-01: a decoded ASCII control character (NUL and the rest of C0 + DEL) is a
+    /// A decoded ASCII control character (NUL and the rest of C0 + DEL) is a
     /// reachable contract violation — encoded as `%00`/`%1f`/`%7f` it decodes to valid
     /// UTF-8, so without an explicit guard it binds and Postgres 500s, contradicting the
-    /// D-16 "every bad-input path is a fixed JSON 400" invariant. The decode choke point
+    /// "every bad-input path is a fixed JSON 400" invariant. The decode choke point
     /// must REJECT it so no control byte ever reaches SQL, for keys AND values of every
     /// `/_sim` query component (filters, `$skiptoken`, `api-version`, ...).
     #[test]
@@ -1578,7 +1618,7 @@ mod tests {
         assert!(percent_decode_query("%0").is_err());
     }
 
-    /// T-15-23: the tenant-wide resource-search predicate reaches SQL as placeholders ONLY.
+    /// The tenant-wide resource-search predicate reaches SQL as placeholders ONLY.
     /// The search term `q` binds as ONE `$N` referenced THREE times (name ILIKE OR type ILIKE OR
     /// the subscription-name subquery `subscription_id IN (SELECT … WHERE display_name ILIKE …)`)
     /// with the `%` wildcards written as CONSTANT SQL text (never taken from user input);
@@ -1617,14 +1657,14 @@ mod tests {
             where_extra.contains("'%'"),
             "wildcards are constant SQL '%' literals: {where_extra:?}"
         );
-        // WR-02: every ILIKE clause declares `ESCAPE '\'` so a `%`/`_` in the (pre-normalized) term
+        // Every ILIKE clause declares `ESCAPE '\'` so a `%`/`_` in the (pre-normalized) term
         // matches literally — one per name/type/sub-name predicate (three total).
         assert_eq!(
             where_extra.matches("ESCAPE '\\'").count(),
             3,
             "each ILIKE clause pairs with ESCAPE '\\' (WR-02): {where_extra:?}"
         );
-        // The subscription-NAME subquery is present and `$N`-bound (EXPL-GAP-01a).
+        // The subscription-NAME subquery is present and `$N`-bound.
         assert!(
             where_extra.contains(
                 "subscription_id IN (SELECT subscription_id FROM synthetic.subscriptions WHERE display_name ILIKE"
@@ -1648,7 +1688,7 @@ mod tests {
             "one q bind (used thrice) + one subscription bind"
         );
 
-        // COUNT context (D-13): the SAME fragment rebuilt to start at `$1`. `q` is still ONE
+        // COUNT context: the SAME fragment rebuilt to start at `$1`. `q` is still ONE
         // bound value referenced thrice (now `$1`); subscription is `$2`.
         let (count_where, count_binds) = search_where(&f, 0);
         assert!(
@@ -1684,14 +1724,14 @@ mod tests {
 
     /// `normalize_search_term` strips every literal `*` (plain-substring marker) AND backslash-
     /// escapes the ILIKE metacharacters `%`/`_`/`\` so they match literally under `ESCAPE '\'`
-    /// (WR-02 — a `%` term no longer becomes a whole-tenant wildcard).
+    /// (a `%` term no longer becomes a whole-tenant wildcard).
     #[test]
     fn normalize_search_term_cases() {
         assert_eq!(normalize_search_term("corp*"), "corp");
         assert_eq!(normalize_search_term("*corp*"), "corp");
         assert_eq!(normalize_search_term("a*b"), "ab");
         assert_eq!(normalize_search_term("corp"), "corp");
-        // `%`/`_` are ILIKE wildcards — now backslash-escaped so they bind as LITERALS (WR-02).
+        // `%`/`_` are ILIKE wildcards — now backslash-escaped so they bind as LITERALS.
         assert_eq!(normalize_search_term("a%b_c"), "a\\%b\\_c");
         // A lone `%` becomes the literal-matching `\%`, never the bare wildcard that scans all rows.
         assert_eq!(normalize_search_term("%"), "\\%");

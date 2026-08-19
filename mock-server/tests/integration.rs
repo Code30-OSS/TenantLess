@@ -1,7 +1,7 @@
 //! Integration tests driving the real router against an ephemeral testcontainers
 //! Postgres seeded by `common::seed_fixture`. The endpoint behavior tests
-//! (subscriptions ARM shape, Bearer gate, CloudError, api-version) land in Task 3;
-//! Wave 1 ships the harness + a smoke test that proves the fixture itself.
+//! (subscriptions ARM shape, Bearer gate, CloudError, api-version) land later;
+//! this suite ships the harness + a smoke test that proves the fixture itself.
 
 mod common;
 
@@ -110,7 +110,7 @@ async fn seeded_app() -> (
     (app, container)
 }
 
-/// MOCK-01: GET /subscriptions returns the ARM subscription envelope.
+/// GET /subscriptions returns the ARM subscription envelope.
 #[tokio::test]
 async fn lists_subscriptions_arm_shape() {
     let (app, _c) = seeded_app().await;
@@ -132,7 +132,7 @@ async fn lists_subscriptions_arm_shape() {
         assert!(first.get(key).is_some(), "missing key: {key}");
     }
 
-    // id is synthesized as /subscriptions/{subscriptionId} (MOCK-01).
+    // id is synthesized as /subscriptions/{subscriptionId}.
     let sub_id = first["subscriptionId"]
         .as_str()
         .expect("subscriptionId string");
@@ -141,7 +141,7 @@ async fn lists_subscriptions_arm_shape() {
         format!("/subscriptions/{sub_id}")
     );
 
-    // subscriptionPolicies is an object carrying spendingLimit (A3); never null (MOCK-13).
+    // subscriptionPolicies is an object carrying spendingLimit (A3); never null.
     let policies = &first["subscriptionPolicies"];
     assert!(
         policies.is_object(),
@@ -150,7 +150,7 @@ async fn lists_subscriptions_arm_shape() {
     assert!(policies.get("spendingLimit").is_some());
 }
 
-/// MOCK-09 / SEC-HIGH-3: missing Bearer -> 401; empty Bearer token -> 401;
+/// Missing Bearer -> 401; empty Bearer token -> 401;
 /// any NON-empty Bearer -> 200 (live localhost Path-A scan / healthcheck contract).
 #[tokio::test]
 async fn bearer_required() {
@@ -158,11 +158,11 @@ async fn bearer_required() {
     let (status_no_auth, _) = common::request(app.clone(), "GET", "/subscriptions", None).await;
     assert_eq!(status_no_auth, 401);
 
-    // SEC-HIGH-3: an `Authorization: Bearer ` header with an empty token -> 401.
+    // An `Authorization: Bearer ` header with an empty token -> 401.
     let (status_empty, _) = common::request(app.clone(), "GET", "/subscriptions", Some("")).await;
     assert_eq!(status_empty, 401, "empty Bearer token must be rejected");
 
-    // SEC-HIGH-3: whitespace-only token is still empty -> 401.
+    // Whitespace-only token is still empty -> 401.
     let (status_ws, _) = common::request(app.clone(), "GET", "/subscriptions", Some("   ")).await;
     assert_eq!(
         status_ws, 401,
@@ -173,9 +173,9 @@ async fn bearer_required() {
     assert_eq!(status_auth, 200);
 }
 
-/// MOCK-10: the 401 AND 400 bodies are ARM CloudError `{ error: { code, message } }`.
+/// The 401 AND 400 bodies are ARM CloudError `{ error: { code, message } }`.
 /// The 404 ResourceNotFound shape is proven DB-free in `not_found_cloud_error_shape`,
-/// completing the 401/400/404 CloudError contract Phase 4's detail endpoint depends on.
+/// completing the 401/400/404 CloudError contract the detail endpoint depends on.
 #[tokio::test]
 async fn arm_cloud_error_shapes() {
     let (app, _c) = seeded_app().await;
@@ -205,7 +205,7 @@ async fn arm_cloud_error_shapes() {
     );
 }
 
-/// MOCK-11: any api-version query param is accepted without validation (still 200) on
+/// Any api-version query param is accepted without validation (still 200) on
 /// EVERY list endpoint — subscriptions, RGs, resources, and RG-scoped resources.
 #[tokio::test]
 async fn api_version_ignored() {
@@ -234,7 +234,7 @@ async fn api_version_ignored() {
     }
 }
 
-/// MOCK-10: a malformed `$skiptoken` on any list endpoint returns 400 with the ARM
+/// A malformed `$skiptoken` on any list endpoint returns 400 with the ARM
 /// CloudError code `InvalidRequestContent` (and a non-empty message).
 #[tokio::test]
 async fn bad_skiptoken_400() {
@@ -266,9 +266,9 @@ async fn bad_skiptoken_400() {
     }
 }
 
-/// MOCK-10: the ApiError::NotFound IntoResponse produces a 404 with the ARM CloudError
-/// `{ error: { code: "ResourceNotFound", message } }` shape. No Phase-3 route returns
-/// 404, so this DB-free unit check locks the contract that Phase 4's detail endpoint
+/// The ApiError::NotFound IntoResponse produces a 404 with the ARM CloudError
+/// `{ error: { code: "ResourceNotFound", message } }` shape. No list route returns
+/// 404, so this DB-free unit check locks the contract that the detail endpoint
 /// relies on.
 #[tokio::test]
 async fn not_found_cloud_error_shape() {
@@ -310,7 +310,7 @@ fn to_relative(next_link: &str, base_url: &str) -> String {
         .to_string()
 }
 
-/// MOCK-02: GET /subscriptions/{sub}/resourceGroups paginates >100 RGs; a full
+/// GET /subscriptions/{sub}/resourceGroups paginates >100 RGs; a full
 /// traversal yields every RG in sub A exactly once; the last page omits nextLink.
 #[tokio::test]
 async fn paginates_resource_groups() {
@@ -360,15 +360,15 @@ async fn paginates_resource_groups() {
     let total = seen.len();
     let unique: std::collections::HashSet<&String> = seen.iter().collect();
     assert_eq!(unique.len(), total, "RG traversal had duplicates");
-    // 107 = 105 dense RGs + 2 Phase-4 filter RGs (rg-filter-000, Rg-Filter-Mixed)
-    // added to SUB_A by the Plan 04-01 fixture extension.
+    // 107 = 105 dense RGs + 2 filter RGs (rg-filter-000, Rg-Filter-Mixed)
+    // added to SUB_A by the fixture extension.
     assert_eq!(total, 107, "all 107 RGs in sub A returned exactly once");
 
     // Last page (second page here: 107 = 100 + 7) omits nextLink — asserted by the
     // loop terminating naturally above (next became None).
 }
 
-/// Locked behavior (research Open Question 2): unknown {sub} → 200 with empty value.
+/// Locked behavior: unknown {sub} → 200 with empty value.
 #[tokio::test]
 async fn unknown_sub_returns_empty_rg_list() {
     let (app, _c) = seeded_app().await;
@@ -388,7 +388,7 @@ fn res_path(sub: &uuid::Uuid) -> String {
     format!("/subscriptions/{sub}/resources")
 }
 
-/// MOCK-03: $top default 100 + clamp to [1,1000]; the full $skiptoken chain
+/// $top default 100 + clamp to [1,1000]; the full $skiptoken chain
 /// traverses every resource in sub A exactly once (no gaps, no duplicates).
 #[tokio::test]
 async fn resources_top_and_skiptoken() {
@@ -397,7 +397,7 @@ async fn resources_top_and_skiptoken() {
     let path = res_path(&common::SUB_A);
 
     // SUB_A now holds 116 resources: 110 in the dense RG + 5 in rg-filter-000
-    // (1 nested-type + 4 filter-selectivity) + 1 mixed-case — the Plan 04-01 rows.
+    // (1 nested-type + 4 filter-selectivity) + 1 mixed-case — the fixture rows.
     // Default $top → exactly 100 items + nextLink (fixture has 116 resources).
     let (status, body) = common::request(app.clone(), "GET", &path, Some("x")).await;
     assert_eq!(status, 200);
@@ -464,7 +464,7 @@ async fn resources_top_and_skiptoken() {
     assert_eq!(total, 116, "all 116 resources returned exactly once");
 }
 
-/// MOCK-08: nextLink is absolute (starts with base_url) and carries $skiptoken + $top.
+/// nextLink is absolute (starts with base_url) and carries $skiptoken + $top.
 #[tokio::test]
 async fn nextlink_is_absolute() {
     let (app, _c) = seeded_app().await;
@@ -488,7 +488,7 @@ fn rg_scoped_res_path(sub: &uuid::Uuid, rg: &str) -> String {
     format!("/subscriptions/{sub}/resourceGroups/{rg}/resources")
 }
 
-/// MOCK-04: GET /subscriptions/{sub}/resourceGroups/{rg}/resources returns only that
+/// GET /subscriptions/{sub}/resourceGroups/{rg}/resources returns only that
 /// RG's resources, keyset-paginated identically to the unscoped endpoint; an unknown
 /// {rg} yields 200 + empty value (no 404 — locked); a resource living in a different
 /// RG is absent from the scoped response.
@@ -657,8 +657,8 @@ fn split_resource_id(id: &str) -> (String, String, String) {
     (sub.to_string(), rg.to_string(), tail.to_string())
 }
 
-/// MOCK-05: a nested-depth id resolves to a single ARM Resource object (no `value`
-/// envelope), with the canonical `type` echoed verbatim (MOCK-12).
+/// A nested-depth id resolves to a single ARM Resource object (no `value`
+/// envelope), with the canonical `type` echoed verbatim.
 #[tokio::test]
 async fn resource_detail_nested() {
     let (app, _c) = seeded_app().await;
@@ -680,7 +680,7 @@ async fn resource_detail_nested() {
     assert_eq!(
         body["type"].as_str().unwrap(),
         common::NESTED_RESOURCE_TYPE,
-        "type must be canonical (echoed verbatim, MOCK-12)"
+        "type must be canonical (echoed verbatim)"
     );
     assert!(
         body["properties"].is_object(),
@@ -688,7 +688,7 @@ async fn resource_detail_nested() {
     );
 }
 
-/// D-06: an unknown (never-seeded) provider path under a real sub returns 404 with the
+/// An unknown (never-seeded) provider path under a real sub returns 404 with the
 /// ARM CloudError `{ error: { code: "ResourceNotFound", message } }` shape.
 #[tokio::test]
 async fn resource_detail_404() {
@@ -714,7 +714,7 @@ async fn resource_detail_404() {
     );
 }
 
-/// MOCK-07 / D-08: a case-flipped `{rg}`/`{name}` in the request still resolves to the
+/// A case-flipped `{rg}`/`{name}` in the request still resolves to the
 /// canonical stored resource (case-insensitive id match).
 #[tokio::test]
 async fn detail_case_insensitive() {
@@ -738,7 +738,7 @@ async fn detail_case_insensitive() {
     );
 }
 
-/// MOCK-12 / D-09: the returned `type` is canonical (echoed verbatim from storage), NOT
+/// The returned `type` is canonical (echoed verbatim from storage), NOT
 /// lowercased, even though the lookup is case-insensitive.
 #[tokio::test]
 async fn canonical_type_casing() {
@@ -758,7 +758,7 @@ async fn canonical_type_casing() {
     assert_ne!(ty, ty.to_lowercase(), "type must not be lowercased");
 }
 
-/// T-04-07: the detail route is behind the Bearer gate — a missing Bearer header → 401.
+/// The detail route is behind the Bearer gate — a missing Bearer header → 401.
 #[tokio::test]
 async fn detail_requires_bearer() {
     let (app, _c) = seeded_app().await;
@@ -802,9 +802,9 @@ async fn detail_route_does_not_shadow_list() {
 }
 
 // ===========================================================================
-// MOCK-06: OData `$filter` on BOTH resource list endpoints (D-03).
+// OData `$filter` on BOTH resource list endpoints.
 //
-// Selectivity counts are derived from the Plan 04-01 fixture under SUB_A
+// Selectivity counts are derived from the fixture under SUB_A
 // (116 resources total): 110 dense (storage/eastus/no-tags) + 5 under
 // rg-filter-000 [nested(Sql/servers/databases, westus, env=prod),
 // flt-0000(storage,eastus,env=prod), flt-0001(storage,westus,env=dev),
@@ -832,7 +832,7 @@ fn filtered_res_path(sub: &uuid::Uuid, filter: &str) -> String {
     format!("/subscriptions/{sub}/resources?$filter={}", enc(filter))
 }
 
-/// MOCK-06: `resourceType eq 'X'` returns only resources of type X (and the count
+/// `resourceType eq 'X'` returns only resources of type X (and the count
 /// matches the fixture's vnet rows: flt-0002, flt-0003 = 2).
 #[tokio::test]
 async fn filter_resource_type() {
@@ -854,7 +854,7 @@ async fn filter_resource_type() {
     }
 }
 
-/// MOCK-06: `location eq 'Y'` returns only resources in location Y (westus rows:
+/// `location eq 'Y'` returns only resources in location Y (westus rows:
 /// nested, flt-0001, flt-0003 = 3).
 #[tokio::test]
 async fn filter_location() {
@@ -876,7 +876,7 @@ async fn filter_location() {
     }
 }
 
-/// MOCK-06 / D-01: `tagName eq 'env' and tagValue eq 'prod'` is a SINGLE paired tag
+/// `tagName eq 'env' and tagValue eq 'prod'` is a SINGLE paired tag
 /// predicate (not two independent matches): env=prod rows are nested, flt-0000,
 /// flt-0002, mixed-case = 4.
 #[tokio::test]
@@ -907,9 +907,9 @@ async fn filter_tag_pair() {
     }
 }
 
-/// MOCK-06: a lone `tagName eq 'env'` is a tag-key PRESENCE filter (not a 400) — it
+/// A lone `tagName eq 'env'` is a tag-key PRESENCE filter (not a 400) — it
 /// returns every SUB_A resource carrying the `env` tag key regardless of value. The six
-/// Phase-4 fixture rows all carry `env`; the dense-RG resources have empty `{}` tags.
+/// added fixture rows all carry `env`; the dense-RG resources have empty `{}` tags.
 #[tokio::test]
 async fn filter_tag_presence() {
     let (app, _c) = seeded_app().await;
@@ -923,7 +923,7 @@ async fn filter_tag_presence() {
     assert_eq!(
         items.len(),
         6,
-        "the 6 Phase-4 rows carry an `env` tag; dense-RG resources have empty tags"
+        "the 6 added fixture rows carry an `env` tag; dense-RG resources have empty tags"
     );
     for item in items {
         assert!(
@@ -933,7 +933,7 @@ async fn filter_tag_presence() {
     }
 }
 
-/// MOCK-06 / D-02: a conjunction (`location eq 'westus' and resourceType eq '<vnet>'`)
+/// A conjunction (`location eq 'westus' and resourceType eq '<vnet>'`)
 /// selects the single matching row (flt-0003).
 #[tokio::test]
 async fn filter_and() {
@@ -958,7 +958,7 @@ async fn filter_and() {
     assert_eq!(item["type"].as_str().unwrap(), common::FILTER_TYPE_VNET);
 }
 
-/// MOCK-06 / D-02: a disjunction (`location eq 'eastus' or location eq 'westus'`)
+/// A disjunction (`location eq 'eastus' or location eq 'westus'`)
 /// selects every resource (all 116 are one or the other).
 #[tokio::test]
 async fn filter_or() {
@@ -987,7 +987,7 @@ async fn filter_or() {
     }
 }
 
-/// MOCK-06 / D-03: the SAME `resourceType eq` filter applies to the RG-scoped endpoint,
+/// The SAME `resourceType eq` filter applies to the RG-scoped endpoint,
 /// filtering WITHIN the RG scope (rg-filter-000 holds flt-0002, flt-0003 = 2 vnets).
 #[tokio::test]
 async fn filter_applies_to_rg_scoped_endpoint() {
@@ -1012,7 +1012,7 @@ async fn filter_applies_to_rg_scoped_endpoint() {
     }
 }
 
-/// MOCK-06 / D-04: a malformed `$filter` (unknown field OR unknown operator) returns
+/// A malformed `$filter` (unknown field OR unknown operator) returns
 /// 400 with the ARM CloudError code `InvalidRequestContent`, BEFORE any SQL runs
 /// (mirrors `bad_skiptoken_400`).
 #[tokio::test]
@@ -1040,7 +1040,7 @@ async fn filter_malformed_400() {
     }
 }
 
-/// MOCK-06 / Research Q2: a filtered list with a small `$top` emits a `nextLink` that
+/// A filtered list with a small `$top` emits a `nextLink` that
 /// echoes `$filter`; following it applies the SAME predicate on page 2 (every row on
 /// the followed page still matches).
 #[tokio::test]
@@ -1091,7 +1091,7 @@ async fn filtered_nextlink_echoes_filter() {
     }
 }
 
-/// MOCK-13: a resource whose properties column is '{}' serializes `"properties": {}`
+/// A resource whose properties column is '{}' serializes `"properties": {}`
 /// (an object, never null); NULL sku/kind are omitted.
 #[tokio::test]
 async fn properties_always_object() {
@@ -1125,7 +1125,7 @@ async fn properties_always_object() {
         "empty props → {{}}"
     );
 
-    // MOCK-13 reconfirmed on the RG-scoped endpoint: the same empty-props resource
+    // Reconfirmed on the RG-scoped endpoint: the same empty-props resource
     // serializes `"properties": {}` there too (res-0000 lives in DENSE_RG_NAME).
     let scoped_path = format!(
         "/subscriptions/{}/resourceGroups/{}/resources?$top=1500",
@@ -1155,7 +1155,7 @@ async fn properties_always_object() {
 }
 
 // ===========================================================================
-// SEC-MED-3: sql/003 referential integrity + read-path index.
+// sql/003 referential integrity + read-path index.
 //
 // The harness applies sql/001 + sql/002 + sql/003, then seeds the fixture; these
 // tests assert the migration's index/FKs landed AND that the shared fixture still
@@ -1323,10 +1323,10 @@ async fn resources_subscription_fk_enforced() {
 }
 
 // ===========================================================================
-// COST-02/03/04 + IAM-05: the Cost Management Query route, proven end-to-end
+// The Cost Management Query route, proven end-to-end
 // against SCOPED-seeded cost rows (the shared seed_fixture stays zero-cost-row —
 // project memory: fixture coupling). The reconciliation invariant is THE phase
-// invariant (the XSUB-06 0-dangling analogue, made a test).
+// invariant (the 0-dangling analogue, made a test).
 // ===========================================================================
 mod cost {
     use super::{AppState, Metrics, PgPool, build_router, common, start_pg};
@@ -1393,7 +1393,7 @@ mod cost {
         (app, container, pool, seed)
     }
 
-    /// COST-02 (THE invariant): every grouping slice
+    /// THE invariant: every grouping slice
     /// (ResourceType / ResourceGroup / ServiceName / Tag:env / ungrouped) sums to the
     /// SAME ungrouped fact-table total. A grouping never drops or double-counts a row,
     /// so all five slices reconcile to one number.
@@ -1482,7 +1482,7 @@ mod cost {
         );
     }
 
-    /// COST-02: repeating the SAME query returns byte-identical totals (the handler only
+    /// Repeating the SAME query returns byte-identical totals (the handler only
     /// reads/aggregates a materialized fact table — no per-call randomness). The random
     /// `id`/`name` envelope fields differ, so only `properties.rows` is compared.
     #[tokio::test]
@@ -1501,7 +1501,7 @@ mod cost {
         );
     }
 
-    /// COST-03: the body is the positional `{properties:{columns,rows,nextLink}}`
+    /// The body is the positional `{properties:{columns,rows,nextLink}}`
     /// envelope — NOT the ARM-list `{value,nextLink}`. `columns[].type ∈ {Number,String}`;
     /// the Currency column is "USD"; the first column (aggregation) is the Number.
     #[tokio::test]
@@ -1549,11 +1549,11 @@ mod cost {
             .expect("a Currency column is present");
         assert_eq!(columns[cur_ix]["type"], "String");
         for row in props["rows"].as_array().unwrap() {
-            assert_eq!(row[cur_ix], "USD", "Currency cell must be USD (D-11)");
+            assert_eq!(row[cur_ix], "USD", "Currency cell must be USD");
         }
     }
 
-    /// COST-02/03: BOTH the sub-scope and RG-scope POSTs route and reconcile; the
+    /// BOTH the sub-scope and RG-scope POSTs route and reconcile; the
     /// RG-scope total is a STRICT subset of the sub-scope total.
     #[tokio::test]
     async fn both_scopes() {
@@ -1645,7 +1645,7 @@ mod cost {
         );
     }
 
-    /// COST-04: `AmortizedCost` and `ActualCost` are both accepted and return EQUAL
+    /// `AmortizedCost` and `ActualCost` are both accepted and return EQUAL
     /// numbers (amortization math deferred for v2.0 — accept-and-return).
     #[tokio::test]
     async fn amortized_accepted_equals_actual() {
@@ -1676,7 +1676,7 @@ mod cost {
         );
     }
 
-    /// IAM-05 (T-9-03): the cost route inherits the any-Bearer contract — an arbitrary
+    /// The cost route inherits the any-Bearer contract — an arbitrary
     /// Bearer → 200; a MISSING Bearer → 401 (DoS-by-401-of-scanner mitigation preserved).
     #[tokio::test]
     async fn arbitrary_bearer_200() {
@@ -1706,7 +1706,7 @@ mod cost {
         );
     }
 
-    /// T-9-04 (the XSUB-06 0-dangling analogue, as a test): every seeded
+    /// The 0-dangling analogue, as a test: every seeded
     /// `cost_records.resource_id` resolves to a real `resources.id` — a NOT-EXISTS
     /// anti-join returns 0 dangling references. (The FK fk_cost_resource enforces this
     /// at write time; this asserts it over the live fixture.)
@@ -2136,9 +2136,9 @@ mod cost {
     }
 }
 
-/// Microsoft.Authorization data plane (Plan 10-03, IAM-02/IAM-03/IAM-05). Mirrors `mod
+/// Microsoft.Authorization data plane. Mirrors `mod
 /// cost`: a scoped identity-seeded app builder, the verified 2022-04-01 shape assertions,
-/// the three-way 0-dangling anti-join, cross-language catalogue agreement (Pitfall 3),
+/// the three-way 0-dangling anti-join, cross-language catalogue agreement,
 /// and the any-Bearer-OFF regression.
 mod identity {
     use super::{AppState, Metrics, PgPool, build_router, common, start_pg};
@@ -2190,7 +2190,7 @@ mod identity {
         (app, container, pool, seed)
     }
 
-    /// IAM-03: GET roleDefinitions → 200, `{value:[...]}` with the eight built-in roles;
+    /// GET roleDefinitions → 200, `{value:[...]}` with the eight built-in roles;
     /// Owner/Contributor/Reader GUIDs are present and a known item (Contributor) carries
     /// the verified 2022-04-01 properties shape (camelCase, BuiltInRole, ["/"]).
     #[tokio::test]
@@ -2252,7 +2252,7 @@ mod identity {
         }
     }
 
-    /// IAM-03: GET roleAssignments → 200,
+    /// GET roleAssignments → 200,
     /// `{value:[{name,type,id,properties{principalId,principalType,roleDefinitionId,scope}}]}`
     /// with the TENANT-scoped roleDefinitionId (no /subscriptions prefix).
     #[tokio::test]
@@ -2305,7 +2305,7 @@ mod identity {
         );
     }
 
-    /// IAM-03 (2022-04-01 id contract): the roleAssignment `id` is rooted at the
+    /// 2022-04-01 id contract: the roleAssignment `id` is rooted at the
     /// assignment's ACTUAL scope — `{scope}/providers/Microsoft.Authorization/
     /// roleAssignments/{name}` — NOT unconditionally at the subscription. The fixture
     /// seeds RG- and resource-scoped assignments (not just subscription-scope), so a
@@ -2522,7 +2522,7 @@ mod identity {
         }
     }
 
-    /// IAM-02/D-07 (the three-way 0-dangling chain): every seeded role_assignment
+    /// The three-way 0-dangling chain: every seeded role_assignment
     /// resolves to (1) a real principal oid, (2) a real scope in the UNION of
     /// subscription/RG/resource ids, and (3) a built-in roleDefinition GUID in the SERVED
     /// catalogue. Each NOT-EXISTS / anti-join returns 0 dangling rows.
@@ -2605,7 +2605,7 @@ mod identity {
         );
     }
 
-    /// Pitfall 3 (cross-language GUID agreement): every DISTINCT
+    /// Cross-language GUID agreement: every DISTINCT
     /// role_assignments.role_definition_id GUID in the seeded fixture is present in the
     /// SERVED roleDefinitions catalogue — the generator (identity.py) and the server
     /// (authorization.rs) cannot drift without this test going red.
@@ -2648,7 +2648,7 @@ mod identity {
         }
     }
 
-    /// IAM-05 (OFF default, the any-Bearer scanner contract): an arbitrary non-JWT
+    /// OFF default, the any-Bearer scanner contract: an arbitrary non-JWT
     /// Bearer → 200 on the authorization route; a MISSING Bearer → 401. Mirrors the cost
     /// `arbitrary_bearer_200` regression on the new route.
     #[tokio::test]
@@ -2673,8 +2673,8 @@ mod identity {
     }
 
     // -----------------------------------------------------------------------
-    // Plan 10-04 — the AAD token mint + JWKS (IAM-04) and the `--enforce-auth`
-    // RS256 validation round-trip (IAM-05). The token + JWKS routes merge OUTSIDE
+    // The AAD token mint + JWKS and the `--enforce-auth`
+    // RS256 validation round-trip. The token + JWKS routes merge OUTSIDE
     // the bearer layer (console template) so they bootstrap a token even when
     // enforce is ON; the enforce branch decodes RS256 against the run's own JWKS.
     // -----------------------------------------------------------------------
@@ -2690,7 +2690,7 @@ mod identity {
     }
 
     /// The served v1.0 ARM issuer/audience for the fixture tenant — the contract the
-    /// minted token carries and the enforce branch validates against (RESEARCH Q2).
+    /// minted token carries and the enforce branch validates against.
     fn served_issuer() -> String {
         format!("https://sts.windows.net/{}/", common::TENANT_ID)
     }
@@ -2701,7 +2701,7 @@ mod identity {
     /// GIVEN the token mint + JWKS routes, WHEN a client POSTs `/token` and fetches
     /// the JWKS, THEN the minted RS256 access_token decodes cleanly AGAINST the served
     /// JWK (n/e) under `Validation{RS256, iss, aud}` and carries tid/oid/appid/aud/iss/
-    /// roles/exp; tid equals the served tenant_id (IAM-04, D-09).
+    /// roles/exp; tid equals the served tenant_id.
     #[tokio::test]
     async fn token_decodable_via_jwks() {
         use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, jwk::Jwk};
@@ -2749,7 +2749,7 @@ mod identity {
     /// GIVEN a router built with `enforce_auth: true`, WHEN the token + JWKS routes are
     /// hit WITHOUT any Authorization header, THEN they STILL return 200 — they merge
     /// OUTSIDE the bearer layer so a client can bootstrap a token even under enforce
-    /// (D-11, the token-to-get-a-token deadlock avoidance).
+    /// (the token-to-get-a-token deadlock avoidance).
     #[tokio::test]
     async fn token_routes_exempt() {
         let (pool, _c) = start_pg().await;
@@ -2778,7 +2778,7 @@ mod identity {
 
     /// GIVEN a `{tenant}` path segment that differs from the served tenant_id, WHEN a
     /// token is minted, THEN the request still returns 200 and the token's tid equals
-    /// the SERVED tenant_id (the sim has one tenant; D-09 lean = accept any segment).
+    /// the SERVED tenant_id (the sim has one tenant; lean = accept any segment).
     #[tokio::test]
     async fn tenant_segment_accepted() {
         use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, jwk::Jwk};
@@ -2808,7 +2808,7 @@ mod identity {
     /// GIVEN a router built with `enforce_auth: true`, WHEN a mock-minted token is
     /// presented on a data route THEN it is accepted (200); WHEN a garbage / expired /
     /// wrong-aud / wrong-iss / HS256-signed token is presented THEN it is rejected with
-    /// a 401 ARM CloudError (code `InvalidAuthenticationToken`) (IAM-05, D-10).
+    /// a 401 ARM CloudError (code `InvalidAuthenticationToken`).
     ///
     /// The negative tokens are signed with the SAME run key (via the `signer` Arc) so
     /// each isolates a single validation check (exp/aud/iss/alg) rather than tripping on
@@ -2916,7 +2916,7 @@ mod identity {
         assert_401(app, &ra_path, &hs, "HS256 alg-confusion token").await;
     }
 
-    /// Startup schema preflight (this finding): GIVEN a pre-Phase-10 volume — the
+    /// Startup schema preflight (this finding): GIVEN a pre-identity-migration volume — the
     /// `synthetic` schema + a tenant exist (sql/001..003 + `seed_fixture`) but the
     /// identity tables were never provisioned (no sql/005 applied) — WHEN the server's
     /// boot preflight `ensure_identity_schema` runs, THEN it PROVISIONS the empty
@@ -2933,7 +2933,7 @@ mod identity {
     async fn startup_preflight_provisions_missing_identity_schema() {
         // ISOLATED container/pool (never the shared seed_identity_rows fixture). Apply
         // ONLY the base fixture: synthetic schema + tenant + SUB_A exist, but sql/005 is
-        // NOT applied — exactly a volume provisioned before Phase 10.
+        // NOT applied — exactly a volume provisioned before the identity migration existed.
         let (pool, _c) = start_pg().await;
         common::seed_fixture(&pool).await;
 
@@ -3210,6 +3210,112 @@ mod jwt_identity_refresh {
             signer.load().kid,
             before_kid,
             "a tenant change is a full key rotation"
+        );
+    }
+
+    /// The full-wipe `run_reset` (`/_control/reset` → `truncate_synthetic` →
+    /// `SYNTHETIC_TABLES`) must clear the ARM overlay AND the drift ledger, while PRESERVING the
+    /// monotonic `arm_overlay_revision_seq` (the sequence is standalone/UNOWNED so `TRUNCATE …
+    /// RESTART IDENTITY CASCADE` cannot rewind it). Seed baseline + a present overlay row + a
+    /// drift batch/records, capture the revision `last_value`, drive the REAL `job::run_reset`,
+    /// then assert the four before/after invariants.
+    ///
+    /// RED on the pre-fix tree: `synthetic.arm_overlay` is absent from `SYNTHETIC_TABLES`, so
+    /// `run_reset` TRUNCATEs the drift ledger but LEAVES the present overlay row → the
+    /// overlay-count assertion fails (a stale `present=true` resource would leak into the
+    /// "empty" reset tenant). Goes GREEN once the allowlist carries `synthetic.arm_overlay`.
+    #[tokio::test]
+    async fn run_reset_clears_arm_overlay_and_ledger() {
+        let (pool, _c) = start_pg().await;
+        // Baseline + a present overlay row + a drift batch/records → the full drift plane.
+        common::seed_fixture(&pool).await;
+        common::insert_present_overlay_row(&pool).await;
+        let _drift = common::seed_drift_rows(&pool).await;
+
+        // Pre-wipe ground truth: the overlay + ledger are non-empty and the revision cursor S0.
+        let overlay_before: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+            .fetch_one(&pool)
+            .await
+            .expect("count overlay pre-reset");
+        assert!(
+            overlay_before > 0,
+            "precondition: a present overlay row is seeded"
+        );
+        let records_before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_records")
+                .fetch_one(&pool)
+                .await
+                .expect("count drift_records pre-reset");
+        let batches_before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_batches")
+                .fetch_one(&pool)
+                .await
+                .expect("count drift_batches pre-reset");
+        assert!(
+            records_before > 0 && batches_before > 0,
+            "precondition: the drift ledger is seeded"
+        );
+        // The overlay INSERT fired the revision trigger → the sequence has been advanced.
+        let seq_before: i64 =
+            sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
+                .fetch_one(&pool)
+                .await
+                .expect("revision seq last_value pre-reset");
+
+        let mut cp = common::armed_control_plane(&pool, "tok");
+        // A nil-tenant signer: the reset empties the estate → refresh resolves to nil (a no-op
+        // swap for the already-nil signer), so the job publishes Succeeded.
+        cp.signer = SharedSigner::new(JwtSigner::ephemeral(&Uuid::nil()).unwrap());
+
+        let id = register(&cp, JobKind::Reset);
+        let p = permit(&cp).await;
+        job::run_reset(cp.clone(), id, p).await;
+
+        assert_eq!(
+            job_status(&cp, id),
+            JobStatus::Succeeded,
+            "run_reset must succeed"
+        );
+
+        // (1) The overlay is cleared — no phantom `present=true` resource survives the reset.
+        let overlay_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.arm_overlay")
+            .fetch_one(&pool)
+            .await
+            .expect("count overlay post-reset");
+        assert_eq!(
+            overlay_after, 0,
+            "run_reset must clear synthetic.arm_overlay"
+        );
+
+        // (2)/(3) The drift ledger is cleared.
+        let records_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_records")
+            .fetch_one(&pool)
+            .await
+            .expect("count drift_records post-reset");
+        let batches_after: i64 = sqlx::query_scalar("SELECT count(*) FROM synthetic.drift_batches")
+            .fetch_one(&pool)
+            .await
+            .expect("count drift_batches post-reset");
+        assert_eq!(
+            records_after, 0,
+            "run_reset must clear synthetic.drift_records"
+        );
+        assert_eq!(
+            batches_after, 0,
+            "run_reset must clear synthetic.drift_batches"
+        );
+
+        // (4) The monotonic revision sequence is PRESERVED (never rewound by RESTART IDENTITY —
+        // the sequence is standalone/UNOWNED, sql/009).
+        let seq_after: i64 =
+            sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
+                .fetch_one(&pool)
+                .await
+                .expect("revision seq last_value post-reset");
+        assert!(
+            seq_after >= seq_before,
+            "arm_overlay_revision_seq regressed across reset ({seq_after} < {seq_before}) — \
+             revision/ETag monotonicity broken"
         );
     }
 

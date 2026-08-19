@@ -95,26 +95,73 @@ def _make_stack(tmp_path: Path, *, bad_name: str | None = None) -> Path:
     return work
 
 
+# Errors that mean "the server is between the initdb teardown and the final
+# server" — retryable, not a real query failure. See _poll_ready for why they occur.
+_PSQL_TRANSIENT = (
+    "the database system is shutting down",
+    "the database system is starting up",
+    "the database system is not yet accepting connections",
+    "could not connect",
+    "connection to server",
+)
+
+
 def _psql(work: Path, proj: str, sql: str) -> str:
-    r = _compose(
-        work, proj, "exec", "-T", "pg",
-        "psql", "-U", "tenantless", "-d", "tenantless", "-tAc", sql,
-        timeout=60,
-    )
-    assert r.returncode == 0, f"psql failed: {r.stderr}"
-    return r.stdout.strip()
+    last = ""
+    for _ in range(10):
+        r = _compose(
+            work, proj, "exec", "-T", "pg",
+            "psql", "-U", "tenantless", "-d", "tenantless", "-tAc", sql,
+            timeout=60,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+        last = r.stderr or ""
+        # The initdb temp server can tear down between _poll_ready and this query
+        # (or between two queries); ride out that window rather than flaking.
+        if any(t in last for t in _PSQL_TRANSIENT):
+            time.sleep(1)
+            continue
+        break
+    raise AssertionError(f"psql failed: {last}")
 
 
 def _poll_ready(work: Path, proj: str, timeout: int) -> bool:
+    """Wait for the FINAL (post-init) server, NOT the transient initdb server.
+
+    The postgres image runs ``/docker-entrypoint-initdb.d/*.sql`` against a
+    TEMPORARY socket-only server, logs ``PostgreSQL init process complete; ready
+    for start up.``, tears that server down, then starts the real one. A bare
+    ``pg_isready`` connects to the socket and so is satisfied by the TEMPORARY
+    server mid-init -- a query issued then races the teardown ("the database
+    system is shutting down") or reads a half-provisioned schema (the exact CI
+    flake: ``arm_overlay`` absent). Trust readiness only once a real ``SELECT 1``
+    succeeds AND -- when a fresh init ran this boot -- the final server has logged
+    readiness AFTER the init-complete marker. On a restart with existing PGDATA no
+    init runs (no marker, no temp server), so the single server is trusted directly.
+    """
+    init_done = "PostgreSQL init process complete"
+    ready = "database system is ready to accept connections"
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = _compose(
-            work, proj, "exec", "-T", "pg", "pg_isready", "-U", "tenantless",
-            timeout=20,
-        )
-        if r.returncode == 0:
-            return True
-        time.sleep(2)
+        logs = _compose(work, proj, "logs", "pg", timeout=20)
+        text = (logs.stdout or "") + (logs.stderr or "")
+        if init_done in text:
+            # Fresh init: only the final server's readiness, logged AFTER the
+            # marker, counts -- the temp server's earlier "ready" line does not.
+            final_up = ready in text.split(init_done, 1)[1]
+        else:
+            # No init this boot (existing PGDATA) -> one final server, no race.
+            final_up = ready in text
+        if final_up:
+            probe = _compose(
+                work, proj, "exec", "-T", "pg",
+                "psql", "-U", "tenantless", "-d", "tenantless", "-tAc", "SELECT 1",
+                timeout=20,
+            )
+            if probe.returncode == 0 and (probe.stdout or "").strip() == "1":
+                return True
+        time.sleep(1)
     return False
 
 

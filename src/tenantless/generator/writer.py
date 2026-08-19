@@ -1,15 +1,15 @@
-"""psycopg3 binary-COPY seam (GEN-09) — the ONLY generator module importing psycopg.
+"""psycopg3 binary-COPY seam — the ONLY generator module importing psycopg.
 
 Mirror-image of the analyzer's ``reader`` (the only duckdb seam): all Postgres
 coupling lives here so the sampler layers stay pure and DB-free. Bulk writes use
 ``cursor.copy("... FROM STDIN (FORMAT BINARY)")`` + ``copy.set_types([...])`` +
-``Jsonb(...)`` wrappers for JSONB columns (Pitfall 5), loaded in FK order
-(tenant → subscriptions → resource_groups → resources → dependencies; Pitfall 6).
+``Jsonb(...)`` wrappers for JSONB columns, loaded in FK order
+(tenant → subscriptions → resource_groups → resources → dependencies).
 
 Truncation is destructive and scoped strictly to the ``synthetic`` schema; the
-CLI guards it behind ``--force``/TTY confirmation (D-08). Column lists below are
+CLI guards it behind ``--force``/TTY confirmation. Column lists below are
 STATIC code literals (never profile-derived) — values pass through parameterized
-binary encoding, never string-concatenated SQL (threat T-02-02).
+binary encoding, never string-concatenated SQL.
 """
 
 from __future__ import annotations
@@ -31,16 +31,16 @@ if TYPE_CHECKING:
 
 # The default DSN literal — kept as a named constant so parity tests can compare
 # it against serve.py's default without being defeated by a runtime DATABASE_URL
-# override (WR-01).
+# override.
 _DEFAULT_DATABASE_URL = "postgres://tenantless:tenantless_dev@localhost:5433/tenantless"
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DATABASE_URL)
 
-# Tables truncated each run (D-07); scoped to the synthetic schema only.
+# Tables truncated each run; scoped to the synthetic schema only.
 _SYNTHETIC_TABLES = (
     "synthetic.tenant",
     "synthetic.subscriptions",
     "synthetic.resource_groups",
-    "synthetic.resources",
+    "synthetic.resources",  # SYNRES-ALLOW[reset]: static truncate allowlist entry (twin of job.rs SYNTHETIC_TABLES), never a resolver read
     "synthetic.dependencies",
     "synthetic.violations",
     "synthetic.cost_records",
@@ -48,6 +48,10 @@ _SYNTHETIC_TABLES = (
     "synthetic.principals",
     "synthetic.drift_records",  # before batches: FK batch_id → drift_batches
     "synthetic.drift_batches",
+    # The ARM overlay copy-on-write plane (sql/009). LAST entry —
+    # arm_overlay has no outgoing FK, so truncating it last is FK-safe. Without it a
+    # `generate --force` re-seed leaks the previous tenant's `present=true` overlay ids.
+    "synthetic.arm_overlay",
 )
 
 
@@ -135,10 +139,10 @@ def _base_schema_sql_files() -> list[Path]:
 
 
 def _all_migration_sql_files() -> list[Path]:
-    """Every migration file the full sql/001..009 chain needs, in order — the 3
-    base files (001..003) plus the six twin migrations (004..009).
+    """Every migration file the full sql/001..010 chain needs, in order — the 3
+    base files (001..003) plus the seven twin migrations (004..010).
 
-    The pre-flight file gate in ``init-db`` (P2a) checks all nine exist BEFORE
+    The pre-flight file gate in ``init-db`` (P2a) checks all ten exist BEFORE
     opening any DB transaction, so a missing bundled file (the packaging bug)
     aborts without touching the database. Resolves via the shared packaged-or-repo
     resolver; ``parts`` are STATIC filenames, never user input.
@@ -150,6 +154,7 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "007_web_metadata.sql"),
         resource_path("sql", "008_rg_lower_index.sql"),
         resource_path("sql", "009_arm_overlay.sql"),
+        resource_path("sql", "010_arm_resolver.sql"),
     ]
 
 
@@ -257,7 +262,7 @@ def ensure_cost_schema(conn: psycopg.Connection) -> bool:
 
     P1 fix: ``sql/004`` is only auto-applied by docker ``initdb`` (fresh volumes)
     and the testcontainers fixture — an EXISTING dev volume initialised before
-    Phase 9 has no ``synthetic.cost_records`` table, so ``copy_cost_records``
+    the cost migration existed has no ``synthetic.cost_records`` table, so ``copy_cost_records``
     would fail at runtime for a cost-bearing profile. ``sql/004`` is fully
     idempotent (``CREATE … IF NOT EXISTS`` + a guarded FK ``DO`` block), so
     applying it here is safe to repeat.
@@ -279,10 +284,10 @@ def ensure_cost_schema(conn: psycopg.Connection) -> bool:
 
 def ensure_identity_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/005_identity.sql`` migration before writing
-    principals / role_assignments (Plan 10-01, IAM-01/IAM-02).
+    principals / role_assignments.
 
     Verbatim twin of :func:`ensure_cost_schema`, swapping ``004_cost.sql`` for
-    ``005_identity.sql``. An existing dev volume initialised before Phase 10 has
+    ``005_identity.sql``. An existing dev volume initialised before the identity migration existed has
     no ``synthetic.principals`` / ``synthetic.role_assignments`` tables, so
     :func:`copy_principals` / :func:`copy_role_assignments` would fail at runtime
     for an identity-bearing generate. ``sql/005`` is fully idempotent
@@ -301,10 +306,10 @@ def ensure_identity_schema(conn: psycopg.Connection) -> bool:
 
 def ensure_drift_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/006_drift.sql`` migration before applying or
-    reverting configuration drift (Plan 11-01, DRIFT-03/DRIFT-04).
+    reverting configuration drift.
 
     Verbatim twin of :func:`ensure_identity_schema`, swapping ``005_identity.sql``
-    for ``006_drift.sql``. An existing dev volume initialised before Phase 11 has
+    for ``006_drift.sql``. An existing dev volume initialised before the drift migration existed has
     no ``synthetic.drift_batches`` / ``synthetic.drift_records`` tables and no
     ``synthetic.resources.drift_deleted_at`` column, so the apply-drift /
     revert-drift writes — and the server's soft-delete list/detail filter — would
@@ -324,10 +329,10 @@ def ensure_drift_schema(conn: psycopg.Connection) -> bool:
 
 def ensure_web_metadata_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/007_web_metadata.sql`` migration before writing
-    the generation-profile NAME (Plan 14-05, WAPI-03 / D-14).
+    the generation-profile NAME.
 
     Verbatim twin of :func:`ensure_drift_schema`, swapping ``006_drift.sql`` for
-    ``007_web_metadata.sql``. An existing dev volume initialised before Phase 14
+    ``007_web_metadata.sql``. An existing dev volume initialised before the web-metadata migration existed
     has no ``synthetic.tenant.profile_name`` column, so :func:`copy_tenant` would
     fail at runtime when it writes ``profile_name``. ``sql/007`` is fully
     idempotent (``ADD COLUMN IF NOT EXISTS``), so applying it here is safe to
@@ -396,10 +401,45 @@ def ensure_arm_overlay_schema(conn: psycopg.Connection) -> bool:
     return True
 
 
+def ensure_arm_resolver_schema(conn: psycopg.Connection) -> bool:
+    """Apply the idempotent ``sql/010_arm_resolver.sql`` migration — the resolver
+    substrate (``synthetic.drift_batches.storage_mode`` provenance column + the two per-kind
+    resolved views ``synthetic.arm_resolved_resources`` / ``synthetic.arm_resolved_resource_groups``
+    + the ``(target_kind, id_lower)`` overlay resolution index).
+
+    Verbatim twin of :func:`ensure_arm_overlay_schema`, swapping ``009_arm_overlay.sql`` for
+    ``010_arm_resolver.sql`` and the advisory-lock key for the DISTINCT ``synthetic.arm_resolver:010``.
+    Applied UNCONDITIONALLY by ``init-db`` (and available for BYO-Postgres completeness) so a
+    database provisioned before the resolver existed gains the resolver substrate automatically
+    on the next ``init-db``. NOT wired into ``generate`` provisioning — ``generate`` writes no
+    overlay/resolver data (the overlay is populated only by the write plane), and the Rust
+    server self-provisions it at boot via ``ensure_arm_resolver_schema``. ``sql/010`` is fully
+    idempotent (``CREATE OR REPLACE VIEW`` + ``CREATE INDEX IF NOT EXISTS`` + a guarded
+    ``DO`` block for the column), and it touches NOTHING on the populated ``synthetic.resources``
+    table, so applying it here is safe to repeat. The statement text is a STATIC project file,
+    never user/profile input — no injection surface. Returns True if applied, False if the
+    file was not found (installed package with no bundled ``sql/`` — those deployments apply
+    the schema via docker initdb).
+    """
+    sql_path = resource_path("sql", "010_arm_resolver.sql")
+    if not sql_path.is_file():
+        return False
+    # Transaction-scoped preamble RELOCATED from sql/010 so the .sql file stays honest under
+    # Docker initdb autocommit. ``conn.transaction()`` GUARANTEES an explicit transaction (a
+    # savepoint when init-db's outer writer tx is already open), so the bounded ``lock_timeout``
+    # and the serializing advisory lock actually take effect and cover the DDL. The key is
+    # DISTINCT from the 009 key so a 009 apply and a 010 apply do not needlessly serialize.
+    with conn.transaction():
+        conn.execute("SET LOCAL lock_timeout = '3s'")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_resolver:010'))")
+        conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
 def schema_is_empty(conn: psycopg.Connection) -> bool:
     """True when the synthetic schema holds no tenant/subscription/RG rows.
 
-    Used by the D-08 guard to allow a bare ``generate`` against a fresh schema.
+    Used by the force-confirmation guard to allow a bare ``generate`` against a fresh schema.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -412,7 +452,7 @@ def schema_is_empty(conn: psycopg.Connection) -> bool:
 
 def acquire_generate_lock(conn: psycopg.Connection, key: int) -> None:
     """Take the xact-scoped advisory lock serializing the destructive generate
-    critical section (Wave2 #1). Behind the writer seam (like truncate_synthetic /
+    critical section. Behind the writer seam (like truncate_synthetic /
     write_tenant) so the DB-free CLI tests can stub it — cli.py must never touch a raw
     ``conn.cursor()`` directly, which would bypass those mocks.
 
@@ -474,7 +514,7 @@ def estate_is_empty(conn: psycopg.Connection) -> bool:
     resources/cost/identity/drift but no tenant row, or any other single populated
     table — reads as NON-empty here. The demo one-shot guard (``--only-if-empty``)
     uses this so it NEVER truncates a populated OR partially populated volume
-    (Wave2 #1). Absent tables (a later migration than the target schema) are skipped
+    Absent tables (a later migration than the target schema) are skipped
     via ``to_regclass``, mirroring :func:`truncate_synthetic`; the table names come
     from the STATIC ``_SYNTHETIC_TABLES`` literal, so the f-string is injection-free.
     """
@@ -494,8 +534,8 @@ def truncate_synthetic(conn: psycopg.Connection) -> None:
 
     Only tables that currently exist are truncated: a synthetic table may be
     introduced by a later migration than the one applied to the target schema
-    (e.g. ``synthetic.cost_records`` arrives with sql/004 in Plan 09-04 while the
-    writer that lists it ships in Plan 09-03). ``to_regclass`` returns NULL for an
+    (e.g. ``synthetic.cost_records`` arrives with sql/004 while the
+    writer that lists it ships separately). ``to_regclass`` returns NULL for an
     absent table, so it is skipped rather than aborting the whole TRUNCATE. The
     table-name list is a STATIC code literal (``_SYNTHETIC_TABLES``), never
     user/profile input, so the membership check introduces no injection surface.
@@ -514,7 +554,7 @@ def truncate_synthetic(conn: psycopg.Connection) -> None:
 def copy_tenant(conn: psycopg.Connection, tenant: "Tenant") -> None:
     """Binary-COPY the single tenant row.
 
-    D-14: ``profile_name`` (the generation-profile IDENTITY) is written after
+    ``profile_name`` (the generation-profile IDENTITY) is written after
     ``profile_version`` — a nullable ``text`` column (sql/007); psycopg writes a
     ``None`` value as SQL NULL, so a tenant built without a profile_name (the
     back-compat path) round-trips cleanly. STATIC column literal; values pass
@@ -539,7 +579,7 @@ def copy_tenant(conn: psycopg.Connection, tenant: "Tenant") -> None:
                     tenant.display_name,
                     datetime.now(timezone.utc),
                     tenant.profile_version,
-                    tenant.profile_name,  # None → SQL NULL (D-14 back-compat)
+                    tenant.profile_name,  # None → SQL NULL (back-compat)
                     Jsonb(tenant.scale_params),
                 )
             )
@@ -600,7 +640,7 @@ def copy_resource_groups(conn: psycopg.Connection, tenant: "Tenant") -> None:
                 )
 
 
-# SPEED-01 (13-05) COPY-tuning lever: above this many resource rows, dropping the
+# COPY-tuning lever: above this many resource rows, dropping the
 # secondary (non-unique, non-PK) indexes on ``synthetic.resources`` before the bulk
 # COPY and rebuilding them ONCE afterward beats maintaining them incrementally for
 # every inserted row — the classic Postgres bulk-load accelerator (a single
@@ -668,22 +708,22 @@ def _dropped_secondary_indexes(
 
 
 def copy_resources(conn: psycopg.Connection, tenant: "Tenant") -> None:
-    """Binary-COPY all resources (load LAST; no FK but FK-order anyway, Pitfall 6).
+    """Binary-COPY all resources (load LAST; no FK but FK-order anyway).
 
-    Column contract (sql/001 / RESEARCH lines 380-389):
+    Column contract (sql/001):
     ``id, subscription_id, resource_group_name, name, type, location, tags, sku,
     kind, properties, provisioning_state, managed_by`` →
     ``text, uuid, text, text, text, text, jsonb, jsonb, text, jsonb, text, text``.
-    JSONB columns are wrapped in ``Jsonb`` (Pitfall 5); ``sku`` may be NULL.
+    JSONB columns are wrapped in ``Jsonb``; ``sku`` may be NULL.
 
-    SPEED-01 (13-05): for large loads (≥ ``_RESOURCES_INDEX_DROP_THRESHOLD`` rows —
+    For large loads (≥ ``_RESOURCES_INDEX_DROP_THRESHOLD`` rows —
     the 500K-scale path) the secondary indexes are dropped around the bulk COPY and
     rebuilt once, the standard Postgres bulk-load accelerator. Small loads keep the
     plain path (byte-identical to the pre-tuning writer).
     """
     n_res = sum(len(rg.resources) for rg in tenant.resource_groups)
     if n_res >= _RESOURCES_INDEX_DROP_THRESHOLD:
-        with _dropped_secondary_indexes(conn, "synthetic.resources"):
+        with _dropped_secondary_indexes(conn, "synthetic.resources"):  # SYNRES-ALLOW[generation/writer]: the generator drops/rebuilds the base table's bulk-load indexes
             _copy_resources_rows(conn, tenant)
     else:
         _copy_resources_rows(conn, tenant)
@@ -691,7 +731,7 @@ def copy_resources(conn: psycopg.Connection, tenant: "Tenant") -> None:
 
 def _copy_resources_rows(conn: psycopg.Connection, tenant: "Tenant") -> None:
     """The resources binary-COPY itself — STATIC column literal + ``set_types``
-    binary encoding (GEN-09 + the SQL-injection bar). Split out from
+    binary encoding (the SQL-injection bar). Split out from
     :func:`copy_resources` so the optional index drop/recreate can wrap it without
     touching the column contract.
     """
@@ -701,7 +741,7 @@ def _copy_resources_rows(conn: psycopg.Connection, tenant: "Tenant") -> None:
     )
     with conn.cursor() as cur:
         with cur.copy(
-            f"COPY synthetic.resources ({cols}) FROM STDIN (FORMAT BINARY)"
+            f"COPY synthetic.resources ({cols}) FROM STDIN (FORMAT BINARY)"  # SYNRES-ALLOW[generation/writer]: the generator WRITES the immutable baseline via bulk COPY
         ) as copy:
             copy.set_types(
                 [
@@ -741,20 +781,20 @@ def copy_dependencies(
          source_subscription, target_subscription)
         → text, text, text, uuid, uuid
 
-    ``rows`` is an iterable of dicts with those five keys. **Phase 2 scope:** the
+    ``rows`` is an iterable of dicts with those five keys. **Scope note:** the
     dependency-row SEMANTICS (which resources actually depend cross-subscription,
-    hub-spoke / centralized-logging topologies) are PHASE 5 — this plan only
-    closes the GEN-09 COPY PATH, so the default is an empty list (a no-op that
-    still exercises the binary-COPY surface end-to-end). Phase 5 populates real
+    hub-spoke / centralized-logging topologies) are handled by a later stage — this
+    change only closes the COPY PATH, so the default is an empty list (a no-op that
+    still exercises the binary-COPY surface end-to-end). A later stage populates real
     rows by passing them here; the column/type contract is fixed now.
 
     ``None``/empty is a clean no-op (the v1 default). Column literals are STATIC
     (never profile-derived); values pass through parameterized binary encoding —
-    no string-concatenated SQL (threat T-02-10).
+    no string-concatenated SQL.
     """
     rows = list(rows or [])
     if not rows:
-        return  # v1 default: COPY path exists; no rows to write (Phase 5 fills it)
+        return  # v1 default: COPY path exists; no rows to write (a later stage fills it)
     cols = (
         "dependency_type, source_resource_id, target_resource_id, "
         "source_subscription, target_subscription"
@@ -789,14 +829,14 @@ def copy_violations(
         → text, text, text, jsonb
 
     ``rows`` is an iterable of dicts with those four keys; ``detail`` is a plain
-    dict wrapped here via ``Jsonb`` (Pitfall 5). Each violation's resource_id
+    dict wrapped here via ``Jsonb``. Each violation's resource_id
     references an already-written ``synthetic.resources`` row (load after
     :func:`copy_resources`), though no DB FK is declared.
 
     ``None``/empty is a clean no-op (matches :func:`copy_dependencies`). The
     column literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (threat T-05-SQLi,
-    project memory "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (project memory
+    "mock-server SQL injection bar").
     """
     rows = list(rows or [])
     if not rows:
@@ -813,7 +853,7 @@ def copy_violations(
                         v["resource_id"],
                         v["violation_type"],
                         v["severity"],
-                        Jsonb(v["detail"]),  # Pitfall 5: JSONB must be wrapped
+                        Jsonb(v["detail"]),  # JSONB must be wrapped
                     )
                 )
 
@@ -824,7 +864,7 @@ def copy_cost_records(
     """Binary-COPY per-resource cost rows (load after resources; FK → resources).
 
     Verbatim sibling of :func:`copy_violations` for the narrow ``cost_records``
-    fact table (Plan 09-03, COST-01). Column contract (sql/004_cost.sql), with NO
+    fact table. Column contract (sql/004_cost.sql), with NO
     JSONB column (so no ``Jsonb`` wrap)::
 
         (resource_id, subscription_id, billing_period, cost_amount, currency)
@@ -832,16 +872,16 @@ def copy_cost_records(
 
     ``rows`` is an iterable of dicts with those five keys (the shape
     :func:`tenantless.generator.cost.inject_cost` emits). ``billing_period`` is a
-    ``datetime.date``; ``cost_amount`` a float; ``currency`` is ``"USD"`` (D-11).
+    ``datetime.date``; ``cost_amount`` a float; ``currency`` is ``"USD"``.
     Each row's ``resource_id`` references an already-written ``synthetic.resources``
     row — the ``fk_cost_resource`` FK (sql/004) rejects any dangling reference at
-    COPY time (the XSUB-06-analogue 0-dangling gate), so this MUST run after
+    COPY time (the 0-dangling gate), so this MUST run after
     :func:`copy_resources`.
 
     ``None``/empty is a clean no-op (matches :func:`copy_violations`). The column
     literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (threat T-9-SQLi,
-    project memory "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (project memory
+    "mock-server SQL injection bar").
     """
     # iterate the source rows DIRECTLY — GenerationResult.cost_records
     # is a frozen tuple, and materializing it into a fresh list here re-copied (at
@@ -875,17 +915,17 @@ def copy_principals(
     """Binary-COPY synthetic principals (load after subscriptions; no FK).
 
     Verbatim sibling of :func:`copy_cost_records` for the ``synthetic.principals``
-    directory (Plan 10-01, IAM-01), with NO JSONB column (so no ``Jsonb`` wrap)::
+    directory, with NO JSONB column (so no ``Jsonb`` wrap)::
 
         (oid, principal_type, display_name, app_id)
         → uuid, text, text, uuid
 
     ``rows`` is an iterable of dicts with those four keys (the shape
     :func:`tenantless.generator.identity.generate_principals` emits).
-    ``display_name`` is ``None`` (ARM-opaque, IAM-01); ``app_id`` is a UUID for
+    ``display_name`` is ``None`` (ARM-opaque); ``app_id`` is a UUID for
     ServicePrincipals and ``None`` otherwise — both nullable columns. Principals
     load BEFORE :func:`copy_role_assignments` so the ``fk_ra_principal`` FK
-    (sql/005) holds at COPY time (the 0-dangling gate, D-07).
+    (sql/005) holds at COPY time (the 0-dangling gate).
 
     ``None``/empty is a clean no-op (matches :func:`copy_cost_records`). The column
     literal is STATIC (never profile-derived); every value passes through
@@ -918,7 +958,7 @@ def copy_role_assignments(
     """Binary-COPY role_assignments (load AFTER principals AND resources; FK → principals).
 
     Verbatim sibling of :func:`copy_principals` for the ``synthetic.role_assignments``
-    fact table (Plan 10-01, IAM-02), no JSONB column::
+    fact table, no JSONB column::
 
         (assignment_id, subscription_id, principal_oid, principal_type,
          role_definition_id, scope)
@@ -928,7 +968,7 @@ def copy_role_assignments(
     :func:`tenantless.generator.identity.assign_roles` emits). Each row's
     ``principal_oid`` references an already-written ``synthetic.principals`` row —
     the ``fk_ra_principal`` FK (sql/005) rejects any dangling reference at COPY
-    time (the 0-dangling gate, D-07) — and its ``scope`` references a real
+    time (the 0-dangling gate) — and its ``scope`` references a real
     subscription / RG / resource id (checked by the UNION anti-join test, not a
     single FK). MUST run after :func:`copy_principals` AND :func:`copy_resources`.
 
@@ -973,13 +1013,13 @@ def write_tenant(
     """COPY tenant → subscriptions → resource_groups → resources → dependencies
     → violations → cost_records → principals → role_assignments.
 
-    All bulk tables load via psycopg3 binary COPY in FK order (Pitfall 6); the
-    dependencies COPY runs after resources (GEN-09 closure), violations COPY after
+    All bulk tables load via psycopg3 binary COPY in FK order; the
+    dependencies COPY runs after resources, violations COPY after
     that, cost_records COPY after resources (its ``resource_id`` FK), then the
     identity tables LAST: principals (after subscriptions) and role_assignments
-    (after principals AND resources — the three-way FK chain, D-07: ``principal_oid``
+    (after principals AND resources — the three-way FK chain: ``principal_oid``
     → principals, ``scope`` → a real sub/RG/resource id). Truncation is the caller's
-    responsibility (guarded by the CLI per D-08). ``dependencies`` / ``violations`` /
+    responsibility (guarded by the CLI). ``dependencies`` / ``violations`` /
     ``cost_records`` / ``principals`` / ``role_assignments`` default to empty sets —
     a no-identity profile passes no identity rows (a clean no-op).
     """
@@ -988,9 +1028,9 @@ def write_tenant(
     copy_resource_groups(conn, tenant)
     copy_resources(conn, tenant)
     copy_dependencies(conn, dependencies)
-    copy_violations(conn, violations)  # after resources (Phase 5)
-    copy_cost_records(conn, cost_records)  # FK-after-resources (Plan 09-03, COST-01)
-    copy_principals(conn, principals)  # NEW — after subscriptions (Plan 10-01, IAM-01)
-    copy_role_assignments(  # NEW — after principals AND resources (IAM-02, D-07)
+    copy_violations(conn, violations)  # after resources
+    copy_cost_records(conn, cost_records)  # FK-after-resources
+    copy_principals(conn, principals)  # NEW — after subscriptions
+    copy_role_assignments(  # NEW — after principals AND resources
         conn, role_assignments
     )

@@ -4,7 +4,7 @@ Context: the built wheel omitted ``profiles/schema.json`` and ``sql/*.sql``, and
 runtime code resolved them by repo-relative ``parents[3]`` paths, so an installed
 wheel raised ``FileNotFoundError`` on every ``load_profile`` (schema validation)
 and every generator/init-db migration lookup — while ``init-db`` still printed
-"Applied migrations 001..009" (false success).
+"Applied migrations 001..010" (false success).
 
 These tests are DB-free (mirror ``tests/test_cli_generate_telemetry.py``): the
 Postgres writer seam (``open_writer`` + the ``ensure_*`` migrations) is
@@ -97,7 +97,7 @@ def test_schema_validate_resolves_via_resolver():
 # Test D — writer sql lookups resolve to existing files
 # --------------------------------------------------------------------------- #
 def test_writer_sql_lookups_resolve_to_existing_files():
-    """All 3 base-schema files plus the six twin migrations (004..009) resolve
+    """All 3 base-schema files plus the seven twin migrations (004..010) resolve
     to existing ``.is_file()`` resources in the dev checkout."""
     base = writer_mod._base_schema_sql_files()
     assert len(base) == 3
@@ -111,6 +111,7 @@ def test_writer_sql_lookups_resolve_to_existing_files():
         "007_web_metadata.sql",
         "008_rg_lower_index.sql",
         "009_arm_overlay.sql",
+        "010_arm_resolver.sql",
     ):
         resolved = _resources.resource_path("sql", name)
         assert resolved.is_file(), f"twin migration missing: {resolved!r}"
@@ -154,7 +155,7 @@ def test_init_db_fails_and_names_missing_migration(fake_open_writer):
     assert result.exit_code != 0, "a missing twin migration must exit nonzero"
     combined = (result.output or "") + (result.stderr or "")
     assert "004" in combined, f"missing migration 004 not named: {combined!r}"
-    assert "Applied migrations 001..009" not in combined, (
+    assert "Applied migrations 001..010" not in combined, (
         "false-success line must not print when a migration is missing"
     )
 
@@ -171,6 +172,7 @@ def test_init_db_success_prints_host_only(fake_open_writer):
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_overlay_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_arm_resolver_schema", lambda conn: True)
 
     runner = CliRunner()
     result = runner.invoke(

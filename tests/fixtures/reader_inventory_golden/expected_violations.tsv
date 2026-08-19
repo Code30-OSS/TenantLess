@@ -1,0 +1,16 @@
+# Shared expected-violations manifest — the Python gate (tests/test_reader_inventory_gate.py)
+# AND the Rust mirror (mock-server/tests/reader_inventory_gate.rs) BOTH assert the scanner
+# returns EXACTLY the violation count below for each golden fixture. This is the Python<->Rust
+# parity contract: the enforcement boundary cannot diverge between the two CI jobs.
+#
+# Columns (TAB-separated): fixture_filename <TAB> language <TAB> expected_violation_count
+# Lines starting with '#' and blank lines are ignored.
+single_use_one_marker_two_refs.sql	sql	1
+floating_marker.sql	sql	1
+two_consecutive_one_marker.sql	sql	1
+comment_rust.rs	rust	0
+comment_python.py	python	0
+comment_sql.sql	sql	0
+runtime_sql_string_literal.py	python	1
+ddl_exempt.sql	sql	1
+valid_marker.py	python	0

@@ -1,17 +1,17 @@
-//! Integration tests for the simulator-only drift audit endpoints (DRIFT-05) and
-//! the soft-delete ARM exclusion (D-11), driving the real router against an ephemeral
+//! Integration tests for the simulator-only drift audit endpoints and
+//! the soft-delete ARM exclusion, driving the real router against an ephemeral
 //! testcontainers Postgres seeded by `common::seed_fixture` + the SCOPED
 //! `common::seed_drift_rows` helper (the shared fixture stays drift-free — project
 //! memory: fixture coupling).
 //!
 //! Coverage:
-//!   * `simulator_drift_auth` — the D-15/D-16 auth matrix: missing Bearer → 401,
+//!   * `simulator_drift_auth` — the auth matrix: missing Bearer → 401,
 //!     any non-empty Bearer → 200 (enforce OFF), valid RS256 JWT → 200 + invalid →
 //!     401 (enforce ON).
 //!   * `simulator_drift_reads` — the three audit reads return the seeded ground
 //!     truth (list batches, get-batch + records + 404 on unknown, by-resource).
 //!   * `drift_soft_delete_excluded` — a soft-deleted resource is absent from the ARM
-//!     list AND 404 on detail, while the row still exists in the DB (D-11).
+//!     list AND 404 on detail, while the row still exists in the DB.
 
 mod common;
 
@@ -70,8 +70,8 @@ fn split_resource_id(id: &str) -> (String, String, String) {
     (sub.to_string(), rg.to_string(), tail.to_string())
 }
 
-/// DRIFT-05 / D-15/D-16 auth matrix on `/simulator/drift`:
-///   * missing Bearer → 401 (the route is gated, NOT a bearer exemption — D-16);
+/// Auth matrix on `/simulator/drift`:
+///   * missing Bearer → 401 (the route is gated, NOT a bearer exemption);
 ///   * empty Bearer → 401;
 ///   * any non-empty Bearer → 200 (enforce OFF — the any-Bearer scanner contract);
 ///   * under `--enforce-auth`: a valid RS256 JWT (from the server's OWN /token mint)
@@ -86,7 +86,7 @@ async fn simulator_drift_auth() {
     let (no_auth, _) = common::request(app.clone(), "GET", path, None).await;
     assert_eq!(
         no_auth, 401,
-        "missing Bearer must 401 on /simulator/drift (D-16: not exempt)"
+        "missing Bearer must 401 on /simulator/drift (not exempt)"
     );
 
     let (empty, _) = common::request(app.clone(), "GET", path, Some("")).await;
@@ -136,7 +136,7 @@ async fn simulator_drift_auth() {
     );
 }
 
-/// DRIFT-05: the three audit reads return the seeded ground truth.
+/// The three audit reads return the seeded ground truth.
 #[tokio::test]
 async fn simulator_drift_reads() {
     let (app, _c, _pool, seed) = drift_app().await;
@@ -299,7 +299,7 @@ fn next_path(link: &str) -> String {
         .to_string()
 }
 
-/// 11-11 — the CORE gap: capped pagination previously truncated with NO continuation,
+/// The CORE gap: capped pagination previously truncated with NO continuation,
 /// leaving every row past the first page permanently inaccessible. All three drift
 /// reads must now emit an opaque `$skiptoken` `nextLink` while more rows exist and omit
 /// it on the FINAL page; following `nextLink` retrieves the remaining rows. With a small
@@ -423,7 +423,7 @@ async fn simulator_drift_continuation() {
     );
 }
 
-/// 11-11 — a garbage `$skiptoken` must be a 400 BadRequest (NOT a 500, and NEVER an
+/// A garbage `$skiptoken` must be a 400 BadRequest (NOT a 500, and NEVER an
 /// SQL/cursor leak), on all three reads. `!` is outside the base64-url-safe alphabet so
 /// the opaque token decode fails before any query runs; a token that decodes to non-i64
 /// text likewise fails the numeric cursor parse. Neither path may surface a 500.
@@ -468,13 +468,33 @@ async fn simulator_drift_bad_skiptoken() {
     }
 }
 
-/// D-11: a soft-deleted resource is ABSENT from the ARM resource list AND 404 on its
-/// detail id, while the row still EXISTS in the DB with `drift_deleted_at IS NOT NULL`
-/// (soft-delete, not hard delete — D-09).
+/// A disappeared resource is ABSENT from the ARM resource list
+/// AND 404 on its detail id, while the baseline row still EXISTS in `synthetic.resources`.
+///
+/// After the reader swap the ARM read plane resolves through
+/// `synthetic.arm_resolved_*` and NO LONGER consults `drift_deleted_at` (the oracle is
+/// retired). A disappearance is therefore expressed as an OVERLAY TOMBSTONE
+/// (`present=false`) — the shape the migrated drift path writes. This test
+/// models that migrated drift: the shared `seed_drift_rows` still stamps the legacy
+/// `drift_deleted_at` (kept for the drift-AUDIT reads, which are the `sim.rs` scope),
+/// and here we add the overlay tombstone that actually drives ARM liveness. The baseline
+/// row is never mutated (baseline immutability): it remains present with its
+/// `drift_deleted_at` set, invisible to ARM purely via the resolved view.
 #[tokio::test]
 async fn drift_soft_delete_excluded() {
     let (app, _c, pool, seed) = drift_app().await;
     let hidden = seed.soft_deleted_resource_id.clone();
+
+    // Express the disappearance the overlay way: an overlay tombstone (present=false). The
+    // resolved view — not `drift_deleted_at` — is now the liveness authority. Bound as `$N`.
+    sqlx::query(
+        "INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body) \
+         VALUES (lower($1), $1, 'resource', 'drift', false, NULL)",
+    )
+    .bind(&hidden)
+    .execute(&pool)
+    .await
+    .expect("overlay tombstone for the disappeared resource");
 
     // (1) absent from the sub-scoped list (all 116 − 1 hidden = 115 on one page).
     let list_path = format!("/subscriptions/{}/resources?$top=1500", common::SUB_A);
@@ -503,16 +523,16 @@ async fn drift_soft_delete_excluded() {
     assert_eq!(st, 404, "soft-deleted resource detail must 404");
     assert_eq!(b["error"]["code"], "ResourceNotFound");
 
-    // (3) the row is STILL in the DB (hidden, not deleted) with drift_deleted_at set.
-    let still_present: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM synthetic.resources WHERE id = $1 AND drift_deleted_at IS NOT NULL",
-    )
-    .bind(&hidden)
-    .fetch_one(&pool)
-    .await
-    .expect("count hidden row");
+    // (3) the baseline row is STILL in `synthetic.resources` (baseline immutability): it is
+    // hidden purely via the overlay tombstone, not deleted from the baseline table.
+    let still_present: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM synthetic.resources WHERE id = $1")
+            .bind(&hidden)
+            .fetch_one(&pool)
+            .await
+            .expect("count hidden row");
     assert_eq!(
         still_present, 1,
-        "the row is hidden (drift_deleted_at set), not deleted"
+        "the baseline row survives (hidden via the overlay tombstone, not deleted)"
     );
 }

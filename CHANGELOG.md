@@ -9,6 +9,52 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.4.0 — The stateful ARM overlay goes live
+
+Minor release. Turns on the persistent write-plane substrate that 1.3.0 landed dormant: every
+ARM read now resolves through the overlay, all in-place drift is migrated onto it, and the
+baseline becomes truly immutable. No breaking changes: on an empty overlay the served ARM
+responses are byte-identical to 1.3.0, the new `ETag` header is additive, and the new `reset`
+command adds functionality without altering any existing flag, response shape, or the profile
+schema. Writes are still not enabled by default.
+
+### Added
+
+- **Unified resolver behind every ARM read.** Resource, resource-group, and detail handlers now
+  read through `synthetic.arm_resolved_resources` — `baseline ∪ overlay(present) − tombstones` —
+  instead of the raw `synthetic.resources` table. A tombstoned id resolves to a `404`, an
+  appeared id resolves to its overlay body, and the immutable baseline shows through unchanged.
+- **`ETag` emission on detail GETs.** Detail responses now carry a strong, quoted validator
+  derived from a canonical preimage of the served representation — `b-<hash>` for a baseline
+  resource, `o-<revision>` for one carrying overlay drift. Derivation only; `If-Match`
+  consumption arrives with ARM writes in a later release.
+- **`reset` command.** Restores a tenant to its seeded baseline by clearing all overlay drift
+  (modified rows, appeared rows, and tombstones), leaving `synthetic.resources` untouched.
+- **Structural reader-inventory gate.** A build-time gate that inventories every reader of
+  `synthetic.resources` and fails closed unless each one is either routed through the resolver
+  or explicitly sanctioned with an in-source `SYNRES-ALLOW[...]` marker — so no future reader
+  can silently bypass the liveness view.
+- **Fail-closed boot guard.** The server (and the generator / `init-db` path) refuses to start
+  on a structurally incomplete or in-place-mutated substrate rather than serving stale state,
+  via a single read-only preflight probe that never takes an `ACCESS EXCLUSIVE` lock at boot.
+
+### Changed
+
+- **All drift now writes to the overlay, never the baseline.** Apply *and* revert of tag,
+  property, SKU, and kind edits plus resource appear/disappear are migrated onto
+  `synthetic.arm_overlay`; no drift path mutates `synthetic.*` in place anymore. Migrated drift
+  stays observable through the resolver, and baseline immutability is now a hard guarantee.
+- **The console, search, and summary readers apply the liveness filter too.** Dependency edges,
+  violation counts, and summary aggregates now resolve both endpoints through
+  `synthetic.arm_resolved_resources`, so findings and edges on tombstoned or non-live resources
+  drop out — converging exactly with what the ARM plane serves.
+
+### Verified
+
+- Byte-identity on an empty overlay, plus full-visit keyset pagination and `$filter` traversal,
+  re-validated against a ~500K-resource mixed baseline/overlay/tombstone estate — no regression
+  from the resolver at scale, and the `EXPLAIN` aggregate-scale gate holds on PostgreSQL 16.
+
 ## 1.3.0 — ARM overlay/tombstone/revision substrate
 
 Minor release. Adds the persistent substrate for the stateful ARM write plane. No breaking

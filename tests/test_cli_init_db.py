@@ -1,8 +1,8 @@
 """``tenantless init-db`` — the provision-without-generating subcommand (260709-blf).
 
 ``init-db`` is a thin wrapper over the existing idempotent ``ensure_*`` seams: it
-applies the full sql/001..009 chain (base -> cost -> identity -> drift ->
-web_metadata -> rg_index -> arm_overlay) against ``DATABASE_URL`` WITHOUT
+applies the full sql/001..010 chain (base -> cost -> identity -> drift ->
+web_metadata -> rg_index -> arm_overlay -> arm_resolver) against ``DATABASE_URL`` WITHOUT
 generating any data — the serve-only / empty-DB path on a bare bring-your-own
 Postgres.
 
@@ -38,9 +38,9 @@ def test_init_db_help_documents_database_url():
 
 
 def test_init_db_applies_full_chain_in_order(monkeypatch):
-    """A DB-free init-db invocation calls the seven ensure_* seams IN ORDER:
-    base -> cost -> identity -> drift -> web_metadata -> rg_index -> arm_overlay
-    (sql/001..009)."""
+    """A DB-free init-db invocation calls the eight ensure_* seams IN ORDER:
+    base -> cost -> identity -> drift -> web_metadata -> rg_index -> arm_overlay ->
+    arm_resolver (sql/001..010)."""
     calls: list[str] = []
 
     class _FakeConn:
@@ -80,6 +80,11 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "ensure_arm_overlay_schema",
         lambda conn: (calls.append("arm_overlay"), True)[1],
     )
+    monkeypatch.setattr(
+        writer_mod,
+        "ensure_arm_resolver_schema",
+        lambda conn: (calls.append("arm_resolver"), True)[1],
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["init-db"])
@@ -92,7 +97,8 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "web_metadata",
         "rg_index",
         "arm_overlay",
-    ], f"init-db must apply 001..009 in order; got {calls}"
+        "arm_resolver",
+    ], f"init-db must apply 001..010 in order; got {calls}"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,7 +177,7 @@ def test_init_db_rolls_back_on_apply_failure(monkeypatch):
     assert "004" in combined, f"the failing migration must be named: {combined!r}"
     assert spies["rollback"] == 1, "a mid-apply failure must roll back"
     assert spies["commit"] == 0, "no commit may happen on a mid-apply failure"
-    assert "Applied migrations 001..009" not in combined, (
+    assert "Applied migrations 001..010" not in combined, (
         "no false-success line on a rolled-back apply"
     )
 
@@ -188,6 +194,7 @@ def test_init_db_all_present_commits(monkeypatch):
         "ensure_web_metadata_schema",
         "ensure_rg_index_schema",
         "ensure_arm_overlay_schema",
+        "ensure_arm_resolver_schema",
     ):
         monkeypatch.setattr(writer_mod, fn, lambda conn: True)
 
@@ -202,4 +209,4 @@ def test_init_db_all_present_commits(monkeypatch):
     out = result.output or ""
     assert "example-host" in out, "host-only status line must name the host"
     assert "secretpw" not in out, "password must never be echoed (T-07-02)"
-    assert "Applied migrations 001..009" in out
+    assert "Applied migrations 001..010" in out

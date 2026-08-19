@@ -1,35 +1,35 @@
-//! `pg_dump`/`pg_restore` snapshot orchestration (Phase 17-04, CTRL-04 / D-04/D-05/D-13/D-14).
+//! `pg_dump`/`pg_restore` snapshot orchestration.
 //!
 //! Named snapshots capture and restore the FULL served `synthetic.*` state (including
-//! `drift_records`/`drift_batches`, D-14) as server-owned, safe-name artifacts under
+//! `drift_records`/`drift_batches`) as server-owned, safe-name artifacts under
 //! [`ControlDirs::snapshots`]. `save` runs `pg_dump --format=custom --data-only
 //! --schema=synthetic` to a `<name>.dump.partial` temp and atomically renames it to the final
 //! `<name>.dump` only on exit 0 (temp-then-rename — a crashed dump never leaves a truncated file
 //! that looks restorable) AND holds the writer permit through that rename so `Succeeded`
-//! never precedes the published artifact (Finding B). `restore` VALIDATES the archive
+//! never precedes the published artifact. `restore` VALIDATES the archive
 //! (`pg_restore --list` TOC dry-run), DECODES it to a server-owned permission-restricted temp SQL
 //! file (`pg_restore --data-only --disable-triggers -f` — a corrupt data block fails HERE, before
 //! any mutation), guards the decoded SQL against transaction-control/reconnection, then applies it
 //! via ONE `psql --single-transaction --set=ON_ERROR_STOP=1 -c <TRUNCATE> -f <temp>` so the TRUNCATE
 //! and load share a SINGLE transaction — any load failure (or a kill/timeout) rolls the TRUNCATE
-//! back too and leaves the live estate intact (Finding A). The temp is removed on every exit path
-//! (RAII). The running server then serves the restored tenant hot — no restart, D-05.
-//! Both run as tracked jobs through the SAME single-writer gate as generate/reset (D-11); a
+//! back too and leaves the live estate intact. The temp is removed on every exit path
+//! (RAII). The running server then serves the restored tenant hot — no restart.
+//! Both run as tracked jobs through the SAME single-writer gate as generate/reset; a
 //! MISSING `pg_dump`/`pg_restore` binary ends the job `failed` with a clear log, NEVER a crash
-//! (D-13, Pitfall 4 — the default state on a box without `postgresql-client`).
+//! (the default state on a box without `postgresql-client`).
 //!
-//! ## Setup requirement (D-13)
+//! ## Setup requirement
 //! Snapshots require the Postgres client tools (`pg_dump`, `pg_restore`) on `PATH` — install
 //! `postgresql-client` (Debian/Ubuntu) / `postgresql` (Homebrew) etc. All non-snapshot control
 //! features (generate/analyze/reset/jobs/auth) work WITHOUT them. `restore`'s `--disable-triggers`
 //! requires the connecting role to own `synthetic.*` (the dev/superuser role does) — otherwise
-//! restore fails cleanly and the tenant may be left empty (recover via reset/regenerate, D-15).
+//! restore fails cleanly and the tenant may be left empty (recover via reset/regenerate).
 //!
-//! ## Credential handling (T-17-05)
+//! ## Credential handling
 //! The DSN is NEVER placed in argv (the process list is world-readable, and `serve.py` treats
 //! the DSN as a secret). Instead [`pg_env`] derives `PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE`/
 //! `PGPASSWORD` from `cp.database_url` and passes them via `.env(...)`; the snapshot NAME is
-//! safe-name-validated by the caller (control.rs) BEFORE any path/subprocess (T-17-02).
+//! safe-name-validated by the caller (control.rs) BEFORE any path/subprocess.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -85,7 +85,7 @@ fn pct_decode(s: &str) -> String {
 }
 
 /// Derive the `PG*` connection env from a `postgres://user:pass@host:port/dbname?params` DSN
-/// (T-17-05): the credentials travel via env, NEVER argv. Missing components are simply
+/// The credentials travel via env, NEVER argv. Missing components are simply
 /// omitted (`libpq` then falls back to its own defaults). Handles a bracketed IPv6 host
 /// (`[::1]:5432`) and a percent-encoded password. Only keys that are present are returned.
 pub fn pg_env(database_url: &str) -> Vec<(&'static str, String)> {
@@ -144,7 +144,7 @@ pub fn pg_env(database_url: &str) -> Vec<(&'static str, String)> {
 }
 
 /// The artifact path for a snapshot `name`. The caller MUST have safe-name-validated `name`
-/// (T-17-02) — this only joins a `<name>.dump` under the server-owned snapshots dir.
+/// The caller must have safe-name-validated `name` — this only joins a `<name>.dump` under the server-owned snapshots dir.
 fn dump_path(cp: &ControlPlane, name: &str) -> PathBuf {
     cp.dirs.snapshots.join(format!("{name}.dump"))
 }
@@ -158,7 +158,7 @@ fn partial_path(cp: &ControlPlane, name: &str) -> PathBuf {
     cp.dirs.snapshots.join(format!("{name}.dump.partial"))
 }
 
-/// The save runner (CTRL-04, D-13/D-14): `pg_dump --format=custom --data-only
+/// The save runner: `pg_dump --format=custom --data-only
 /// --schema=synthetic --file <snapshots>/<name>.dump.partial`, credentials via [`pg_env`], driven
 /// by [`job::run_command`] (a missing `pg_dump` binary OR a nonzero exit ends the job `failed`
 /// with the captured stderr — never a crash). `--data-only` keeps the migration-managed schema
@@ -168,12 +168,12 @@ fn partial_path(cp: &ControlPlane, name: &str) -> PathBuf {
 /// **only** after pg_dump exits 0 — so a crashed/partial dump never leaves a truncated file that
 /// `list()`/`restore()` would treat as valid (temp-then-rename atomicity). On any failure the temp
 /// is best-effort removed, leaving no leftover artifact. The `permit` moves into `run_command` and
-/// releases the write gate on completion (D-11); the rename is a local atomic fs op AFTER that,
+/// releases the write gate on completion; the rename is a local atomic fs op AFTER that,
 /// and `list()` never surfaces the partial, so the single-writer contract is preserved.
 pub async fn save(cp: ControlPlane, job_id: Uuid, name: String, permit: OwnedSemaphorePermit) {
     // Hold the writer permit through the pg_dump run AND the finalize rename — so the gate is
-    // never released, and the job is never `Succeeded`, before the final artifact is published
-    // (Finding B). `_permit` drops at scope end, AFTER `finalize_save` renames + sets status.
+    // never released, and the job is never `Succeeded`, before the final artifact is published.
+    // `_permit` drops at scope end, AFTER `finalize_save` renames + sets status.
     let _permit = permit;
     let partial = partial_path(&cp, &name);
     let final_path = dump_path(&cp, &name);
@@ -185,7 +185,7 @@ pub async fn save(cp: ControlPlane, job_id: Uuid, name: String, permit: OwnedSem
     finalize_save(&cp, job_id, outcome.succeeded, &partial, &final_path);
 }
 
-/// Finalize a [`save`] under the still-held writer permit (Finding B): the job is `Succeeded` IFF
+/// Finalize a [`save`] under the still-held writer permit: the job is `Succeeded` IFF
 /// the final `<name>.dump` artifact exists on disk. On `succeeded`, atomically rename the temp
 /// partial to the final path and mark `Succeeded`; if the rename itself fails, remove the temp and
 /// mark `Failed` (a half-published artifact is never advertised). On `!succeeded` (the runner
@@ -219,9 +219,9 @@ fn finalize_save(
 
 /// Build the `pg_dump` command that captures `name`'s artifact to the TEMP sibling (`pg_dump
 /// --format=custom --data-only --schema=synthetic --file <snapshots>/<name>.dump.partial`), with
-/// credentials via [`pg_env`] (never argv, T-17-05). The caller MUST have safe-name-validated
-/// `name`. Dump CONTENT/format is unchanged from the pre-atomic-save version (fingerprint-safe,
-/// D-11 reproducibility); only the on-disk target is the temp path, promoted by [`save`].
+/// credentials via [`pg_env`] (never argv). The caller MUST have safe-name-validated
+/// `name`. Dump CONTENT/format is unchanged from the pre-atomic-save version (fingerprint-safe
+/// reproducibility); only the on-disk target is the temp path, promoted by [`save`].
 pub fn dump_command(cp: &ControlPlane, name: &str) -> Command {
     let file = partial_path(cp, name);
     let mut cmd = Command::new("pg_dump");
@@ -235,7 +235,7 @@ pub fn dump_command(cp: &ControlPlane, name: &str) -> Command {
     for (k, v) in pg_env(&cp.database_url) {
         cmd.env(k, v);
     }
-    job::scrub_child_env(&mut cmd); // never inherit the control token (WR-03)
+    job::scrub_child_env(&mut cmd); // never inherit the control token
     cmd
 }
 
@@ -278,7 +278,7 @@ impl Drop for TempSqlFile {
     }
 }
 
-/// The restore runner (CTRL-04, D-05/D-14, Finding A). Delegates to [`restore_with_timeout`] with
+/// The restore runner. Delegates to [`restore_with_timeout`] with
 /// the production [`job::JOB_TIMEOUT`]; the injectable-timeout variant exists ONLY so tests can
 /// drive a short timeout (kill/rollback proof).
 pub async fn restore(cp: ControlPlane, job_id: Uuid, name: String, permit: OwnedSemaphorePermit) {
@@ -297,7 +297,7 @@ pub async fn restore(cp: ControlPlane, job_id: Uuid, name: String, permit: Owned
 /// preserved. The job is `Succeeded` only after psql commits. The temp is removed by RAII on every
 /// path; the permit is held throughout (decode → apply → cleanup) and released only at scope end.
 ///
-/// Finding A closes the old "validated-but-incompatible archive empties the estate" window: the old
+/// This closes the old "validated-but-incompatible archive empties the estate" window: the old
 /// path TRUNCATEd in a SEPARATE committed transaction and only then loaded, so a load failure left
 /// the estate empty. Now the TRUNCATE lives INSIDE the psql transaction with the load.
 pub async fn restore_with_timeout(
@@ -371,6 +371,49 @@ pub async fn restore_with_timeout(
         }
     };
 
+    // (5b) Capture the monotonic `arm_overlay_revision_seq` cursor BEFORE the
+    // load. `pg_dump --data-only --schema=synthetic` captures a `setval` for this standalone
+    // sequence (its counter is "data"), so restoring an OLDER snapshot would REWIND it and reuse
+    // revision/ETag values (a hard operator constraint). We re-clamp it forward AFTER the load
+    // commits. Guarded by `to_regclass` so a subset-migration fixture with no overlay is a no-op
+    // (the sequence name is a STATIC literal — no injection surface). The reset/generate wipes do
+    // NOT need this: the sequence is UNOWNED (sql/009), so their identity-restarting TRUNCATE
+    // cannot rewind it — only the restore path's data-only setval replay can.
+    let seq_present: bool = match sqlx::query_scalar(
+        "SELECT to_regclass('synthetic.arm_overlay_revision_seq') IS NOT NULL",
+    )
+    .fetch_one(&cp.pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            job::with_job(&cp, job_id, |j| {
+                j.push_log(format!("probe of arm_overlay_revision_seq failed: {e}"));
+                j.status = JobStatus::Failed;
+            });
+            return;
+        }
+    };
+    let pre_revision: Option<i64> = if seq_present {
+        match sqlx::query_scalar("SELECT last_value FROM synthetic.arm_overlay_revision_seq")
+            .fetch_one(&cp.pool)
+            .await
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                job::with_job(&cp, job_id, |j| {
+                    j.push_log(format!(
+                        "read of arm_overlay_revision_seq last_value failed: {e}"
+                    ));
+                    j.status = JobStatus::Failed;
+                });
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
     // (6) ONE psql transaction: TRUNCATE (-c, ordered first) + load (-f), all-or-nothing. If no
     // synthetic table exists yet (subset-migration fixture), apply the load alone (no TRUNCATE).
     let mut cmd = if existing.is_empty() {
@@ -381,6 +424,30 @@ pub async fn restore_with_timeout(
     };
     let outcome = job::run_command_keep_permit(&cp, job_id, &mut cmd, timeout).await;
     if outcome.succeeded {
+        // (7) The load committed, replaying the dump's (possibly older) `setval`
+        // for the standalone `arm_overlay_revision_seq`. Re-clamp it FORWARD-ONLY so the counter
+        // can never rewind: `setval(seq, GREATEST(pre_restore, loaded), true)`. `pre` binds as
+        // `$1`; the sequence name is a STATIC literal. Skipped when the sequence was absent
+        // pre-load (subset-migration fixture). A clamp failure fails the job (never silently
+        // leave a rewound counter).
+        if let Some(pre) = pre_revision
+            && let Err(e) = sqlx::query(
+                "SELECT setval('synthetic.arm_overlay_revision_seq', \
+                        GREATEST($1, (SELECT last_value FROM synthetic.arm_overlay_revision_seq)), \
+                        true)",
+            )
+            .bind(pre)
+            .execute(&cp.pool)
+            .await
+        {
+            job::with_job(&cp, job_id, |j| {
+                j.push_log(format!(
+                    "snapshot restored but revision-seq forward-clamp failed: {e}"
+                ));
+                j.status = JobStatus::Failed;
+            });
+            return;
+        }
         // Succeeded only AFTER psql committed the single TRUNCATE+load transaction. Restore
         // REPLACES the tenant → refresh the served identity to the restored tenant BEFORE
         // publishing `Succeeded` (never report a successful restore while the pre-restore
@@ -403,7 +470,7 @@ pub async fn restore_with_timeout(
 /// to `out_sql` WITHOUT connecting to any database (no `--dbname`) and WITHOUT `--single-transaction`
 /// (which would emit `BEGIN`/`COMMIT` into the file — forbidden by the psql apply wrapper + the
 /// txn-control guard). `--disable-triggers` emits only `SET session_replication_role` (allowed).
-/// `scrub_child_env` still applied (WR-03). The caller MUST have safe-name-validated `name`.
+/// `scrub_child_env` still applied. The caller MUST have safe-name-validated `name`.
 pub fn decode_command(cp: &ControlPlane, name: &str, out_sql: &Path) -> Command {
     let archive = dump_path(cp, name);
     let mut cmd = Command::new("pg_restore");
@@ -415,13 +482,13 @@ pub fn decode_command(cp: &ControlPlane, name: &str, out_sql: &Path) -> Command 
     ]);
     cmd.arg(out_sql);
     cmd.arg(&archive);
-    job::scrub_child_env(&mut cmd); // never inherit the control token (WR-03)
+    job::scrub_child_env(&mut cmd); // never inherit the control token
     cmd
 }
 
-/// Build the `psql` APPLY command (Finding A): `psql -X --single-transaction
+/// Build the `psql` APPLY command: `psql -X --single-transaction
 /// --set=ON_ERROR_STOP=1 [-c <truncate_stmt>] -f <sql_file>`, credentials/dbname via [`pg_env`]
-/// (never argv, T-17-05), `scrub_child_env` applied. `--single-transaction` wraps the WHOLE session
+/// (never argv), `scrub_child_env` applied. `--single-transaction` wraps the WHOLE session
 /// (the optional `-c TRUNCATE` ordered BEFORE the `-f` load) in ONE transaction; `ON_ERROR_STOP`
 /// aborts on the first error → a load failure rolls the TRUNCATE back too. `-X` ignores any
 /// `~/.psqlrc`. The `truncate_stmt` relation list is built from the STATIC
@@ -438,18 +505,18 @@ fn psql_apply_command(cp: &ControlPlane, truncate_stmt: Option<&str>, sql_file: 
     for (k, v) in pg_env(&cp.database_url) {
         cmd.env(k, v);
     }
-    job::scrub_child_env(&mut cmd); // never inherit the control token (WR-03)
+    job::scrub_child_env(&mut cmd); // never inherit the control token
     cmd
 }
 
-/// The Finding-A apply command with the in-transaction `TRUNCATE` ordered before the load (the
+/// The apply command with the in-transaction `TRUNCATE` ordered before the load (the
 /// production restore path). A thin wrapper over [`psql_apply_command`] with `Some(truncate_stmt)`
 /// so the "TRUNCATE + load share one psql transaction" shape is unit-testable DB-free.
 pub fn restore_apply_command(cp: &ControlPlane, truncate_stmt: &str, sql_file: &Path) -> Command {
     psql_apply_command(cp, Some(truncate_stmt), sql_file)
 }
 
-/// Run the [`decode_command`] and classify the outcome (Finding A): `Ok(())` if the archive decodes
+/// Run the [`decode_command`] and classify the outcome: `Ok(())` if the archive decodes
 /// to the temp SQL file (exit 0); `Err(msg)` if `pg_restore` cannot run (missing/unusable binary)
 /// OR the archive is corrupt / a data block is unreadable / the write fails (nonzero exit). Runs
 /// BEFORE any DB mutation, so a bad archive can never empty the estate. Fails clean, never panics.
@@ -477,7 +544,7 @@ async fn decode_archive(cp: &ControlPlane, name: &str, out_sql: &Path) -> Result
 
 /// Reject any transaction-control (`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`START`) or reconnection
 /// (`\connect`, `\c`) statement in the decoded restore SQL, so nothing inside the file can break out
-/// of the single psql transaction (Finding A). Tracks COPY-data-body state: while inside a `COPY …
+/// of the single psql transaction. Tracks COPY-data-body state: while inside a `COPY …
 /// FROM stdin;` body (until a `\.` terminator line) arbitrary row data is opaque (it may literally
 /// contain the word "commit"); outside a COPY body, comments/blanks are skipped, `SET …` /
 /// `SELECT pg_catalog.set_config(…)` are allowed, and a transaction-control opener or a reconnection
@@ -551,21 +618,21 @@ fn guard_no_txn_control_file(path: &Path) -> Result<(), String> {
 /// Build the `pg_restore --list <snapshots>/<name>.dump` command: a TOC dry-run that
 /// parses the archive header/table-of-contents WITHOUT connecting to any database (no `--dbname`),
 /// used by [`validate_archive`] as the fail-closed validate-before-truncate gate. Mirrors the
-/// other builders (credentials-free; `scrub_child_env` still applied, WR-03) so it is unit-testable
+/// other builders (credentials-free; `scrub_child_env` still applied) so it is unit-testable
 /// DB-free. The caller MUST have safe-name-validated `name`.
 pub fn validate_command(cp: &ControlPlane, name: &str) -> Command {
     let file = dump_path(cp, name);
     let mut cmd = Command::new("pg_restore");
     cmd.arg("--list");
     cmd.arg(&file);
-    job::scrub_child_env(&mut cmd); // never inherit the control token (WR-03)
+    job::scrub_child_env(&mut cmd); // never inherit the control token
     cmd
 }
 
 /// Run the [`validate_command`] TOC dry-run and classify the outcome: `Ok(())` if the
 /// archive parses (exit 0); `Err(msg)` if `pg_restore` cannot run (missing/unusable binary) OR the
 /// archive is corrupt/truncated (nonzero exit). This runs BEFORE any truncate, so a bad archive
-/// leaves the live estate intact. Fails clean, never crashes (D-13): a spawn error is mapped to an
+/// leaves the live estate intact. Fails clean, never crashes: a spawn error is mapped to an
 /// `Err`, not a panic. No DB connection is opened.
 async fn validate_archive(cp: &ControlPlane, name: &str) -> Result<(), String> {
     use std::process::Stdio;
@@ -636,7 +703,7 @@ pub fn list(cp: &ControlPlane) -> Vec<SnapshotEntry> {
 }
 
 /// Delete a snapshot artifact (`DELETE /_control/snapshots/{name}`). The caller MUST have
-/// safe-name-validated `name` (T-17-02). Returns the `std::io` result so the handler maps a
+/// safe-name-validated `name`. Returns the `std::io` result so the handler maps a
 /// `NotFound` to a 404 and anything else to a 500.
 pub fn delete(cp: &ControlPlane, name: &str) -> std::io::Result<()> {
     std::fs::remove_file(dump_path(cp, name))
@@ -707,7 +774,7 @@ mod tests {
         );
     }
 
-    /// Finding A (fail-closed apply): `restore_apply_command` is a `psql` run carrying
+    /// Fail-closed apply: `restore_apply_command` is a `psql` run carrying
     /// `--single-transaction` + `--set=ON_ERROR_STOP=1`, with the `-c TRUNCATE` ordered BEFORE
     /// the `-f` load — so the TRUNCATE and the load share ONE transaction and a load failure rolls
     /// the TRUNCATE back too. Credentials/dbname are NOT in argv (env only).
@@ -755,7 +822,7 @@ mod tests {
         );
     }
 
-    /// Finding A (decode step): `decode_command` decodes the validated archive to a SQL file
+    /// Decode step: `decode_command` decodes the validated archive to a SQL file
     /// (`--data-only --disable-triggers -f`) and MUST NOT carry `--single-transaction` — that
     /// would emit BEGIN/COMMIT into the file, which the psql apply's `--single-transaction`
     /// wrapper (and the txn-control guard) forbid.
@@ -787,7 +854,7 @@ mod tests {
         );
     }
 
-    /// Extra (Finding A guard): the no-transaction-control guard REJECTS BEGIN/COMMIT/ROLLBACK/
+    /// The no-transaction-control guard REJECTS BEGIN/COMMIT/ROLLBACK/
     /// SAVEPOINT/START and `\connect`/`\c` OUTSIDE a COPY body, but ACCEPTS `SET
     /// session_replication_role`, comments/blanks, and arbitrary COPY row data (which may
     /// literally contain the word "commit").
@@ -836,7 +903,7 @@ mod tests {
         }
     }
 
-    /// Required-test #7 (RAII): a `TempSqlFile` exists while held and is removed on Drop (every
+    /// RAII: a `TempSqlFile` exists while held and is removed on Drop (every
     /// exit path — success/failure/early-return/panic).
     #[test]
     fn temp_sql_file_removed_on_drop() {
@@ -851,7 +918,7 @@ mod tests {
         assert!(!p.exists(), "temp removed on drop (RAII, every exit path)");
     }
 
-    /// Required-test #5 (restore half): `restore` holds the writer permit across its whole run —
+    /// Restore half: `restore` holds the writer permit across its whole run —
     /// here it fails fast at the not-found guard (before touching the pool/tools), and the gate is
     /// unavailable while it runs and released only after it finalizes.
     #[tokio::test]
@@ -931,7 +998,7 @@ mod tests {
         );
     }
 
-    /// T-17-05: the standard dev DSN maps to the expected PG* env (credentials via env, not
+    /// The standard dev DSN maps to the expected PG* env (credentials via env, not
     /// argv). Password + user + host + port + dbname all extracted.
     #[test]
     fn pg_env_parses_standard_dsn() {
@@ -962,7 +1029,7 @@ mod tests {
         assert_eq!(get("PGPORT"), Some("5432"));
     }
 
-    // ----- Task 2 (Finding B — atomic save finalization) -----
+    // ----- Atomic save finalization -----
 
     /// As [`test_cp`] but with a caller-chosen `database_url` — for the save permit-lifecycle
     /// test that needs a fail-fast (connection-refused) DSN.
@@ -988,7 +1055,7 @@ mod tests {
         s.expect("job registered")
     }
 
-    /// Required-test #6: a save reaches `Succeeded` IFF the final `<name>.dump` exists.
+    /// A save reaches `Succeeded` IFF the final `<name>.dump` exists.
     /// (A) a present partial renames to final → `Succeeded`, final exists, partial gone;
     /// (B) a MISSING partial (rename fails) → `Failed`, no final; (C) `!succeeded` → stays
     /// `Failed`, partial removed, no final.
@@ -1028,7 +1095,7 @@ mod tests {
         assert!(!final_c.exists(), "failed save leaves no final");
     }
 
-    /// Required-test #5 (save half): `save` holds the writer permit across the pg_dump run AND
+    /// Save half: `save` holds the writer permit across the pg_dump run AND
     /// the finalize — the gate is unavailable while save runs and released only after finalize.
     #[tokio::test]
     async fn save_holds_permit_until_finalize() {

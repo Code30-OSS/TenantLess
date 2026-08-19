@@ -1,11 +1,11 @@
-//! WAPI-04 (D-12) contract suite for the bearer-exempt `/_sim` read-only surface.
+//! Contract suite for the bearer-exempt `/_sim` read-only surface.
 //!
-//! These five tests pin the ARCHITECTURAL boundary of Phase 14 — they hold against the
-//! Plan 14-01 STUB handlers because WAPI-04 is structural (it depends on router
-//! composition, not on query logic). The real query/aggregate behavior (WAPI-01/02/03)
-//! is pinned by Plans 14-02/14-03.
+//! These five tests pin the ARCHITECTURAL boundary — they hold against the
+//! STUB handlers because the boundary is structural (it depends on router
+//! composition, not on query logic). The real query/aggregate behavior
+//! is pinned by later plans.
 //!
-//! Coverage (D-12):
+//! Coverage:
 //!   * `bearer_exempt`          — GET /_sim/* reachable with NO Authorization header → 200.
 //!   * `method_not_allowed`     — POST/PUT/PATCH/DELETE /_sim/violations → 405 + `Allow: GET`.
 //!   * `unknown_route_json_error` — GET /_sim/nope → `{error:{code,message}}` JSON (not HTML/empty).
@@ -52,7 +52,7 @@ fn build_app(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> Rou
     build_router(sim_state(pool, signer))
 }
 
-/// Build the GENUINE pre-merge ARM-only router (WAPI-04 test seam, D-17): the same
+/// Build the GENUINE pre-merge ARM-only router (test seam): the same
 /// `AppState` as [`build_app`] but constructed via `build_router_without_sim`, which
 /// composes `arm` + `/_console` + `/token` WITHOUT `.merge(sim::router)`. This is the
 /// baseline `arm_byte_identical` compares against the merged router — it has NO `/_sim`
@@ -89,7 +89,7 @@ async fn sim_app() -> (
 }
 
 /// Drive the router in-process, returning status, the FULL header map, and the raw body
-/// bytes — the header/byte fidelity the WAPI-04 contract needs (the shared `common::request`
+/// bytes — the header/byte fidelity the contract needs (the shared `common::request`
 /// helper parses+discards headers, which would lose the `Allow` header + byte identity).
 async fn raw_request(
     app: Router,
@@ -112,7 +112,7 @@ async fn raw_request(
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.2 — /_sim/* reachable with NO Authorization header (bearer-exempt).
+// /_sim/* reachable with NO Authorization header (bearer-exempt).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn bearer_exempt() {
@@ -135,7 +135,7 @@ async fn bearer_exempt() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.3 — only GET registered ⇒ MethodRouter returns 405 + `Allow: GET` for mutations.
+// Only GET registered ⇒ MethodRouter returns 405 + `Allow: GET` for mutations.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn method_not_allowed() {
@@ -161,7 +161,7 @@ async fn method_not_allowed() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.5 — unknown /_sim route → the ARM CloudError JSON shape (not empty/HTML).
+// Unknown /_sim route → the ARM CloudError JSON shape (not empty/HTML).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn unknown_route_json_error() {
@@ -185,7 +185,7 @@ async fn unknown_route_json_error() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.4 — build_router does not panic; an ARM path and a /_sim path each resolve to
+// build_router does not panic; an ARM path and a /_sim path each resolve to
 // their OWN handler (no shadowing).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -223,7 +223,7 @@ async fn no_arm_shadow() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.1 / D-17 — a representative ARM list AND detail response are byte- and
+// A representative ARM list AND detail response are byte- and
 // header-identical between the GENUINE pre-merge ARM-only router
 // (`build_router_without_sim`) and the merged router (`build_router`), over the SAME
 // pool + signer. This is NON-TAUTOLOGICAL: the discriminating check below proves the two
@@ -297,7 +297,7 @@ async fn arm_byte_identical() {
 }
 
 // =====================================================================================
-// WAPI-01 / WAPI-02 — the collection handler bodies (Plan 14-02).
+// the collection handler bodies.
 // =====================================================================================
 
 /// Parse a `/_sim` collection response into its `value` array and optional `nextLink`.
@@ -316,7 +316,7 @@ fn parse_collection(bytes: &Bytes) -> (Vec<serde_json::Value>, Option<String>) {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-01 — ?subscription narrows violations via LEFT JOIN synthetic.resources; a
+// ?subscription narrows violations via LEFT JOIN synthetic.resources; a
 // malformed UUID returns a fixed 400 (never a 500/panic).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -346,7 +346,7 @@ async fn violations_subscription_filter() {
     let (vb, _n) = parse_collection(&bb);
     assert!(vb.is_empty(), "no violations under SUB_B");
 
-    // ?subscription=not-a-uuid → fixed 400 (parsed to Uuid BEFORE SQL; D-09), never 500.
+    // ?subscription=not-a-uuid → fixed 400 (parsed to Uuid BEFORE SQL), never 500.
     let (sbad, _h, _b) =
         raw_request(app, "GET", "/_sim/violations?subscription=not-a-uuid", None).await;
     assert_eq!(
@@ -357,7 +357,7 @@ async fn violations_subscription_filter() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-09 / Pitfall 6 — code & severity match case-insensitively (lower()=lower()).
+// Code & severity match case-insensitively (lower()=lower()).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn filter_case_behavior() {
@@ -413,7 +413,7 @@ async fn filter_case_behavior() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-06 — a malformed $skiptoken returns a fixed 400, never a 500/panic.
+// A malformed $skiptoken returns a fixed 400, never a 500/panic.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn bad_cursor_is_400() {
@@ -429,7 +429,7 @@ async fn bad_cursor_is_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-02 — ?subscription matches source OR target (one bind, two uses); crossSubscription
+// ?subscription matches source OR target (one bind, two uses); crossSubscription
 // = (source != target); ?type is case-insensitive.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -449,14 +449,14 @@ async fn dependencies_source_or_target() {
     );
     let sub_b = seed.cross_sub_target.to_string();
     for d in &value {
-        // Nested spec shape (D-13): source/target are OBJECTS carrying subscriptionId.
+        // Nested spec shape: source/target are OBJECTS carrying subscriptionId.
         let src = d["source"]["subscriptionId"].as_str().unwrap();
         let tgt = d["target"]["subscriptionId"].as_str().unwrap();
         assert!(
             src == sub_b || tgt == sub_b,
             "each returned edge has SUB_B as source OR target"
         );
-        // The flat DTO keys must be GONE (D-13 replaces them with the nested shape).
+        // The flat DTO keys must be GONE (replaced by the nested shape).
         assert!(
             d.get("sourceSubscriptionId").is_none() && d.get("dependencyType").is_none(),
             "flat dependency keys must not appear in the nested spec shape: {d:?}"
@@ -549,7 +549,7 @@ async fn walk_all(app: &Router, first_uri: &str) -> (Vec<serde_json::Value>, Vec
 }
 
 // -------------------------------------------------------------------------------------
-// D-06 — keyset traversal across pages: no gaps, no dupes; nextLink preserves the active
+// Keyset traversal across pages: no gaps, no dupes; nextLink preserves the active
 // filter AND api-version (both collection endpoints).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -588,7 +588,7 @@ async fn pagination_traversal_no_gaps() {
     let mut dkeys: Vec<(String, String, String)> = dep_items
         .iter()
         .map(|d| {
-            // Nested spec shape (D-13): source/target objects + `type` (not `dependencyType`).
+            // Nested spec shape: source/target objects + `type` (not `dependencyType`).
             (
                 d["source"]["resourceId"].as_str().unwrap().to_string(),
                 d["target"]["resourceId"].as_str().unwrap().to_string(),
@@ -605,7 +605,7 @@ async fn pagination_traversal_no_gaps() {
         "every SUB_A dependency visited exactly once (no gaps)"
     );
 
-    // page-2+ nextLink preserves BOTH the active discrete filter AND api-version (D-06).
+    // page-2+ nextLink preserves BOTH the active discrete filter AND api-version.
     assert!(
         !dep_links.is_empty(),
         "a multi-page traversal must emit at least one nextLink"
@@ -622,7 +622,7 @@ async fn pagination_traversal_no_gaps() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-13 — both collection envelopes carry `count` = the total rows matching the ACTIVE
+// Both collection envelopes carry `count` = the total rows matching the ACTIVE
 // filter (a COUNT(*) over the SAME predicate), NOT the page size, NOT the table total.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -717,7 +717,7 @@ async fn collection_count_is_filtered_total() {
 }
 
 // =====================================================================================
-// WAPI-03 — the /_sim/summary aggregate (Plan 14-03).
+// the /_sim/summary aggregate.
 //
 // One unpaginated payload: `totals` + `subscriptions[]` + `byType[]` + `byLocation[]` +
 // tenant metadata (tenantId / seed / profile). All computed in ONE read-only REPEATABLE
@@ -730,7 +730,7 @@ async fn collection_count_is_filtered_total() {
 use sqlx::Executor as _;
 
 /// Apply the synthetic schema migrations to a FRESH container WITHOUT seeding any rows —
-/// the empty / schema-only tenant contract (D-11 / Pitfall 5). Mirrors the migration
+/// the empty / schema-only tenant contract. Mirrors the migration
 /// ordering in `common::seed_fixture` (001 → 002 → 003 → 006, so `drift_deleted_at` exists)
 /// plus 007 so `profile_name` exists) but inserts NOTHING, so `synthetic.tenant`
 /// has zero rows.
@@ -745,11 +745,24 @@ async fn schema_only_pg() -> (PgPool, testcontainers::ContainerAsync<postgres::P
     ] {
         (&pool).execute(sql).await.expect("apply schema migration");
     }
+    // The summary/search handlers now read through
+    // `synthetic.arm_resolved_resources`, so even the EMPTY / schema-only tenant must
+    // provision the overlay substrate + resolver views — else the migrated `FROM
+    // synthetic.arm_resolved_resources` references a missing relation and 500s. Additive and
+    // overlay-empty, so the empty tenant still serves zeros + null metadata (the empty-tenant contract).
+    for _ in 0..2 {
+        tenantless_server::ensure_arm_overlay_schema(&pool)
+            .await
+            .expect("schema_only_pg: ensure_arm_overlay_schema");
+        tenantless_server::ensure_arm_resolver_schema(&pool)
+            .await
+            .expect("schema_only_pg: ensure_arm_resolver_schema");
+    }
     (pool, container)
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 — totals equal COUNT(*) ground truth on the seeded fixture; every per-sub
+// totals equal COUNT(*) ground truth on the seeded fixture; every per-sub
 // rollup count also matches an independent COUNT(*).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -837,7 +850,7 @@ async fn summary_counts_ground_truth() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 — sum(subscriptions[].violationCount) == totals.violations (0-dangling
+// sum(subscriptions[].violationCount) == totals.violations (0-dangling
 // reconciliation: the seeded violations all join to a resource under SUB_A).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -868,7 +881,7 @@ async fn summary_violation_reconciliation() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 — an empty (schema-only, no tenant row) container returns 200 with zeros +
+// an empty (schema-only, no tenant row) container returns 200 with zeros +
 // empty arrays + null tenant metadata, never a 500 (fetch_optional, not fetch_one).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -907,7 +920,7 @@ async fn summary_empty_tenant() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 / D-14 — `summary.profile` returns the REAL generation profile NAME sourced
+// `summary.profile` returns the REAL generation profile NAME sourced
 // from `synthetic.tenant.profile_name` (NOT `profile_version`). A seeded-but-un-updated
 // tenant (seed_fixture never sets profile_name) yields `profile: null`; setting the
 // column surfaces the NAME. The UPDATE goes through the test's OWN pool handle — NOT
@@ -928,7 +941,7 @@ async fn summary_profile_name() {
     );
 
     // (b) set the generation-profile NAME through the test's own pool handle, then the
-    //     summary must return that NAME (D-14 supersedes the profile_version compromise).
+    //     summary must return that NAME (supersedes the profile_version compromise).
     sqlx::query("UPDATE synthetic.tenant SET profile_name = 'enterprise-eu'")
         .execute(&pool)
         .await
@@ -945,7 +958,7 @@ async fn summary_profile_name() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 — arrays are deterministically ordered (two fetches are byte-identical) and
+// arrays are deterministically ordered (two fetches are byte-identical) and
 // byType `type` strings are canonicalized via casing::canonical_type.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1010,7 +1023,7 @@ async fn summary_deterministic_order() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 / D-15 (GAP-14-03) — the inline `summary.subscriptions[]` array is a BOUNDED
+// the inline `summary.subscriptions[]` array is a BOUNDED
 // preview: deterministically ordered by `resourceCount DESC, subscriptionId ASC` and
 // capped at min(total_subscriptions, 500). Full enumeration is served by the paginated
 // `GET /_sim/subscriptions` endpoint. This test seeds a LOW-subscription_id, ZERO-resource
@@ -1080,13 +1093,13 @@ async fn summary_subscriptions_capped_and_ordered() {
 }
 
 // =====================================================================================
-// D-16 (GAP-14-02) — STRICT fail-closed query validation on the `/_sim` collection
+// STRICT fail-closed query validation on the `/_sim` collection
 // endpoints. Unknown params, an out-of-domain `severity`, and a malformed `$top`/
-// `$skiptoken` all return the SAME fixed JSON `ApiError` 400 (T-14-03) — NEVER axum's
+// `$skiptoken` all return the SAME fixed JSON `ApiError` 400 — NEVER axum's
 // default `Query` plain-text rejection, and NEVER a misleading empty page.
 // =====================================================================================
 
-/// Assert a response is the FIXED JSON `ApiError` 400 (D-16 / T-14-03): status 400,
+/// Assert a response is the FIXED JSON `ApiError` 400: status 400,
 /// `content-type: application/json`, and body `{error:{code,message}}`. This is the SAME
 /// shape every bad-input path emits — pointedly NOT axum's default plain-text `Query`
 /// rejection (which is `text/plain` with no `error` object).
@@ -1108,7 +1121,7 @@ fn assert_fixed_json_400(status: StatusCode, headers: &HeaderMap, bytes: &Bytes)
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — an unknown query param on /_sim/violations → fixed JSON 400 (STRICT surface).
+// An unknown query param on /_sim/violations → fixed JSON 400 (STRICT surface).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn violations_unknown_param_is_400() {
@@ -1118,7 +1131,7 @@ async fn violations_unknown_param_is_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — an out-of-domain `severity` → fixed JSON 400 (NOT an empty page); the in-domain
+// An out-of-domain `severity` → fixed JSON 400 (NOT an empty page); the in-domain
 // values are accepted case-insensitively (high / HIGH / High) → 200.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1153,7 +1166,7 @@ async fn violations_bad_severity_is_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 / T-14-03 — a malformed `$top` returns the SAME fixed JSON `ApiError` shape via
+// A malformed `$top` returns the SAME fixed JSON `ApiError` shape via
 // the manual RawQuery parse, NOT axum's default plain-text `Query` rejection; a valid
 // `$top` still works.
 // -------------------------------------------------------------------------------------
@@ -1171,7 +1184,7 @@ async fn violations_bad_top_is_json_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — a valid FULL request (every documented param) is unaffected by the strict
+// A valid FULL request (every documented param) is unaffected by the strict
 // parse: subscription + code + severity + $top + $skiptoken-less + api-version → 200.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1192,7 +1205,7 @@ async fn violations_valid_full_request_is_200() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — an unknown query param on /_sim/dependencies → fixed JSON 400. The documented
+// An unknown query param on /_sim/dependencies → fixed JSON 400. The documented
 // set is `$top`/`$skiptoken`/`api-version`/`subscription`/`type`.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1204,7 +1217,7 @@ async fn dependencies_unknown_param_is_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 / T-14-03 — a malformed `$top` AND a malformed `$skiptoken` on /_sim/dependencies
+// A malformed `$top` AND a malformed `$skiptoken` on /_sim/dependencies
 // both return the SAME fixed JSON `ApiError` 400 (not axum's plain-text Query rejection,
 // not a 500).
 // -------------------------------------------------------------------------------------
@@ -1222,11 +1235,11 @@ async fn dependencies_bad_pagination_is_json_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// WR-01 — a decoded ASCII control character (NUL `%00` and the rest of C0 + DEL `%7f`) in
+// a decoded ASCII control character (NUL `%00` and the rest of C0 + DEL `%7f`) in
 // an OPEN-DOMAIN filter value (`code`/`resource` on violations, `type` on dependencies)
 // must be the SAME fixed JSON 400 — NOT an HTTP 500 (Postgres rejecting a NUL after the
 // value binds) and NOT a misleading empty 200 page. Proves the encoded control is stopped
-// at the decode choke point and never reaches SQL, upholding the D-16 fail-closed contract.
+// at the decode choke point and never reaches SQL, upholding the fail-closed contract.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn control_char_in_open_domain_filter_is_json_400() {
@@ -1240,7 +1253,7 @@ async fn control_char_in_open_domain_filter_is_json_400() {
             format!("/_sim/dependencies?type=peer{ctrl}"),
         ] {
             let (s, h, b) = raw_request(app.clone(), "GET", &uri, None).await;
-            // assert_fixed_json_400 asserts status == 400 (so NOT the 500 WR-01 described,
+            // assert_fixed_json_400 asserts status == 400 (so NOT the 500 described,
             // and NOT a 200 empty page) AND the fixed `{error:{code,message}}` JSON shape.
             assert_fixed_json_400(s, &h, &b);
         }
@@ -1248,7 +1261,7 @@ async fn control_char_in_open_domain_filter_is_json_400() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — a valid `?subscription=<uuid>&type=<t>&$top=2` request is unaffected by the
+// A valid `?subscription=<uuid>&type=<t>&$top=2` request is unaffected by the
 // strict parse: 200 with the nested dependency shape + `count`.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1268,7 +1281,7 @@ async fn dependencies_valid_full_request_is_200() {
     );
     let value = body["value"].as_array().expect("value[]");
     assert!(!value.is_empty(), "vnet-peering under SUB_A is non-empty");
-    // Nested spec shape (D-13) survives the strict parse.
+    // Nested spec shape survives the strict parse.
     assert!(
         value[0]["source"]["subscriptionId"].as_str().is_some(),
         "nested source.subscriptionId present"
@@ -1276,14 +1289,14 @@ async fn dependencies_valid_full_request_is_200() {
 }
 
 // =====================================================================================
-// WAPI-03 / D-15 (GAP-14-03) — the NEW keyset-paginated `GET /_sim/subscriptions` endpoint
-// (the fourth /_sim GET route, superseding D-01). UUID keyset on `subscription_id`, D-13
-// `count`, fail-closed D-16, read-only (405 on mutation). Closes the T-14-05 residual by
+// the NEW keyset-paginated `GET /_sim/subscriptions` endpoint
+// (the fourth /_sim GET route). UUID keyset on `subscription_id`, the envelope
+// `count`, fail-closed, read-only (405 on mutation). Closes the enumeration residual by
 // serving FULL subscription enumeration (the inline summary preview is capped at 500).
 // =====================================================================================
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 — the envelope is `{ count, value:[{subscriptionId,name,archetype,resourceCount,
+// the envelope is `{ count, value:[{subscriptionId,name,archetype,resourceCount,
 // resourceGroupCount,violationCount}], nextLink? }`, matching the summary per-sub rollup
 // shape; `count` == the total subscription COUNT(*).
 // -------------------------------------------------------------------------------------
@@ -1301,7 +1314,7 @@ async fn subscriptions_envelope_and_shape() {
     assert_eq!(
         body["count"].as_i64().expect("envelope has a count"),
         total,
-        "count == total subscription COUNT(*) (D-13)"
+        "count == total subscription COUNT(*)"
     );
 
     let value = body["value"].as_array().expect("value[]");
@@ -1325,7 +1338,7 @@ async fn subscriptions_envelope_and_shape() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-03 / D-06 — keyset traversal with $top=1 across the 2 seeded subs visits every
+// keyset traversal with $top=1 across the 2 seeded subs visits every
 // subscription exactly once (no gaps / no dupes); `count` == total; nextLink preserves
 // api-version.
 // -------------------------------------------------------------------------------------
@@ -1362,7 +1375,7 @@ async fn subscriptions_keyset_traversal_no_gaps() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-16 — fail-closed on the new endpoint: an unknown param and a malformed `$top` both
+// Fail-closed on the new endpoint: an unknown param and a malformed `$top` both
 // return the fixed JSON `ApiError` 400 (the documented set is the pagination trio only).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1383,7 +1396,7 @@ async fn subscriptions_fail_closed() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-12.3 — the new route is read-only: POST /_sim/subscriptions → 405 + `Allow: GET`.
+// The new route is read-only: POST /_sim/subscriptions → 405 + `Allow: GET`.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn subscriptions_method_not_allowed() {
@@ -1409,9 +1422,9 @@ async fn subscriptions_method_not_allowed() {
 }
 
 // -------------------------------------------------------------------------------------
-// WAPI-04 route-count contract (15-14 adds /resources/search to the D-15 four) — EXACTLY
+// route-count contract (adds /resources/search to the earlier four) — EXACTLY
 // five /_sim GET routes exist: violations, dependencies, summary, subscriptions, and
-// resources/search. No more (drift/identity stay deferred — D-02/D-03), and no other prefix
+// resources/search. No more (drift/identity stay deferred), and no other prefix
 // resolves.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1447,15 +1460,15 @@ async fn sim_route_count_is_five() {
         assert_eq!(
             status,
             StatusCode::NOT_FOUND,
-            "{uri} must NOT be a /_sim route (drift/identity deferred D-02/D-03; bare /_sim/resources 404s)"
+            "{uri} must NOT be a /_sim route (drift/identity deferred; bare /_sim/resources 404s)"
         );
     }
 }
 
 // =====================================================================================
-// 15-14 (EXPL-01 / EXPL-05) — the NEW bearer-exempt `GET /_sim/resources/search` endpoint:
+// the NEW bearer-exempt `GET /_sim/resources/search` endpoint:
 // tenant-wide name/type substring search, keyset-paginated on the TEXT `id` PK, optionally
-// subscription-scoped, soft-delete-excluded, fail-closed (D-16). Ground truth comes from an
+// subscription-scoped, soft-delete-excluded, fail-closed. Ground truth comes from an
 // independent live COUNT(*) over the SAME `name ILIKE OR type ILIKE` predicate — never a
 // hardcoded literal (the seed_fixture rows are never mutated; the soft-delete test uses the
 // test's OWN pool handle, mirroring `summary_profile_name`).
@@ -1476,7 +1489,7 @@ async fn search_ground_truth(pool: &PgPool, q: &str) -> i64 {
 }
 
 // -------------------------------------------------------------------------------------
-// Shape (D-10) — a `?q=res-` hit returns rows whose keys are EXACTLY
+// Shape — a `?q=res-` hit returns rows whose keys are EXACTLY
 // {id,name,type,subscriptionId,resourceGroupName} (camelCase); `count` is present and equals
 // the independent ground truth.
 // -------------------------------------------------------------------------------------
@@ -1509,7 +1522,7 @@ async fn search_shape_and_keys() {
         assert_eq!(
             keys,
             vec!["id", "name", "resourceGroupName", "subscriptionId", "type"],
-            "row carries EXACTLY the camelCase key set (D-10)"
+            "row carries EXACTLY the camelCase key set"
         );
         assert!(r["id"].as_str().is_some());
         assert!(r["subscriptionId"].as_str().is_some());
@@ -1709,7 +1722,7 @@ async fn search_keyset_traversal_no_gaps() {
 }
 
 // -------------------------------------------------------------------------------------
-// Fail-closed (D-16) — unknown param, bad `$top`, malformed `$skiptoken`, AND missing/empty
+// Fail-closed — unknown param, bad `$top`, malformed `$skiptoken`, AND missing/empty
 // `q` each return the fixed JSON `ApiError` 400.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
@@ -1730,8 +1743,12 @@ async fn search_fail_closed() {
 }
 
 // -------------------------------------------------------------------------------------
-// Soft-delete — a matching row hidden via `drift_deleted_at` (through the TEST's own pool
-// handle, NOT seed_fixture) disappears from BOTH the result page and `count`.
+// Tombstone — a matching row hidden via an OVERLAY tombstone (present=false, through the
+// TEST's own pool handle, NOT seed_fixture) disappears from BOTH the result page and `count`.
+// The console search resolves through
+// `synthetic.arm_resolved_resources`, whose liveness authority is the overlay — the legacy
+// `drift_deleted_at` oracle is RETIRED and NOT consulted, so removal MUST go through a
+// tombstone overlay row (mirrors `resolver_reads.rs::tombstone_absent_from_list_and_404`).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn search_excludes_soft_deleted() {
@@ -1740,18 +1757,22 @@ async fn search_excludes_soft_deleted() {
     let before = search_ground_truth(&pool, "flt").await;
     assert!(before > 1, "several flt-000x rows match");
 
-    // Soft-delete ONE matching row (flt-0000) via the test's own pool handle.
+    // Tombstone ONE matching row (flt-0000) via an overlay row (present=false), the overlay way.
     let flt_0000 = format!(
         "/subscriptions/{}/resourceGroups/{}/providers/{}/flt-0000",
         common::SUB_A,
         common::FILTER_RG_NAME,
         common::FILTER_TYPE_STORAGE
     );
-    sqlx::query("UPDATE synthetic.resources SET drift_deleted_at = now() WHERE id = $1")
-        .bind(&flt_0000)
-        .execute(&pool)
-        .await
-        .expect("soft-delete a matching resource");
+    sqlx::query(
+        "INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body) \
+         VALUES ($1, $2, 'resource', 'drift', false, NULL)",
+    )
+    .bind(flt_0000.to_lowercase())
+    .bind(&flt_0000)
+    .execute(&pool)
+    .await
+    .expect("tombstone a matching resource via overlay");
 
     let (s, _h, b) = raw_request(app, "GET", "/_sim/resources/search?q=flt&$top=1000", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -1759,19 +1780,19 @@ async fn search_excludes_soft_deleted() {
     assert_eq!(
         body["count"].as_i64().unwrap(),
         before - 1,
-        "count drops by one after the soft-delete"
+        "count drops by one after the tombstone"
     );
     for r in body["value"].as_array().unwrap() {
         assert_ne!(
             r["id"].as_str(),
             Some(flt_0000.as_str()),
-            "the soft-deleted row is absent from the page"
+            "the tombstoned row is absent from the page"
         );
     }
 }
 
 // -------------------------------------------------------------------------------------
-// Read-only (D-12.3) — POST/PUT/PATCH/DELETE /_sim/resources/search → 405 + `Allow: GET`.
+// Read-only — POST/PUT/PATCH/DELETE /_sim/resources/search → 405 + `Allow: GET`.
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn search_method_not_allowed() {
@@ -1797,7 +1818,7 @@ async fn search_method_not_allowed() {
 }
 
 // =====================================================================================
-// 15-15 (EXPL-GAP-01) — subscription-NAME search: a term matching a subscription's name
+// subscription-NAME search: a term matching a subscription's name
 // returns that subscription's resources AND a bounded `subscriptions` array of the matching
 // subscriptions. Fixture: SUB_A "Contoso-Prod-A", SUB_B "Contoso-Dev-B" (seed_fixture). No
 // resource name/type contains "contoso"/"dev", so those hits are reachable ONLY via the
@@ -1875,28 +1896,15 @@ async fn search_matches_subscription_name() {
     }
 }
 
-/// `q=dev` matches ONLY "Contoso-Dev-B" (SUB_B). A resource inserted under SUB_B (its name/type
-/// contain no "dev") is reachable ONLY via the sub-name subquery, and `subscriptions` contains
-/// exactly the Contoso-Dev-B entry. The row is inserted via the test's OWN pool handle (fresh
-/// container per test) so the shared fixture / earlier count assertions are untouched.
+/// `q=dev` matches ONLY "Contoso-Dev-B" (SUB_B). The fixture's cross-sub target resource
+/// `SIM_SUB_B_RESOURCE_ID` lives under SUB_B and its name/type contain neither "dev" nor
+/// "contoso", so it is reachable ONLY via the sub-name subquery, and `subscriptions` contains
+/// exactly the Contoso-Dev-B entry. (`seed_sim_rows` now seeds this SUB_B resource so
+/// the console dependency liveness filter has a live cross-sub endpoint — this test reuses it
+/// rather than inserting its own duplicate.)
 #[tokio::test]
 async fn search_reaches_resource_via_subscription_name() {
-    let (app, _pg, pool, _seed) = sim_app().await;
-
-    // Insert one SUB_B resource whose name/type contain neither "dev" nor "contoso".
-    sqlx::query(
-        r#"INSERT INTO synthetic.resources
-               (id, subscription_id, resource_group_name, name, type, location,
-                tags, sku, kind, properties, provisioning_state, managed_by)
-           VALUES ($1, $2, 'rg-b-000', 'vnet-b-000',
-                   'Microsoft.Network/virtualNetworks', 'eastus',
-                   '{}'::jsonb, NULL, NULL, '{}'::jsonb, 'Succeeded', NULL)"#,
-    )
-    .bind(common::SIM_SUB_B_RESOURCE_ID)
-    .bind(common::SUB_B)
-    .execute(&pool)
-    .await
-    .expect("insert SUB_B resource");
+    let (app, _pg, _pool, _seed) = sim_app().await;
 
     let (s, _h, b) = raw_request(app, "GET", "/_sim/resources/search?q=dev&$top=1000", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -1962,10 +1970,10 @@ async fn search_normalizes_literal_asterisk() {
     );
 }
 
-/// WR-02: a term containing the ILIKE wildcard `%` is matched LITERALLY (via `ESCAPE '\'`), so
+/// A term containing the ILIKE wildcard `%` is matched LITERALLY (via `ESCAPE '\'`), so
 /// `q=%` does NOT collapse to `ILIKE '%%%'` and scan the whole tenant. It matches only rows whose
 /// name/type/subscription-name literally contains `%` (none in the fixture), NOT every resource —
-/// upholding the T-15-24 "no whole-table scan" intent that a bare-`%` term would otherwise bypass.
+/// upholding the "no whole-table scan" intent that a bare-`%` term would otherwise bypass.
 #[tokio::test]
 async fn search_percent_is_literal_not_wildcard() {
     let (app, _pg, pool, _seed) = sim_app().await;
@@ -2015,16 +2023,16 @@ async fn search_percent_is_literal_not_wildcard() {
 }
 
 // =====================================================================================
-// Phase 16 (CONS-01 / D-02 / D-03) — the bearer-exempt console `/history` series + the
+// the bearer-exempt console `/history` series + the
 // `/_console` → `/ui/console` 302 redirect. Both live on the uninstrumented console
 // router (never inside `arm`), so `arm_byte_identical` (above) stays green.
 // =====================================================================================
 
 // -------------------------------------------------------------------------------------
-// D-03 / CONS-01 — GET /_console/history returns the aggregate bucket series with NO
+// GET /_console/history returns the aggregate bucket series with NO
 // Authorization header (bearer-exempt, same seam as /_console/stats): bucket_ms == 1000,
 // exactly WINDOW_BUCKETS (300) buckets oldest→newest, and an untouched bucket carries
-// count 0 + NULL percentiles (never Some(0) — absence is not zero latency, Pitfall 5).
+// count 0 + NULL percentiles (never Some(0) — absence is not zero latency).
 // -------------------------------------------------------------------------------------
 #[tokio::test]
 async fn console_history_shape() {
@@ -2040,7 +2048,7 @@ async fn console_history_shape() {
 
     let body: serde_json::Value = serde_json::from_slice(&bytes).expect("history JSON");
 
-    // Granularity + window contract (D-04): 1-second buckets, `server_now_ms` present so
+    // Granularity + window contract: 1-second buckets, `server_now_ms` present so
     // the client can align its x-axis to "now".
     assert_eq!(body["bucket_ms"].as_u64(), Some(1000), "1-second buckets");
     assert!(
@@ -2068,7 +2076,7 @@ async fn console_history_shape() {
     }
 
     // No ARM traffic hit the (bearer-exempt, uninstrumented) console router, so EVERY
-    // bucket is empty: count 0 with NULL percentiles — NEVER Some(0) (Pitfall 5).
+    // bucket is empty: count 0 with NULL percentiles — NEVER Some(0).
     for b in buckets {
         assert_eq!(b["count"].as_u64(), Some(0), "untouched bucket count == 0");
         assert!(b["p50_ms"].is_null(), "empty bucket p50 is null, not 0");
@@ -2078,7 +2086,7 @@ async fn console_history_shape() {
 }
 
 // -------------------------------------------------------------------------------------
-// D-02 — GET /_console returns an EXACT 302 Found to /ui/console (axum 0.8 `Redirect` has
+// GET /_console returns an EXACT 302 Found to /ui/console (axum 0.8 `Redirect` has
 // NO 302 constructor — the handler builds StatusCode::FOUND + a static Location literal,
 // so no user input is reflected). The legacy embedded HTML page is gone: the body is NOT
 // an HTML document.
@@ -2111,4 +2119,603 @@ async fn console_redirect_302() {
         !body.contains("<html") && !body.contains("<!doctype"),
         "302 body must not be the legacy HTML page, got: {body:?}"
     );
+}
+
+// =====================================================================================
+// Cross-surface parity matrix over a MIXED baseline / overlay /
+// tombstone estate. Every resource-facing `/_sim` surface — summary
+// totals, byType, byLocation, per-subscription rollups, search, violations (per-sub AND
+// the summary total), and dependencies — must agree with resolver LIVENESS, not the raw
+// baseline. "Console presence == resolver liveness on every surface".
+//
+// These tests are RED against the un-migrated `sim.rs`, which still:
+//   * reads `FROM synthetic.resources WHERE drift_deleted_at IS NULL` for counts /
+//     breakdowns / search (so a tombstone overlay is IGNORED, an appear overlay is
+//     INVISIBLE, and a modified overlay reports its BASELINE type/location), and
+//   * `LEFT JOIN`s `synthetic.resources` for per-sub violations (tombstoned resource
+//     still joins from the baseline), and
+//   * counts `totals.violations` / `totals.dependencies` as a RAW unfiltered `count(*)`
+//     with NO liveness filter, and
+//   * applies NO liveness predicate to dependency edges at all.
+//
+// The estate deliberately deviates from `synthetic.resources` via the OVERLAY only
+// (`drift_deleted_at` is never set), so the raw-baseline reader and the resolver-view
+// reader return DIFFERENT results on every asserted cell — that difference is the RED gate.
+// The DB-backed GREEN run is confirmed on the Linux PG16 container gate (native Windows
+// SKIPs the testcontainers path); each independent reference count is computed IN SQL over
+// the resolver view so the assertion can never drift from the DB's own `lower()` semantics.
+// =====================================================================================
+mod parity {
+    use super::*;
+
+    // A dedicated subscription/RG for the parity estate (never collides with `seed_fixture`).
+    const PSUB: &str = "33333333-3333-3333-3333-333333333333";
+    const PRG: &str = "rg-parity";
+
+    fn rid(name: &str) -> String {
+        format!(
+            "/subscriptions/{PSUB}/resourceGroups/{PRG}/providers/Microsoft.Storage/storageAccounts/{name}"
+        )
+    }
+
+    /// The ground-truth ids for every cell of the matrix.
+    struct Estate {
+        keep: String,   // live baseline (Storage/eastus); owns a violation; live dep endpoint
+        keep2: String,  // live baseline (Storage/eastus); dep target
+        tomb: String,   // baseline tombstoned by a present=false overlay; owns a violation
+        modr: String,   // baseline modified by a present=true overlay → Compute/westus
+        appear: String, // overlay-only present (no baseline) → Storage/centralus
+    }
+
+    async fn seed_resource(pool: &PgPool, id: &str, name: &str, ty: &str, loc: &str) {
+        let sub = uuid::Uuid::parse_str(PSUB).unwrap();
+        sqlx::query(
+            "INSERT INTO synthetic.resources \
+                 (id, subscription_id, resource_group_name, name, type, location, tags, sku, \
+                  kind, properties, provisioning_state, managed_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, NULL, NULL, \
+                     '{\"provisioningState\":\"Succeeded\"}'::jsonb, 'Succeeded', NULL)",
+        )
+        .bind(id)
+        .bind(sub)
+        .bind(PRG)
+        .bind(name)
+        .bind(ty)
+        .bind(loc)
+        .execute(pool)
+        .await
+        .expect("seed baseline resource");
+    }
+
+    fn overlay_body(id: &str, name: &str, ty: &str, loc: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "type": ty,
+            "location": loc,
+            "tags": {},
+            "properties": { "provisioningState": "Succeeded" }
+        })
+    }
+
+    async fn seed_overlay(pool: &PgPool, id: &str, present: bool, body: Option<serde_json::Value>) {
+        sqlx::query(
+            "INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body) \
+             VALUES ($1, $2, 'resource', 'drift', $3, $4)",
+        )
+        .bind(id.to_lowercase())
+        .bind(id)
+        .bind(present)
+        .bind(body)
+        .execute(pool)
+        .await
+        .expect("seed overlay row");
+    }
+
+    async fn seed_violation(pool: &PgPool, resource_id: &str, code: &str) {
+        sqlx::query(
+            "INSERT INTO synthetic.violations (resource_id, violation_type, severity, detail) \
+             VALUES ($1, $2, 'High', '{}'::jsonb)",
+        )
+        .bind(resource_id)
+        .bind(code)
+        .execute(pool)
+        .await
+        .expect("seed violation");
+    }
+
+    async fn seed_dependency(pool: &PgPool, src: &str, tgt: &str) {
+        let sub = uuid::Uuid::parse_str(PSUB).unwrap();
+        sqlx::query(
+            "INSERT INTO synthetic.dependencies \
+                 (dependency_type, source_resource_id, target_resource_id, \
+                  source_subscription, target_subscription) \
+             VALUES ('vnet-peering', $1, $2, $3, $3)",
+        )
+        .bind(src)
+        .bind(tgt)
+        .bind(sub)
+        .execute(pool)
+        .await
+        .expect("seed dependency");
+    }
+
+    /// Seed the FK scope (tenant, subscription, RG) for the parity estate.
+    async fn seed_scope(pool: &PgPool) {
+        let sub = uuid::Uuid::parse_str(PSUB).unwrap();
+        sqlx::query(
+            "INSERT INTO synthetic.tenant (tenant_id, display_name, profile_version, scale_params) \
+             VALUES ('00000000-0000-0000-0000-000000000000', 't', '1.0', '{}'::jsonb) \
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(pool)
+        .await
+        .expect("tenant");
+        sqlx::query(
+            "INSERT INTO synthetic.subscriptions \
+                 (subscription_id, tenant_id, display_name, state, archetype, tags, \
+                  authorization_source, spending_limit) \
+             VALUES ($1, '00000000-0000-0000-0000-000000000000', 'parity-sub', 'Enabled', \
+                     'prod', '{}'::jsonb, 'RoleBased', 'Off') ON CONFLICT DO NOTHING",
+        )
+        .bind(sub)
+        .execute(pool)
+        .await
+        .expect("subscription");
+        let rg_id = format!("/subscriptions/{PSUB}/resourceGroups/{PRG}");
+        sqlx::query(
+            "INSERT INTO synthetic.resource_groups \
+                 (id, subscription_id, name, location, template_type, tags, provisioning_state) \
+             VALUES ($1, $2, $3, 'eastus', 'network', '{}'::jsonb, 'Succeeded') \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&rg_id)
+        .bind(sub)
+        .bind(PRG)
+        .execute(pool)
+        .await
+        .expect("resource group");
+    }
+
+    /// Build the full mixed estate and return the seeded `/_sim` router + pool + ids.
+    async fn parity_app() -> (
+        Router,
+        testcontainers::ContainerAsync<postgres::Postgres>,
+        PgPool,
+        Estate,
+    ) {
+        let (pool, container) = start_pg().await;
+        // Base schema + overlay substrate (001,002,003,005,006,007 + ensure_arm_overlay_schema),
+        // then the resolver views the migrated handlers read through.
+        common::seed_overlay_first_boot(&pool).await;
+        tenantless_server::ensure_arm_resolver_schema(&pool)
+            .await
+            .expect("ensure_arm_resolver_schema");
+        seed_scope(&pool).await;
+
+        let e = Estate {
+            keep: rid("sa-keep"),
+            keep2: rid("sa-keep2"),
+            tomb: rid("sa-tomb"),
+            modr: rid("sa-mod"),
+            appear: rid("sa-appear"),
+        };
+
+        // Baseline: four Storage/eastus rows (drift_deleted_at stays NULL for ALL of them —
+        // the ONLY liveness signal is the overlay, so a raw-baseline reader can't see it).
+        seed_resource(
+            &pool,
+            &e.keep,
+            "sa-keep",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.keep2,
+            "sa-keep2",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.tomb,
+            "sa-tomb",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+        seed_resource(
+            &pool,
+            &e.modr,
+            "sa-mod",
+            "Microsoft.Storage/storageAccounts",
+            "eastus",
+        )
+        .await;
+
+        // Overlay: tombstone `tomb`; modify `modr` → Compute/westus; appear two overlay-only rows
+        // (so live count != baseline count — tombstone −1 does NOT cancel with a single appear).
+        seed_overlay(&pool, &e.tomb, false, None).await;
+        seed_overlay(
+            &pool,
+            &e.modr,
+            true,
+            Some(overlay_body(
+                &e.modr,
+                "sa-mod",
+                "Microsoft.Compute/virtualMachines",
+                "westus",
+            )),
+        )
+        .await;
+        seed_overlay(
+            &pool,
+            &e.appear,
+            true,
+            Some(overlay_body(
+                &e.appear,
+                "sa-appear",
+                "Microsoft.Storage/storageAccounts",
+                "centralus",
+            )),
+        )
+        .await;
+        let appear2 = rid("sa-appear-two");
+        seed_overlay(
+            &pool,
+            &appear2,
+            true,
+            Some(overlay_body(
+                &appear2,
+                "sa-appear-two",
+                "Microsoft.Storage/storageAccounts",
+                "centralus",
+            )),
+        )
+        .await;
+
+        // Violations: one on a LIVE resource (keep), one on the TOMBSTONE (tomb), one on the
+        // MODIFIED-but-live resource (modr). Live-resolver total = 2; raw total = 3.
+        seed_violation(&pool, &e.keep, "V_KEEP").await;
+        seed_violation(&pool, &e.tomb, "V_TOMB").await;
+        seed_violation(&pool, &e.modr, "V_MOD").await;
+
+        // Dependencies (5): two retained (both endpoints live), one excluded (a tombstoned
+        // endpoint), plus a MIXED-CASE pair proving the liveness match folds case:
+        //   d4: UPPER(keep) → keep2  — RETAINED (case-insensitive live match; a case-SENSITIVE
+        //                              predicate would WRONGLY drop this live edge).
+        //   d5: UPPER(tomb) → keep2  — EXCLUDED (tombstoned endpoint, matched case-insensitively).
+        seed_dependency(&pool, &e.keep, &e.keep2).await; // d1 retained
+        seed_dependency(&pool, &e.keep, &e.tomb).await; // d2 excluded (tomb target)
+        seed_dependency(&pool, &e.modr, &e.keep2).await; // d3 retained (modr still live)
+        seed_dependency(&pool, &e.keep.to_uppercase(), &e.keep2).await; // d4 casing-retained
+        seed_dependency(&pool, &e.tomb.to_uppercase(), &e.keep2).await; // d5 casing-excluded
+
+        let app = build_app(&pool, common::test_signer());
+        (app, container, pool, e)
+    }
+
+    async fn summary_json(app: &Router) -> serde_json::Value {
+        let (status, _h, bytes) = raw_request(app.clone(), "GET", "/_sim/summary", None).await;
+        assert_eq!(status, StatusCode::OK, "summary must 200");
+        serde_json::from_slice(&bytes).expect("summary JSON")
+    }
+
+    async fn scalar(pool: &PgPool, sql: &str) -> i64 {
+        sqlx::query_scalar(sql)
+            .fetch_one(pool)
+            .await
+            .expect("scalar count")
+    }
+
+    // -----------------------------------------------------------------------------------
+    // tombstone/appear/modified × {totals, byType, byLocation, per-sub, search}
+    // -----------------------------------------------------------------------------------
+    #[tokio::test]
+    async fn parity_matrix_counts_breakdowns_search() {
+        let (app, _pg, pool, e) = parity_app().await;
+        let body = summary_json(&app).await;
+
+        // --- totals.resources: the RESOLVED live count, and it MUST differ from the raw
+        //     baseline (tombstone dropped, two appears added) — the RED discriminator. ---
+        let resolved = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.arm_resolved_resources",
+        )
+        .await;
+        let baseline = scalar(&pool, "SELECT count(*) FROM synthetic.resources").await;
+        assert_ne!(
+            resolved, baseline,
+            "estate must drift so the two readers disagree"
+        );
+        assert_eq!(
+            body["totals"]["resources"].as_i64().unwrap(),
+            resolved,
+            "totals.resources == resolved live count (tombstone −1, appears +2), NOT the baseline"
+        );
+
+        // --- per-subscription resourceCount for PSUB == resolved live count under PSUB. ---
+        let per_sub_resolved = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.arm_resolved_resources \
+             WHERE subscription_id = '33333333-3333-3333-3333-333333333333'::uuid",
+        )
+        .await;
+        let sub_entry = body["subscriptions"]
+            .as_array()
+            .expect("subscriptions[]")
+            .iter()
+            .find(|s| s["subscriptionId"].as_str() == Some(PSUB))
+            .expect("PSUB in subscriptions[]");
+        assert_eq!(
+            sub_entry["resourceCount"].as_i64().unwrap(),
+            per_sub_resolved,
+            "per-sub resourceCount tracks resolver liveness (tombstone drops, appears add)"
+        );
+
+        // --- byType: the MODIFIED resource reports its RESOLVED type (Compute), and the
+        //     tombstoned Storage row is gone while both appears are Storage. ---
+        let by_type = body["byType"].as_array().expect("byType[]");
+        let compute = by_type
+            .iter()
+            .find(|b| b["type"].as_str() == Some("Microsoft.Compute/virtualMachines"));
+        assert_eq!(
+            compute.and_then(|b| b["count"].as_i64()),
+            Some(1),
+            "byType reflects the RESOLVED (modified) type — Compute bucket present with count 1"
+        );
+        let storage = by_type
+            .iter()
+            .find(|b| b["type"].as_str() == Some("Microsoft.Storage/storageAccounts"))
+            .and_then(|b| b["count"].as_i64());
+        assert_eq!(
+            storage,
+            Some(4),
+            "Storage bucket = keep + keep2 + appear + appear-two (tomb dropped, modr moved to Compute)"
+        );
+
+        // --- byLocation: modified → westus; appears → centralus; tomb (eastus) dropped. ---
+        let by_loc = body["byLocation"].as_array().expect("byLocation[]");
+        let loc = |name: &str| {
+            by_loc
+                .iter()
+                .find(|b| b["location"].as_str() == Some(name))
+                .and_then(|b| b["count"].as_i64())
+        };
+        assert_eq!(
+            loc("westus"),
+            Some(1),
+            "modified resource resolves to westus"
+        );
+        assert_eq!(
+            loc("centralus"),
+            Some(2),
+            "both appeared overlays resolve to centralus"
+        );
+        assert_eq!(
+            loc("eastus"),
+            Some(2),
+            "only the two live baseline rows remain in eastus"
+        );
+
+        // --- search: tombstone ABSENT, appear PRESENT, modified matches its RESOLVED type. ---
+        let search = |uri: String| {
+            let app = app.clone();
+            async move {
+                let (s, _h, b) = raw_request(app, "GET", &uri, None).await;
+                assert_eq!(s, StatusCode::OK, "search must 200 ({uri})");
+                let v: serde_json::Value = serde_json::from_slice(&b).expect("search JSON");
+                v
+            }
+        };
+
+        let tomb_hits = search("/_sim/resources/search?q=sa-tomb".to_string()).await;
+        assert_eq!(
+            tomb_hits["value"].as_array().unwrap().len(),
+            0,
+            "a tombstoned resource is NOT findable by search"
+        );
+
+        let appear_hits = search("/_sim/resources/search?q=sa-appear".to_string()).await;
+        let appear_ids: Vec<&str> = appear_hits["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            appear_ids.contains(&e.appear.as_str()),
+            "an appeared overlay resource IS findable by search: {appear_ids:?}"
+        );
+
+        let mod_hits = search("/_sim/resources/search?q=virtualMachines".to_string()).await;
+        let mod_ids: Vec<&str> = mod_hits["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            mod_ids.contains(&e.modr.as_str()),
+            "a modified resource matches its RESOLVED type in search: {mod_ids:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Violations: summary-total decrement + per-sub decrement + drifted-estate reconciliation
+    // + list-level exclusion of a tombstoned resource's findings.
+    // -----------------------------------------------------------------------------------
+    #[tokio::test]
+    async fn parity_matrix_violations_reconciliation_under_drift() {
+        let (app, _pg, pool, e) = parity_app().await;
+        let body = summary_json(&app).await;
+
+        // Independent reference: violations whose resource is LIVE in the resolver.
+        let live_viol = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.violations v \
+             JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id",
+        )
+        .await;
+        let raw_viol = scalar(&pool, "SELECT count(*) FROM synthetic.violations").await;
+        assert_ne!(
+            live_viol, raw_viol,
+            "the tombstoned resource owns a violation, so live < raw"
+        );
+
+        // summary totals.violations DECREMENTS to the live-resource count (NOT the raw total).
+        let total_viol = body["totals"]["violations"]
+            .as_i64()
+            .expect("totals.violations");
+        assert_eq!(
+            total_viol, live_viol,
+            "totals.violations counts ONLY live-resource findings (tombstone's finding excluded)"
+        );
+
+        // per-subscription violationCount for PSUB also decrements identically.
+        let sub_entry = body["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["subscriptionId"].as_str() == Some(PSUB))
+            .expect("PSUB present");
+        let per_sub_live = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.violations v \
+             JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id \
+             WHERE r.subscription_id = '33333333-3333-3333-3333-333333333333'::uuid",
+        )
+        .await;
+        assert_eq!(
+            sub_entry["violationCount"].as_i64().unwrap(),
+            per_sub_live,
+            "per-sub violationCount excludes the tombstoned resource's finding"
+        );
+
+        // Drifted-estate reconciliation: BOTH surfaces filter identically ⇒ they reconcile
+        // even under drift (this is the extension of `summary_violation_reconciliation` from a
+        // clean seed to a MIXED estate — it must hold once both use the resolver).
+        let sum_per_sub: i64 = body["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["violationCount"].as_i64().expect("violationCount"))
+            .sum();
+        assert_eq!(
+            sum_per_sub, total_viol,
+            "sum(subscriptions[].violationCount) == totals.violations UNDER DRIFT"
+        );
+
+        // list_violations: the tombstoned resource's finding is ABSENT; a live one is present.
+        let (s, _h, b) = raw_request(
+            app.clone(),
+            "GET",
+            &format!("/_sim/violations?resource={}", e.tomb),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let tomb_body: serde_json::Value = serde_json::from_slice(&b).expect("violations JSON");
+        assert_eq!(
+            tomb_body["count"].as_i64().unwrap(),
+            0,
+            "a tombstoned resource's violations are excluded from the list"
+        );
+
+        let (s, _h, b) = raw_request(
+            app.clone(),
+            "GET",
+            &format!("/_sim/violations?resource={}", e.keep),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let keep_body: serde_json::Value = serde_json::from_slice(&b).expect("violations JSON");
+        assert_eq!(
+            keep_body["count"].as_i64().unwrap(),
+            1,
+            "a live resource's violation is still present"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Dependencies: both-endpoint, CASE-INSENSITIVE liveness on the list AND the summary
+    // total. A tombstoned endpoint drops the edge; a casing-only endpoint difference NEVER
+    // drops a live edge.
+    // -----------------------------------------------------------------------------------
+    #[tokio::test]
+    async fn parity_matrix_dependencies_liveness_casing() {
+        let (app, _pg, pool, e) = parity_app().await;
+        let body = summary_json(&app).await;
+
+        // Independent reference: edges whose BOTH endpoints are live (case-insensitively).
+        let live_deps = scalar(
+            &pool,
+            "SELECT count(*) FROM synthetic.dependencies d \
+             WHERE EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rs \
+                           WHERE lower(rs.id) = lower(d.source_resource_id)) \
+               AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rt \
+                           WHERE lower(rt.id) = lower(d.target_resource_id))",
+        )
+        .await;
+        let raw_deps = scalar(&pool, "SELECT count(*) FROM synthetic.dependencies").await;
+        assert_ne!(
+            live_deps, raw_deps,
+            "tombstoned-endpoint edges must drop the live count below raw"
+        );
+
+        // summary totals.dependencies applies the SAME both-endpoint liveness filter.
+        assert_eq!(
+            body["totals"]["dependencies"].as_i64().unwrap(),
+            live_deps,
+            "totals.dependencies counts only edges whose BOTH endpoints are live"
+        );
+
+        // Walk the paginated list; collect (source, target) pairs.
+        let (s, _h, b) =
+            raw_request(app.clone(), "GET", "/_sim/dependencies?$top=1000", None).await;
+        assert_eq!(s, StatusCode::OK);
+        let list: serde_json::Value = serde_json::from_slice(&b).expect("dependencies JSON");
+        assert_eq!(
+            list["count"].as_i64().unwrap(),
+            live_deps,
+            "the list envelope count matches the both-endpoint-live reference"
+        );
+        let pairs: Vec<(String, String)> = list["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                (
+                    d["source"]["resourceId"].as_str().unwrap().to_string(),
+                    d["target"]["resourceId"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let has = |src: &str, tgt: &str| pairs.iter().any(|(s, t)| s == src && t == tgt);
+
+        // Retained: both endpoints live.
+        assert!(has(&e.keep, &e.keep2), "live→live edge retained");
+        assert!(
+            has(&e.modr, &e.keep2),
+            "modified-but-live→live edge retained"
+        );
+        // Case-insensitivity RETAIN: an UPPER-cased live endpoint must NOT drop the edge.
+        assert!(
+            has(&e.keep.to_uppercase(), &e.keep2),
+            "a casing-only endpoint difference does NOT drop a LIVE edge (case-insensitive match)"
+        );
+        // Excluded: a tombstoned endpoint (either casing) drops the edge.
+        assert!(
+            !has(&e.keep, &e.tomb),
+            "an edge whose TARGET is tombstoned is excluded"
+        );
+        assert!(
+            !has(&e.tomb.to_uppercase(), &e.keep2),
+            "an edge whose (upper-cased) SOURCE is tombstoned is excluded (case-insensitive)"
+        );
+    }
 }

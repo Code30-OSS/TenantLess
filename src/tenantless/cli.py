@@ -6,16 +6,22 @@ import click
 from tenantless.analyzer.privacy import MIN_BUCKET_FLOOR
 
 # --------------------------------------------------------------------------- #
-# apply-drift read-modify-write helpers (Plan 11-05, DRIFT-01/03/04).
+# apply-drift read-modify-write helpers.
 #
 # Module-level (importable by tests) so the SQL-builder + field→column map can be
-# pinned for injection safety without a DB (T-11-13, project SQL bar). Every
+# pinned for injection safety without a DB (project SQL bar). Every
 # user value binds as a parameter; the only identifiers spliced into SQL are the
 # STATIC read-column list and the CLOSED-MATCH update-column allowlist.
 # --------------------------------------------------------------------------- #
 
 # Columns read for the scoped state read (STATIC; never user input). Order is the
 # unpack contract in apply_drift.
+#
+# The read is re-pointed at the resolved view
+# ``synthetic.arm_resolved_resources``, which exposes the full baseline
+# column set MINUS ``drift_deleted_at`` — the retired soft-delete oracle.
+# The view already excludes tombstones, so ``drift_deleted_at`` is neither read
+# nor filtered on any more; the unpack contract drops it.
 _READ_COLUMNS = (
     "id",
     "subscription_id",
@@ -24,7 +30,6 @@ _READ_COLUMNS = (
     "sku",
     "kind",
     "properties",
-    "drift_deleted_at",
     "resource_group_name",
     "location",
     "name",
@@ -45,12 +50,12 @@ _JSONB_COLUMNS = frozenset({"tags", "sku", "properties"})
 # mutations (apply-drift / revert-drift). Both take pg_advisory_xact_lock on this
 # key at the start of their mutation transaction so two concurrent commands cannot
 # read the same parent state and clobber each other with stale read-modify-write
-# snapshots (P1, 11-10). A constant int that fits a signed BIGINT; the xact-scoped
+# snapshots. A constant int that fits a signed BIGINT; the xact-scoped
 # lock auto-releases at transaction end.
 DRIFT_LOCK_KEY = 0x0D_711F_7000  # "drift" lock, stable across the codebase
 
 # Sibling advisory-lock key serializing the destructive GENERATE critical section
-# (Wave2 #1). `generate` takes pg_advisory_xact_lock on this key at the start of its
+# `generate` takes pg_advisory_xact_lock on this key at the start of its
 # write transaction so the emptiness check and the truncate/write are one atomic
 # section: a populated estate can never be truncated by a check-then-write race, and
 # two generators on a fresh volume can't race the bare-CREATE ensure_* DDL. Distinct
@@ -69,19 +74,24 @@ def _split_csv(raw: str | None) -> list[str] | None:
 def _build_scoped_read_sql(
     subscription_id, resource_types: list[str] | None
 ) -> tuple[str, list]:
-    """Build the $N-bound scoped state read (RESEARCH §"$N-bound scoped read").
+    """Build the $N-bound scoped state read.
 
     Returns ``(sql, params)`` where every user-supplied value (subscription,
     resource-type list) is a BOUND parameter — never spliced. The subscription is
     pre-parsed to a UUID by the caller; the type list binds as a ``text[]`` array.
     The placeholder count equals ``len(params)`` so a parametrized test can prove
-    no user value leaks into the SQL text (Pitfall 3: ORDER BY id).
+    no user value leaks into the SQL text (deterministic ORDER BY id).
+
+    Reads ``synthetic.arm_resolved_resources`` — the
+    liveness authority (``baseline ∪ overlay(present) − tombstones``) — NOT the raw
+    baseline, so each apply stacks on the CURRENT resolved state. The retired
+    soft-delete visibility conjunct is DROPPED: the view already excludes
+    tombstoned ids, so no soft-delete column is read or filtered on.
     """
     cols = ", ".join(_READ_COLUMNS)  # STATIC identifiers
     sql = (
-        f"SELECT {cols} FROM synthetic.resources "
-        "WHERE drift_deleted_at IS NULL "
-        "AND (%s::uuid IS NULL OR subscription_id = %s::uuid) "
+        f"SELECT {cols} FROM synthetic.arm_resolved_resources "
+        "WHERE (%s::uuid IS NULL OR subscription_id = %s::uuid) "
         "AND (%s::text[] IS NULL OR type = ANY(%s::text[])) "
         "ORDER BY id"
     )
@@ -98,7 +108,7 @@ def _field_to_column(field_path: str) -> str:
     ``tags``; ``sku`` → ``sku``; ``kind`` → ``kind``; ``drift_deleted_at`` →
     itself. ANY other value raises ``ValueError`` — the column spliced into the
     UPDATE statement can therefore only ever be a member of the allowlist
-    (T-11-13: no f-string splice of user values).
+    (no f-string splice of user values).
     """
     if field_path == "drift_deleted_at":
         return "drift_deleted_at"
@@ -121,8 +131,124 @@ def _resource_column_value(robj, col: str):
     raise ValueError(f"no column value for {col!r}")
 
 
+# --------------------------------------------------------------------------- #
+# arm_overlay copy-on-write helpers. Drift stops
+# mutating synthetic.* IN PLACE; every apply-time mutation writes a full
+# copy-on-write snapshot (present=true) or a tombstone (present=false) to
+# synthetic.arm_overlay tagged source='drift'. The revision is assigned by the
+# sql/009 BEFORE trigger — NEVER set from Python (the trigger reassigns it on
+# both INSERT and ON CONFLICT DO UPDATE, so stacking advances it).
+#
+# The upsert is a STATIC statement — the ONLY spliced identifiers are the static
+# table/column names; id / present / body all bind as %s (body via Jsonb()), so
+# no user value is ever f-string-spliced (project SQL bar).
+# --------------------------------------------------------------------------- #
+
+_OVERLAY_UPSERT_SQL = (
+    "INSERT INTO synthetic.arm_overlay "
+    "(id_lower, id, target_kind, source, present, body) "
+    "VALUES (lower(%s), %s, 'resource', 'drift', %s, %s) "
+    "ON CONFLICT (id_lower) DO UPDATE SET "
+    "id = EXCLUDED.id, "
+    "target_kind = EXCLUDED.target_kind, "
+    "source = 'drift', "
+    "present = EXCLUDED.present, "
+    "body = EXCLUDED.body"
+)
+
+
+def _overlay_body(robj) -> dict:
+    """Build the COMPLETE served ARM body for an ``arm_overlay`` present snapshot.
+
+    Carries EVERY served field so the sql/009 body CHECKs pass: string
+    ``id``/``name``/``type``/``location``, object ``tags``, object ``properties``,
+    and the OPTIONAL object ``sku`` / string ``kind`` ONLY when set — an absent key
+    (never a stored JSON null) matches the baseline ``Option::None`` decode
+    (``ck_arm_overlay_optional_types``). Built from the fully-mutated in-memory
+    ``Resource`` (``drift.compute_drift`` / ``compute_lifecycle`` mutate it in
+    place), so the snapshot reflects the post-drift served state."""
+    body = {
+        "id": robj.id,
+        "name": robj.name,
+        "type": robj.type,
+        "location": robj.location,
+        "tags": dict(robj.tags or {}),
+        "properties": dict(robj.properties or {}),
+    }
+    if robj.sku is not None:
+        body["sku"] = dict(robj.sku)
+    if robj.kind is not None:
+        body["kind"] = robj.kind
+    return body
+
+
+def _overlay_upsert_present(cur, robj, Jsonb) -> None:
+    """UPSERT a present=true copy-on-write overlay snapshot for ``robj``."""
+    cur.execute(
+        _OVERLAY_UPSERT_SQL,
+        (robj.id, robj.id, True, Jsonb(_overlay_body(robj))),
+    )
+
+
+def _overlay_upsert_tombstone(cur, rid: str) -> None:
+    """UPSERT a present=false overlay tombstone (body NULL) for ``rid``."""
+    cur.execute(_OVERLAY_UPSERT_SQL, (rid, rid, False, None))
+
+
+def _overlay_body_from_replay(body: dict) -> dict:
+    """Build a clean arm_overlay present body from a recompute-replay dict.
+
+    The revert recompute replays a dict carrying at least
+    ``id``/``name``/``type``/``location`` + ``tags``/``properties`` (and maybe
+    ``sku``/``kind``). Re-project it into the canonical served shape the sql/009
+    CHECKs accept — object ``tags``/``properties`` always present, optional object
+    ``sku`` / string ``kind`` ONLY when set (never a stored JSON null, matching the
+    baseline ``Option::None`` decode; ``ck_arm_overlay_optional_types``). Same
+    shape as the apply-side ``_overlay_body`` so a replayed row is byte-comparable
+    to an applied one."""
+    out = {
+        "id": body["id"],
+        "name": body["name"],
+        "type": body["type"],
+        "location": body["location"],
+        "tags": dict(body.get("tags") or {}),
+        "properties": dict(body.get("properties") or {}),
+    }
+    if body.get("sku") is not None:
+        out["sku"] = dict(body["sku"])
+    if body.get("kind") is not None:
+        out["kind"] = body["kind"]
+    return out
+
+
+def _replay_equals_baseline(present, body, brow) -> bool:
+    """Does a recompute-replay result equal the immutable baseline for one id?
+
+    Used by revert to decide DELETE-if-baseline vs UPSERT-else (no zombie).
+    ``brow`` is the raw baseline row dict (``None`` for an @appear id with no
+    baseline). Equality rules:
+
+      * baseline ABSENT (``brow is None``): equal iff the replay is also absent
+        (``present is None``) — the appeared leaf is gone, so the overlay row is
+        removed;
+      * baseline LIVE: equal iff the replay is present with mutable served fields
+        (``tags``/``sku``/``kind``/``properties``) byte-equal to baseline — a
+        tombstone or an absent replay always DIFFERS. ``id``/``name``/``type``/
+        ``location`` never drift, so they are not compared."""
+    if brow is None:
+        return present is None
+    if present is not True or body is None:
+        return False
+    return (
+        (body.get("tags") or {}) == (brow.get("tags") or {})
+        and (body.get("properties") or {}) == (brow.get("properties") or {})
+        and body.get("sku") == brow.get("sku")
+        and body.get("kind") == brow.get("kind")
+    )
+
+
 class _RGView:
-    """Lightweight resource-group view for ``drift.compute_lifecycle`` (Plan 11-06).
+    """Lightweight resource-group view for ``drift.compute_lifecycle``.
 
     ``compute_lifecycle`` iterates ``rgs`` reading ``.name`` / ``.subscription_id``
     / ``.location`` and appends minted appear-leaves to ``.resources`` — a
@@ -153,13 +279,13 @@ def _group_into_rgs(res_objs) -> list:
 
 
 def _load_disappear_refs(conn):
-    """Build ``drift.DisappearRefs`` from $N-bound anti-join source SELECTs (D-10).
+    """Build ``drift.DisappearRefs`` from $N-bound anti-join source SELECTs.
 
     Reads the four reference sets a resource must be ABSENT from to be
     disappear-eligible (role-assignment scopes, dependency source/target ids,
     violation resource ids, ``managed_by`` ids). Every statement is STATIC SQL
     (no user/profile input spliced); each table is guarded by ``to_regclass`` so
-    a volume predating Phase 9/10 (no identity/cost tables) degrades to an empty
+    a volume predating the identity/cost tables degrades to an empty
     set rather than erroring (the resources table always exists here).
     """
     from tenantless.generator import drift
@@ -196,7 +322,7 @@ def _load_disappear_refs(conn):
             )
             violation_ids = {r[0] for r in cur.fetchall()}
         cur.execute(
-            "SELECT managed_by FROM synthetic.resources WHERE managed_by IS NOT NULL"
+            "SELECT managed_by FROM synthetic.resources WHERE managed_by IS NOT NULL"  # SYNRES-ALLOW[baseline-replay]: reads the immutable baseline to pick drift-disappear candidates
         )
         managed_by_ids = {r[0] for r in cur.fetchall()}
     return drift.DisappearRefs(
@@ -212,11 +338,11 @@ def _revert_nested(col_value, field_path: str, before, after):
 
     ``field_path`` is ``properties.<key>`` / ``properties.<key>[]`` /
     ``tags.<key>``; ``before``/``after`` are the per-FIELD engine delta values the
-    apply seam recorded (Plan 11-05: deltas are per-field, NOT full-column). A
+    apply seam recorded (deltas are per-field, NOT full-column). A
     ``None`` ``before`` means the key was ABSENT pre-drift (the chaos/temporal
     catalogue never stores a present-None) so revert removes it; the ``[]`` suffix
     marks an append so revert removes the appended element (``after``). Returns the
-    rebuilt container dict (caller writes it back as the full column — Pitfall 4,
+    rebuilt container dict (caller writes it back as the full column —
     served-response byte-for-byte restore)."""
     container = dict(col_value or {})
     _head, _, rest = field_path.partition(".")
@@ -235,15 +361,47 @@ def _revert_nested(col_value, field_path: str, before, after):
     return container
 
 
+def _apply_nested(col_value, field_path: str, before, after):
+    """Forward-replay twin of ``_revert_nested`` — apply a per-field ``after``.
+
+    The recompute-from-ledger revert rebuilds each affected id
+    by replaying every still-active batch's ``after`` value FORWARD from the
+    immutable baseline, in ``(seq, record_id)`` order. Because each batch records
+    the ABSOLUTE post-value of a field at apply time, forward replay = last-writer
+    -wins per field = the current state (deterministic).
+
+    ``field_path`` is ``properties.<key>`` / ``properties.<key>[]`` / ``tags.<key>``.
+    Semantics MIRROR ``_revert_nested`` symmetrically: where ``_revert_nested``
+    treats a ``None`` ``before`` as "the key was ABSENT pre-drift" (remove it),
+    ``_apply_nested`` treats a ``None`` ``after`` as "the key is ABSENT post-drift"
+    (remove it) — so a tag-removal delta (``after=None``) forward-applies as a key
+    drop. The ``[]`` suffix marks an append, so forward appends ``after`` (the twin
+    of revert removing that appended element). Returns a FRESH container dict
+    (never mutates the caller's column value — byte-for-byte restore)."""
+    container = dict(col_value or {})
+    _head, _, rest = field_path.partition(".")
+    if rest.endswith("[]"):
+        key = rest[:-2]
+        lst = list(container.get(key) or [])
+        lst.append(after)
+        container[key] = lst
+        return container
+    if after is None:
+        container.pop(rest, None)
+    else:
+        container[rest] = after
+    return container
+
+
 def _drift_clamp_notes(
     res_objs, drift_type, codes, resource_types, intensity
 ) -> list[str]:
-    """Per-code D-14 clamp notes for the run (computed before mutation).
+    """Per-code clamp notes for the run (computed before mutation).
 
     Mirrors ``compute_drift``'s code/eligible selection but consumes NO RNG
     (``_eligible_population`` / ``planned_count`` are pure), so calling it before
     ``compute_drift`` leaves the seeded draw sequence unchanged. Surfaced via
-    ``click.echo`` so a clamp is never silent (D-14: clamp-and-report)."""
+    ``click.echo`` so a clamp is never silent (clamp-and-report)."""
     from tenantless.generator import drift
 
     code_filter = set(codes) if codes is not None else None
@@ -358,7 +516,7 @@ def analyze(source, out, min_bucket_size, denylist, k, allow_no_denylist, non_in
         f"{stats['total_resource_groups']} resource groups, "
         f"{stats['total_resources']} resources, {n_types} resource types."
     )
-    # ANLZ-10 (D-04): build_profile already wrote <out>_review.txt (report-only,
+    # build_profile already wrote <out>_review.txt (report-only,
     # never blocks). In interactive mode -- and only when --non-interactive is
     # not set and stdin is a TTY -- also echo the grouped review to stdout.
     if not non_interactive and sys.stdin.isatty():
@@ -530,7 +688,7 @@ def generate(
         resolve_targets,
     )
 
-    # Security V5 (DoS-self): resolve --jobs to a concrete worker count clamped to
+    # DoS self-protection: resolve --jobs to a concrete worker count clamped to
     # the core count BEFORE handing it to the pipeline. IntRange(0, None) already
     # rejects negatives at CLI validation, so 0 is the SOLE all-cores sentinel —
     # there is no negative branch. 1 (default) preserves the single-process
@@ -538,14 +696,14 @@ def generate(
     cpu = os.cpu_count() or 1
     effective_jobs = cpu if jobs == 0 else min(jobs, cpu)
 
-    # PLAT-06 / D-18: plain progress lines to STDERR (no rich/tqdm dependency);
-    # the structured run summary goes to STDOUT below. D-19: NO drift line.
+    # plain progress lines to STDERR (no rich/tqdm dependency);
+    # the structured run summary goes to STDOUT below. NO drift line.
     started = time.perf_counter()
     click.echo("fitting distributions...", err=True)
     profile_dict = load_profile(resolve_profile(profile))
     n_subs, n_resources = resolve_targets(profile_dict, resources, subscriptions)
 
-    # D-14: derive the generation-profile IDENTITY from the raw --profile value,
+    # derive the generation-profile IDENTITY from the raw --profile value,
     # mirroring resolve_profile's resolution order (path-if-exists → bundled-name):
     # an existing file path contributes its stem (e.g. `enterprise-eu.json` →
     # `enterprise-eu`); a bundled name IS the identity (e.g. `enterprise`, `small`).
@@ -555,13 +713,13 @@ def generate(
         _Path(profile).stem if _Path(profile).is_file() else profile
     )
 
-    # P1 fix: resolve the cost anchor to a single calendar date ONCE (default
+    # resolve the cost anchor to a single calendar date ONCE (default
     # today()), so every billing period derives from it — never a per-call today().
     import datetime as _dt
 
     as_of = cost_as_of.date() if cost_as_of is not None else _dt.date.today()
 
-    # DoS-self: generation is HOISTED past the emptiness /
+    # DoS self-protection: generation is HOISTED past the emptiness /
     # destructive-confirm gates below — a declined confirmation or an
     # --only-if-empty skip must abort/skip WITHOUT paying the (multi-GB at 500K
     # resources) in-memory tenant + cost materialization. `result` / `tenant` are
@@ -571,13 +729,13 @@ def generate(
     tenant = None
 
     # the cost post-pass streams into a bounded on-disk CostSpool during
-    # the CPU phase (P1 memory), so 6-15M cost dicts are never all resident.
+    # the CPU phase (bounded memory), so 6-15M cost dicts are never all resident.
     from tenantless.generator import cost as _cost
 
     skipped = False
     # Lock/txn-regression fix: the destructive-generate exclusion now
     # rides a SESSION advisory lock on a dedicated idle (autocommit) connection instead
-    # of an xact lock inside one long write transaction. This preserves the Wave2 #1
+    # of an xact lock inside one long write transaction. This preserves the
     # check→generate→write mutual exclusion WITHOUT holding a write transaction or the
     # ensure_* DDL locks across the CPU / multiprocessing-fork phase (the earlier ordering fix had
     # wrapped ALL of generation in a single open_writer txn). Provisioning commits in
@@ -595,16 +753,16 @@ def generate(
         # the bare-CREATE ensure_base DDL and the idempotent ensure_* twins release
         # their table locks BEFORE the CPU phase — no DDL lock crosses the fork.
         with writer.open_writer() as prov_conn:
-            # 260709-blf (Docker-optional / BYO-Postgres): ensure the BASE synthetic
+            # Docker-optional / BYO-Postgres: ensure the BASE synthetic
             # schema (sql/001..003) exists FIRST. A no-op on an already-provisioned
             # Docker volume (function-level to_regclass guard, since sql/001,002 are
             # bare CREATE, not IF NOT EXISTS).
             writer.ensure_base_schema(prov_conn)
-            # P1 (Plan 10-01): identity tables — called UNCONDITIONALLY (even with
+            # identity tables — called UNCONDITIONALLY (even with
             # --no-identity) so the mock-server's roleAssignments SELECT serves [].
             writer.ensure_identity_schema(prov_conn)
-            # P1 (Plan 14-05, D-14): the profile_name column — UNCONDITIONAL so
-            # copy_tenant never fails on a pre-Phase-14 volume.
+            # the profile_name column — UNCONDITIONAL so
+            # copy_tenant never fails on an older volume.
             writer.ensure_web_metadata_schema(prov_conn)
             # v1.1.10: the case-insensitive resource-group functional index —
             # UNCONDITIONAL (idempotent twin) so a pre-v1.1.10 volume gains it here,
@@ -620,7 +778,7 @@ def generate(
             if only_if_empty and not writer.estate_is_empty(gate_conn):
                 skipped = True
             elif not force and not writer.schema_is_empty(gate_conn):
-                # D-08: truncation is destructive — guard it.
+                # truncation is destructive — guard it.
                 if sys.stdin.isatty():
                     click.confirm(
                         "This will TRUNCATE the synthetic schema. Continue?",
@@ -697,8 +855,8 @@ def generate(
 
     n_res = sum(len(rg.resources) for rg in tenant.resource_groups)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    # PLAT-06 / D-18: human-readable structured run summary on STDOUT (counts,
-    # seed, elapsed, tenant_id). NO drift line (D-19) — drift lands in Phase 11.
+    # human-readable structured run summary on STDOUT (counts,
+    # seed, elapsed, tenant_id). NO drift line — drift is a separate command.
     click.echo(
         f"Generated tenant {tenant.tenant_id}: "
         f"{len(tenant.subscriptions)} subscriptions, "
@@ -712,8 +870,8 @@ def generate(
         f"(seed={seed}, target_resources={n_resources}, "
         f"jobs={effective_jobs}, elapsed={elapsed_ms:.0f}ms)."
     )
-    # ARCH-03 / D-13: append the archetype→RG-count coverage line to the summary
-    # (a plain STDOUT line — NO new command/API/UI surface, D-10). Reuse the
+    # append the archetype→RG-count coverage line to the summary
+    # (a plain STDOUT line — NO new command/API/UI surface). Reuse the
     # already-loaded profile_dict for the label map; count over the built tenant's
     # RG template types so the line reflects what was actually generated.
     _label_map = archetypes.build_label_map(
@@ -723,11 +881,11 @@ def generate(
         _label_map, (rg.template_type for rg in tenant.resource_groups)
     )
     click.echo(archetypes.render_coverage_line(_coverage))
-    # ARCH-03 / D-18: append the confirm-and-rename gate's outcome counts, tallied
+    # append the confirm-and-rename gate's outcome counts, tallied
     # by pipeline._confirm_and_rename and threaded out on GenerationResult. Plain
-    # STDOUT beside the coverage line — NO new command/API/UI/DB surface (D-10).
+    # STDOUT beside the coverage line — NO new command/API/UI/DB surface.
     click.echo(archetypes.render_rg_naming_line(result.rg_naming_metrics))
-    # D-03: surface every clamp note (never silent).
+    # surface every clamp note (never silent).
     for note in result.clamp_notes:
         click.echo(note)
 
@@ -744,7 +902,7 @@ def generate(
     "--base-url",
     default="http://localhost:8080",
     show_default=True,
-    help="Absolute base URL emitted in nextLinks (MOCK-08).",
+    help="Absolute base URL emitted in nextLinks.",
 )
 @click.option(
     "--database-url",
@@ -821,7 +979,7 @@ def serve(
 
     serve_mod._preflight_postgres(database_url)
     repo_root = Path(__file__).resolve().parents[2]
-    # Status line: never echo the full database_url (T-07-02).
+    # Status line: never echo the full database_url.
     click.echo(f"Starting tenantless-server on {base_url} (port {port})...")
     serve_mod._launch_server(
         repo_root,
@@ -921,7 +1079,7 @@ def apply_drift(
 
     db_url = database_url or writer.DATABASE_URL
 
-    # Parse + validate user filters (V5: parse-before-bind).
+    # Parse + validate user filters (parse-before-bind).
     resource_types = _split_csv(resource_types_raw)
     codes = _split_csv(codes_raw)
     if codes is not None:
@@ -943,17 +1101,23 @@ def apply_drift(
             raise click.UsageError(f"--subscription is not a valid UUID: {exc}")
 
     # Wall-clock anchored ONCE in the CLI/audit layer — NEVER fed into ctx or the
-    # fingerprint (mirrors the cost --cost-as-of / token exp rule; A4).
+    # fingerprint (mirrors the cost --cost-as-of / token exp rule).
     applied_at = _dt.datetime.now(_dt.timezone.utc)
     batch_id = _uuid.uuid4()
 
     with writer.open_writer(db_url) as conn:
         # Idempotent schema preflight, committed independently of the drift writes.
+        # the apply path READS the resolved view and WRITES arm_overlay,
+        # and the drift_batches row carries the storage_mode provenance column (from
+        # sql/010) — so ensure the overlay (009) + resolver (010) substrates exist too
+        # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
+        writer.ensure_arm_overlay_schema(conn)
+        writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
         # Serialize all drift workflow mutations on a fixed application-wide
-        # advisory key BEFORE any read (P1, 11-10): apply-drift / revert-drift do
+        # advisory key BEFORE any read: apply-drift / revert-drift do
         # read-modify-write over JSONB columns with no other serialization, so two
         # concurrent commands would read the same parent state and clobber each
         # other with stale snapshots. The xact-scoped lock auto-releases at
@@ -961,7 +1125,7 @@ def apply_drift(
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (DRIFT_LOCK_KEY,))
 
-        # READ the live scoped state ($N-bound; Pitfall 3: ORDER BY id).
+        # READ the live scoped state ($N-bound; deterministic ORDER BY id).
         sql, params = _build_scoped_read_sql(sub_uuid, resource_types)
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -971,9 +1135,12 @@ def apply_drift(
         res_objs: list = []
         ddel_map: dict = {}
         for (
-            rid, sub_id, rtype, tags, sku, kind, props, ddel,
+            rid, sub_id, rtype, tags, sku, kind, props,
             rg_name, loc, name, prov, managed,
         ) in db_rows:
+            # The resolved view excludes tombstones, so a read row is always
+            # LIVE — drift_deleted_at is retired and treated as NULL throughout.
+            ddel = None
             parent_rows.append(
                 {
                     "id": rid,
@@ -1004,10 +1171,10 @@ def apply_drift(
             )
         res_by_id = {r.id: r for r in res_objs}
 
-        # Parent fingerprint over the decoded pre-mutation state (Pitfall 4).
+        # Parent fingerprint over the decoded pre-mutation state.
         parent_fp = drift.state_fingerprint(parent_rows)
 
-        # D-14 clamp notes — computed BEFORE compute_drift (consumes no RNG).
+        # clamp notes — computed BEFORE compute_drift (consumes no RNG).
         clamp_notes = _drift_clamp_notes(
             res_objs, drift_type, codes, resource_types, intensity
         )
@@ -1022,12 +1189,12 @@ def apply_drift(
             intensity=intensity,
         )
 
-        # Carry-forward (Plan 11-06): a temporal run ALSO applies the
-        # appear/disappear lifecycle (D-09/D-12) in the SAME transaction, so
-        # revert's unhide/delete (D-13) has a real producer. The lifecycle
+        # Carry-forward: a temporal run ALSO applies the
+        # appear/disappear lifecycle in the SAME transaction, so
+        # revert's unhide/delete has a real producer. The lifecycle
         # consumes the SAME seeded ctx (after the field draws) — deterministic.
-        # Discretion (CONTEXT: intensity semantics are the planner's): the
-        # disappear count is the D-14 clamped fraction/count of eligible leaves
+        # By design: the
+        # disappear count is the clamped fraction/count of eligible leaves
         # and appear mints the SAME count (symmetric churn — vanish a few, add a
         # few). Appear has no eligible population, so it has no clamp.
         life_deltas: list[dict] = []
@@ -1035,7 +1202,7 @@ def apply_drift(
         disappeared_ids: set = set()
         if drift_type == "temporal":
             # Gate the lifecycle by the active --codes / --resource-types filters
-            # (P2b): appear/disappear must NOT fire when the filter excludes them,
+            # appear/disappear must NOT fire when the filter excludes them,
             # and appear must never mint its leaf type (_APPEAR_TYPE = storage) when
             # --resource-types excludes it.
             do_disappear = codes is None or drift.CODE_DISAPPEAR in codes
@@ -1076,7 +1243,7 @@ def apply_drift(
         # --dry-run: report the full plan (count + clamp note) and persist NOTHING.
         # No drift_batches/drift_records INSERT and no resources UPDATE is issued,
         # so the transaction is read-only over the synthetic tables — provably no
-        # mutation (T-11-16). The idempotent schema preflight was committed above.
+        # mutation. The idempotent schema preflight was committed above.
         if dry_run:
             click.echo(
                 f"[dry-run] planned {planned} drift records for {drift_type} drift "
@@ -1087,7 +1254,7 @@ def apply_drift(
             return
 
         # Result fingerprint over the post-mutation ACTIVE state so it CHAINS to the
-        # next apply's parent fingerprint (P2a / D-08). The parent read is the
+        # next apply's parent fingerprint. The parent read is the
         # scoped `WHERE drift_deleted_at IS NULL` view, so the result_fp must cover
         # the SAME active-set convention: rows disappeared in THIS batch leave the
         # served/active view and are dropped from the digest (they would otherwise
@@ -1127,11 +1294,15 @@ def apply_drift(
 
         with conn.cursor() as cur:
             # Batch row FIRST (drift_records.batch_id FK → drift_batches).
+            # Stamp storage_mode='overlay' (sql/010 provenance marker):
+            # this batch writes the overlay, not synthetic.* in place, so the
+            # fail-closed boot guard (which trips on an ACTIVE
+            # storage_mode='synthetic' batch) lets a migrated tenant boot.
             cur.execute(
                 "INSERT INTO synthetic.drift_batches "
                 "(batch_id, drift_type, seed, options, parent_fingerprint, "
-                "result_fingerprint, applied_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "result_fingerprint, applied_at, storage_mode) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'overlay')",
                 (
                     batch_id,
                     drift_type,
@@ -1142,29 +1313,26 @@ def apply_drift(
                     applied_at,
                 ),
             )
+            # Copy-on-write onto arm_overlay: each affected
+            # resource gets ONE full-body snapshot (compute_drift already applied
+            # ALL its field mutations to the in-memory Resource, so a single upsert
+            # per id captures the complete post-drift served state). The BEFORE
+            # trigger assigns the revision. synthetic.resources is NEVER touched.
+            overlaid_ids: set = set()
             for d in deltas:
                 rid = d["resource_id"]
                 col = _field_to_column(d["field_path"])  # closed match; raises otherwise
-                # Defense-in-depth before splicing the (allowlisted) column name.
+                # Defense-in-depth: the field→column map may only yield an allowlist
+                # member (belt-and-suspenders behind the closed _field_to_column).
                 if col not in _UPDATE_COLUMN_ALLOWLIST:  # pragma: no cover
-                    raise click.ClickException(f"refusing UPDATE on column {col!r}")
+                    raise click.ClickException(f"refusing overlay write for column {col!r}")
                 robj = res_by_id[rid]
-                if col == "drift_deleted_at":
-                    cur.execute(
-                        "UPDATE synthetic.resources SET drift_deleted_at = %s "
-                        "WHERE id = %s",
-                        (applied_at, rid),
-                    )
-                elif col in _JSONB_COLUMNS:
-                    cur.execute(
-                        f"UPDATE synthetic.resources SET {col} = %s WHERE id = %s",
-                        (Jsonb(_resource_column_value(robj, col)), rid),
-                    )
-                else:  # kind (text)
-                    cur.execute(
-                        f"UPDATE synthetic.resources SET {col} = %s WHERE id = %s",
-                        (_resource_column_value(robj, col), rid),
-                    )
+                if rid not in overlaid_ids:
+                    if col == "drift_deleted_at":
+                        _overlay_upsert_tombstone(cur, rid)
+                    else:  # tags / sku / kind / properties → full-body snapshot
+                        _overlay_upsert_present(cur, robj, Jsonb)
+                    overlaid_ids.add(rid)
                 code = d["drift_code"]
                 cur.execute(
                     "INSERT INTO synthetic.drift_records "
@@ -1183,20 +1351,17 @@ def apply_drift(
                     ),
                 )
 
-            # Lifecycle persistence (D-09/D-12) — disappear soft-deletes in place
-            # (sets the dedicated visibility column; NEVER a hard DELETE), appear
-            # INSERTs the minted leaf. Each records a drift_record so revert can
-            # unhide (drift_deleted_at) / DELETE (@appear) it (D-13).
+            # Lifecycle persistence — disappear writes an overlay
+            # TOMBSTONE (present=false, source='drift'; NEVER an in-place soft-delete
+            # of synthetic.resources), appear writes an overlay PRESENT row for the
+            # minted leaf (baseline never gains it). Each records a drift_record so a
+            # revert can recompute-from-ledger.
             minted_by_id = {leaf.id: leaf for leaf in minted_leaves}
             for d in life_deltas:
                 rid = d["resource_id"]
                 fpath = d["field_path"]
-                if fpath == "drift_deleted_at":  # disappear (soft-delete, D-09)
-                    cur.execute(
-                        "UPDATE synthetic.resources SET drift_deleted_at = %s "
-                        "WHERE id = %s",
-                        (applied_at, rid),
-                    )
+                if fpath == "drift_deleted_at":  # disappear → overlay tombstone
+                    _overlay_upsert_tombstone(cur, rid)
                     code = d["drift_code"]  # CODE_DISAPPEAR
                     cur.execute(
                         "INSERT INTO synthetic.drift_records "
@@ -1214,29 +1379,22 @@ def apply_drift(
                             Jsonb({"drift_code": code, "drift_type": drift_type}),
                         ),
                     )
-                elif fpath == "@appear":  # appear (mint new leaf, D-12)
+                elif fpath == "@appear":  # appear → overlay present row
                     leaf = minted_by_id[rid]
+                    # The minted leaf becomes a present=true source='drift' overlay
+                    # row — the BASELINE is NEVER written. Build the FULL served body
+                    # once and reuse it for the ledger (replay-sufficiency below).
+                    appear_body = _overlay_body(leaf)
                     cur.execute(
-                        "INSERT INTO synthetic.resources "
-                        "(id, subscription_id, resource_group_name, name, type, "
-                        "location, tags, sku, kind, properties, provisioning_state, "
-                        "managed_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                        (
-                            leaf.id,
-                            leaf.subscription_id,
-                            leaf.resource_group_name,
-                            leaf.name,
-                            leaf.type,
-                            leaf.location,
-                            Jsonb(leaf.tags),
-                            Jsonb(leaf.sku) if leaf.sku is not None else None,
-                            leaf.kind,
-                            Jsonb(leaf.properties),
-                            leaf.provisioning_state,
-                            leaf.managed_by,
-                        ),
+                        _OVERLAY_UPSERT_SQL,
+                        (leaf.id, leaf.id, True, Jsonb(appear_body)),
                     )
                     code = d["drift_code"]  # CODE_APPEAR
+                    # the minted leaf no longer lives
+                    # in synthetic.resources, so persist its COMPLETE served body in
+                    # the @appear drift_record under metadata['appear_body'] — a
+                    # revert replay reconstructs the overlay row from
+                    # the ledger ALONE, byte-equal to this stored body.
                     cur.execute(
                         "INSERT INTO synthetic.drift_records "
                         "(batch_id, resource_id, subscription_id, field_path, "
@@ -1246,11 +1404,17 @@ def apply_drift(
                             batch_id,
                             rid,
                             leaf.subscription_id,
-                            "@appear",  # revert DELETEs the minted row (D-13)
+                            "@appear",  # revert reconstructs from appear_body
                             Jsonb(d["before"]),
                             Jsonb(d["after"]),
                             code,
-                            Jsonb({"drift_code": code, "drift_type": drift_type}),
+                            Jsonb(
+                                {
+                                    "drift_code": code,
+                                    "drift_type": drift_type,
+                                    "appear_body": appear_body,
+                                }
+                            ),
                         ),
                     )
 
@@ -1261,6 +1425,97 @@ def apply_drift(
     )
     for note in clamp_notes:
         click.echo(note)
+
+
+@main.command("reset")
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    default=False,
+    help="Report the overlay/ledger row counts that WOULD be cleared; mutate NOTHING.",
+)
+@click.option(
+    "--database-url",
+    "database_url",
+    default=None,
+    help="Postgres DSN (defaults to writer.DATABASE_URL / $DATABASE_URL).",
+)
+def reset(dry_run, database_url):
+    """Return the served tenant to the immutable pre-drift baseline.
+
+    Transactionally clears the drift ledger + ARM overlay so the resolver
+    (``baseline ∪ overlay(present) − tombstones``) once again resolves to the
+    pristine seeded baseline, WITHOUT rebuilding the tenant. Concretely, in ONE
+    transaction under the fixed ``DRIFT_LOCK_KEY`` advisory lock (so reset
+    serializes against ``apply-drift`` / ``revert-drift``), it issues the FK-ordered
+    clears ``DELETE FROM synthetic.drift_records`` → ``drift_batches`` →
+    ``arm_overlay``.
+
+    This is NOT the full-wipe ``POST /_control/reset`` (``job.rs::run_reset``): that
+    path wholesale-empties every ``synthetic`` baseline relation and re-mints the
+    tenant signer to produce a BLANK tenant. Baseline-reset preserves tenant identity
+    — it leaves ALL four baseline relations (resources, resource_groups,
+    subscriptions, tenant) untouched, does not re-mint the signer, and does not rewind
+    or rebase the ``arm_overlay_revision`` sequence (it stays monotonic across resets
+    — ETag/revision stability). Clearing ``drift_batches`` also clears the
+    ``storage_mode`` provenance marker (it is only a ``drift_batches`` column), so a
+    reset tenant passes the fail-closed boot guard. All statements are static
+    literals (no user value spliced).
+    """
+    from tenantless.generator import writer
+
+    db_url = database_url or writer.DATABASE_URL
+
+    with writer.open_writer(db_url) as conn:
+        # Idempotent schema preflight, committed independently of the reset clears
+        # (mirrors apply-drift): ensure the drift ledger + overlay + resolver
+        # substrates exist so a never-drifted tenant resets cleanly too. Fully
+        # idempotent; a no-op on an already-provisioned tenant.
+        writer.ensure_drift_schema(conn)
+        writer.ensure_arm_overlay_schema(conn)
+        writer.ensure_arm_resolver_schema(conn)
+        conn.commit()
+
+        with conn.cursor() as cur:
+            # Serialize on the SAME fixed advisory key apply/revert take,
+            # BEFORE any read, so reset can never interleave with an in-flight drift
+            # read-modify-write. The xact-scoped lock auto-releases at transaction end
+            # (the open_writer commit). $N-bound.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (DRIFT_LOCK_KEY,))
+
+            # Snapshot the counts we are about to clear (for the report / dry-run).
+            cur.execute("SELECT count(*) FROM synthetic.drift_records")
+            n_records = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM synthetic.drift_batches")
+            n_batches = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM synthetic.arm_overlay")
+            n_overlay = cur.fetchone()[0]
+
+            # --dry-run: report the clear plan and persist NOTHING. Roll back the
+            # lock-only transaction so no mutation (and no lock) survives.
+            if dry_run:
+                conn.rollback()
+                click.echo(
+                    f"[dry-run] reset would clear {n_overlay} overlay rows, "
+                    f"{n_records} drift_records, {n_batches} drift_batches "
+                    "(baseline + revision sequence preserved; nothing written)."
+                )
+                return
+
+            # FK-ordered clears in ONE transaction (drift_records.batch_id FK →
+            # drift_batches). The revision sequence is left as-is (preserve
+            # monotonicity — never rewound). The four baseline relations
+            # (resources, resource_groups, subscriptions, tenant) are left untouched;
+            # the signer is not re-minted.
+            cur.execute("DELETE FROM synthetic.drift_records")
+            cur.execute("DELETE FROM synthetic.drift_batches")
+            cur.execute("DELETE FROM synthetic.arm_overlay")
+
+    click.echo(
+        f"reset: cleared {n_overlay} overlay rows, {n_records} drift_records, "
+        f"{n_batches} drift_batches (baseline + revision sequence preserved)."
+    )
 
 
 @main.command("revert-drift")
@@ -1284,14 +1539,24 @@ def apply_drift(
     help="Postgres DSN (defaults to writer.DATABASE_URL / $DATABASE_URL).",
 )
 def revert_drift(batch_id_raw, dry_run, database_url):
-    """Revert one drift batch — LIFO-guarded, single-transaction restore.
+    """Revert one drift batch — recompute-from-ledger onto arm_overlay.
 
-    In ONE transaction: reject if a NEWER ACTIVE (``reverted_at IS NULL``) batch
-    overlaps any of the target's resources (strict LIFO, BEFORE any mutation);
-    else restore each affected resource from its ``drift_records`` per-field
-    ``before`` value, unhide disappeared rows / DELETE appear rows, and mark the
-    batch ``reverted_at`` WITHOUT deleting history. ``--dry-run`` reports the
-    would-revert count and mutates nothing.
+    The drift ledger (``drift_batches`` + ``drift_records``) is the authoritative
+    per-batch delta history; ``arm_overlay`` is materialized current state. In ONE
+    transaction under the drift advisory lock: for each id the target touched,
+    rebuild its overlay state from the IMMUTABLE baseline (raw ``synthetic.resources``)
+    by REPLAYING every still-active overlay batch EXCEPT the target
+    (``storage_mode='overlay' AND reverted_at IS NULL AND batch_id<>target``) in
+    ``(seq, record_id)`` order (last-writer-wins), then DELETE the overlay row iff
+    the replayed result equals baseline (no zombie) else UPSERT a fresh
+    ``source='drift'`` snapshot, and mark the target ``reverted_at`` WITHOUT
+    deleting history. ``synthetic.*`` is NEVER mutated in place.
+
+    The strict-LIFO overlap guard is intentionally REMOVED: recompute-from-ledger
+    rebuilds the overlay from whatever active batches remain, so ANY batch —
+    including a middle batch under a newer active overlapping batch — is
+    independently revertable. ``--dry-run``
+    reports the would-revert count and mutates nothing.
     """
     import datetime as _dt
     import uuid as _uuid
@@ -1302,74 +1567,59 @@ def revert_drift(batch_id_raw, dry_run, database_url):
 
     db_url = database_url or writer.DATABASE_URL
 
-    # V5: parse the batch-id to a UUID before any bind (no spliced id).
+    # parse the batch-id to a UUID before any bind (no spliced id).
     try:
         bid = _uuid.UUID(batch_id_raw)
     except ValueError as exc:
         raise click.UsageError(f"--batch-id is not a valid UUID: {exc}")
 
-    # Wall-clock anchored ONCE in the audit layer (A4) — the only time-derived
+    # Wall-clock anchored ONCE in the audit layer — the only time-derived
     # value, written on the reverted_at mark.
     reverted_at = _dt.datetime.now(_dt.timezone.utc)
 
     with writer.open_writer(db_url) as conn:
+        # Idempotent schema preflight, committed independently. Revert
+        # now RECOMPUTES onto arm_overlay and reads drift_batches.storage_mode /
+        # reverted_at, so ensure the overlay (009) + resolver (010) substrates too
+        # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
+        writer.ensure_arm_overlay_schema(conn)
+        writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
         with conn.cursor() as cur:
             # Serialize all drift workflow mutations on the fixed application-wide
-            # advisory key BEFORE any read (P1, 11-10), the twin of apply-drift: a
+            # advisory key BEFORE any read, the twin of apply-drift: a
             # concurrent apply/revert would otherwise read the same parent state
             # and clobber it with a stale read-modify-write snapshot. The
             # xact-scoped lock auto-releases at transaction end. $N-bound.
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (DRIFT_LOCK_KEY,))
 
-            # Target batch must exist and not already be reverted (D-03). ``seq`` is
-            # the monotonic total order (sql/006) the LIFO guard compares on.
+            # Target batch must exist and not already be reverted.
             cur.execute(
-                "SELECT seq, reverted_at FROM synthetic.drift_batches "
-                "WHERE batch_id = %s",
+                "SELECT reverted_at FROM synthetic.drift_batches WHERE batch_id = %s",
                 (bid,),
             )
             row = cur.fetchone()
             if row is None:
                 raise click.UsageError(f"no drift batch {bid}")
-            target_seq, already_reverted = row
+            (already_reverted,) = row
             if already_reverted is not None:
                 raise click.UsageError(
                     f"batch {bid} was already reverted at {already_reverted} "
-                    "(history is preserved; a batch is reverted once, D-03)."
+                    "(history is preserved; a batch is reverted once)."
                 )
 
-            # STRICT-LIFO overlap guard (D-06, Pitfall 5): BEFORE any mutation,
-            # reject if a strictly-NEWER ACTIVE sibling batch shares any resource_id
-            # with the target. ``seq`` is a UNIQUE strictly-increasing total order
-            # (sql/006), so ``b.seq > target_seq`` both excludes the target itself
-            # (never > its own seq) AND breaks applied_at ties: two same-instant
-            # batches get distinct seq, so the newer is revertable first and the
-            # pair is never mutually deadlocked (P1, 11-10). $N-bound; raising here
-            # rolls the transaction back untouched.
-            cur.execute(
-                "SELECT count(*) FROM synthetic.drift_batches b "
-                "WHERE b.seq > %s "
-                "AND b.reverted_at IS NULL "
-                "AND EXISTS ("
-                "  SELECT 1 FROM synthetic.drift_records nr "
-                "  JOIN synthetic.drift_records tr "
-                "    ON tr.resource_id = nr.resource_id "
-                "  WHERE nr.batch_id = b.batch_id AND tr.batch_id = %s)",
-                (target_seq, bid),
-            )
-            overlap = cur.fetchone()[0]
-            if overlap > 0:
-                raise click.UsageError(
-                    f"refusing to revert {bid}: {overlap} newer active batch(es) "
-                    "overlap its resources (strict LIFO, D-06). Revert the newer "
-                    "batch(es) first."
-                )
+            # The strict-LIFO overlap guard is intentionally REMOVED here.
+            # Recompute-from-ledger rebuilds each affected id's
+            # overlay from the immutable baseline by replaying whatever active
+            # batches remain — so reverting a MIDDLE batch (under a newer active
+            # overlapping batch) is well-defined and correct, and the old
+            # strictly-newer-sibling rejection would contradict the "any batch is
+            # revertable" model.
 
-            # Read the target batch's per-field deltas (Plan 11-05: before/after
-            # are per-FIELD, not full-column).
+            # Read the target batch's per-field deltas to determine the affected
+            # id set (before/after are per-FIELD, not full-column).
             cur.execute(
                 "SELECT resource_id, field_path, before, after "
                 "FROM synthetic.drift_records WHERE batch_id = %s ORDER BY record_id",
@@ -1379,82 +1629,139 @@ def revert_drift(batch_id_raw, dry_run, database_url):
             would = len(records)
 
             # --dry-run: report the would-revert count, persist NOTHING (the txn
-            # is read-only over the synthetic tables; the schema preflight already
-            # committed). reverted_at stays NULL and no column changes (D-04).
+            # is read-only; the schema preflight already committed). reverted_at
+            # stays NULL and no overlay/baseline changes.
             if dry_run:
                 click.echo(
                     f"[dry-run] would revert {would} records for batch {bid} "
-                    "(LIFO guard passed; nothing written)."
+                    "(recompute-from-ledger; nothing written)."
                 )
                 return
 
-            # @appear rows are DELETEd (D-13); everything else is a column-level
-            # restore (tags/sku/kind/properties/drift_deleted_at).
-            appear_ids = [r[0] for r in records if r[1] == "@appear"]
-            field_records = [r for r in records if r[1] != "@appear"]
+            # The affected id set = every resource the TARGET batch touched.
+            affected = sorted({r[0] for r in records})
 
-            # Load the CURRENT served columns for the field-affected resources.
-            # NO drift_deleted_at filter — disappeared rows MUST be read so they
-            # can be unhidden. $N-bound array (T-11-24).
-            affected = sorted({r[0] for r in field_records})
-            state: dict = {}
+            # (1) Immutable baseline for each affected id, read from RAW
+            # synthetic.resources (NOT the resolved view — the view already folds in
+            # the overlay). @appear ids have NO baseline row (baseline absent).
+            # $N-bound array. This is a READ ONLY — synthetic.* is never
+            # mutated in the revert path.
+            baseline: dict = {}
             if affected:
                 cur.execute(
-                    "SELECT id, tags, sku, kind, properties, drift_deleted_at "
-                    "FROM synthetic.resources WHERE id = ANY(%s)",
+                    "SELECT id, name, type, location, tags, sku, kind, properties "
+                    "FROM synthetic.resources WHERE id = ANY(%s)",  # SYNRES-ALLOW[baseline-replay]: revert recomputes overlay state from the IMMUTABLE baseline, not the resolved view
                     (affected,),
                 )
-                for rid, tags, sku, kind, props, ddel in cur.fetchall():
-                    state[rid] = {
-                        "tags": tags,
-                        "sku": sku,
+                for rid, name, rtype, loc, tags, sku, kind, props in cur.fetchall():
+                    baseline[rid] = {
+                        "id": rid,
+                        "name": name,
+                        "type": rtype,
+                        "location": loc,
+                        "tags": dict(tags or {}),
+                        "properties": dict(props or {}),
+                        "sku": dict(sku) if sku is not None else None,
                         "kind": kind,
-                        "properties": props,
-                        "drift_deleted_at": ddel,
                     }
 
-            # Apply each per-field revert into the in-memory column state, in
-            # record order, so multiple deltas on one column compose (Pitfall 4:
-            # the served response is restored byte-for-byte).
-            for rid, field_path, before, after in field_records:
-                st = state.get(rid)
-                if st is None:
-                    continue  # resource no longer present — skip
-                col = _field_to_column(field_path)  # closed allowlist (T-11-24)
-                if col not in _UPDATE_COLUMN_ALLOWLIST:  # pragma: no cover
-                    raise click.ClickException(f"refusing restore on column {col!r}")
-                if col == "drift_deleted_at":
-                    st["drift_deleted_at"] = before  # None -> unhide (D-13)
-                elif col == "sku":
-                    st["sku"] = before  # full sku object (or None)
-                elif col == "kind":
-                    st["kind"] = before
-                else:  # properties / tags nested field
-                    st[col] = _revert_nested(st[col], field_path, before, after)
-
-            # Write the restored columns back ($N-bound; one UPDATE per resource).
-            for rid, st in state.items():
+            # (2) Every STILL-ACTIVE overlay batch EXCEPT the target, and its
+            # drift_records for the affected ids, ordered by (seq, record_id) — the
+            # deterministic total order (seq = GENERATED IDENTITY, sql/006; NOT
+            # applied_at, which ties). Forward-replaying each `after` in this order =
+            # last-writer-wins per field = current state minus the target.
+            # Determinism; all values $N-bound.
+            replay_by_id: dict = {rid: [] for rid in affected}
+            if affected:
                 cur.execute(
-                    "UPDATE synthetic.resources SET tags = %s, sku = %s, "
-                    "kind = %s, properties = %s, drift_deleted_at = %s "
-                    "WHERE id = %s",
-                    (
-                        Jsonb(st["tags"] if st["tags"] is not None else {}),
-                        Jsonb(st["sku"]) if st["sku"] is not None else None,
-                        st["kind"],
-                        Jsonb(
-                            st["properties"] if st["properties"] is not None else {}
-                        ),
-                        st["drift_deleted_at"],
-                        rid,
-                    ),
+                    "SELECT r.resource_id, r.field_path, r.before, r.after, r.metadata "
+                    "FROM synthetic.drift_records r "
+                    "JOIN synthetic.drift_batches b ON b.batch_id = r.batch_id "
+                    "WHERE b.storage_mode = 'overlay' "
+                    "AND b.reverted_at IS NULL "
+                    "AND b.batch_id <> %s "
+                    "AND r.resource_id = ANY(%s) "
+                    "ORDER BY r.resource_id, b.seq, r.record_id",
+                    (bid, affected),
                 )
+                for rid, fpath, before, after, metadata in cur.fetchall():
+                    replay_by_id[rid].append((fpath, before, after, metadata))
 
-            # DELETE the rows this batch added via appear (D-13).
-            for rid in appear_ids:
-                cur.execute("DELETE FROM synthetic.resources WHERE id = %s", (rid,))
+            # (3) Replay forward from baseline per id → (present, body). present is
+            # None (absent — no baseline row and no active appear), True (live), or
+            # False (tombstone). @appear rebuilds the FULL body from the ledger's
+            # stored metadata.appear_body; disappear → tombstone; field
+            # deltas via _apply_nested(after) / full sku|kind set.
+            deleted = 0
+            upserted = 0
+            for rid in affected:
+                brow = baseline.get(rid)
+                if brow is not None:
+                    present: bool | None = True
+                    body = dict(brow)
+                else:
+                    present = None  # baseline absent (an @appear id)
+                    body = None
 
-            # Mark reverted_at — NEVER delete drift history (D-03).
+                for fpath, before, after, metadata in replay_by_id[rid]:
+                    if fpath == "@appear":
+                        # The minted leaf's full served body lives in the ledger.
+                        body = dict((metadata or {}).get("appear_body") or {})
+                        present = True
+                    elif fpath == "drift_deleted_at":
+                        # Forward-apply disappear: a non-None `after` marker hides the
+                        # id (tombstone); a None `after` (unhide) makes it present.
+                        present = False if after is not None else True
+                    else:
+                        col = _field_to_column(fpath)  # closed allowlist
+                        if col not in _UPDATE_COLUMN_ALLOWLIST:  # pragma: no cover
+                            raise click.ClickException(
+                                f"refusing replay on column {col!r}"
+                            )
+                        if body is None:
+                            # Field delta on a not-yet-present id (e.g. its appear is
+                            # the reverted target) — no live body to mutate; skip.
+                            continue
+                        if col == "sku":
+                            if after is None:
+                                body.pop("sku", None)
+                            else:
+                                body["sku"] = after  # full sku object
+                        elif col == "kind":
+                            if after is None:
+                                body.pop("kind", None)
+                            else:
+                                body["kind"] = after
+                        else:  # properties / tags nested field
+                            body[col] = _apply_nested(
+                                body.get(col) or {}, fpath, before, after
+                            )
+
+                # (4) DELETE-if-baseline else UPSERT-fresh. Compare the replayed
+                # result to baseline; if EQUAL (no active batch still drifts this id)
+                # the overlay row is superfluous → DELETE it (no zombie).
+                # Otherwise UPSERT a fresh source='drift' snapshot via the
+                # ON CONFLICT upsert (the sql/009 trigger advances the revision).
+                # A blind delete is NEVER issued — the else-branch always rewrites.
+                if _replay_equals_baseline(present, body, brow):
+                    cur.execute(
+                        "DELETE FROM synthetic.arm_overlay "
+                        "WHERE id_lower = lower(%s) AND target_kind = 'resource'",
+                        (rid,),
+                    )
+                    deleted += 1
+                elif present is False:
+                    _overlay_upsert_tombstone(cur, rid)
+                    upserted += 1
+                else:  # present live row with a full body
+                    cur.execute(
+                        _OVERLAY_UPSERT_SQL,
+                        (rid, rid, True, Jsonb(_overlay_body_from_replay(body))),
+                    )
+                    upserted += 1
+
+            # (5) Mark reverted_at — NEVER delete drift history. synthetic.*
+            # is untouched throughout: only arm_overlay + this mark write.
             cur.execute(
                 "UPDATE synthetic.drift_batches SET reverted_at = %s "
                 "WHERE batch_id = %s",
@@ -1462,8 +1769,8 @@ def revert_drift(batch_id_raw, dry_run, database_url):
             )
 
     click.echo(
-        f"revert-drift batch {bid}: restored {len(field_records)} field records, "
-        f"deleted {len(appear_ids)} appear rows, marked reverted_at."
+        f"revert-drift batch {bid}: recomputed {len(affected)} ids from ledger "
+        f"({deleted} overlay rows deleted, {upserted} upserted), marked reverted_at."
     )
 
 
@@ -1475,7 +1782,7 @@ def revert_drift(batch_id_raw, dry_run, database_url):
     help="Postgres DSN (defaults to writer.DATABASE_URL / $DATABASE_URL).",
 )
 def init_db(database_url):
-    """Provision the full sql/001..009 schema against DATABASE_URL — no data.
+    """Provision the full sql/001..010 schema against DATABASE_URL — no data.
 
     The provision-WITHOUT-generating path for a bring-your-own Postgres: a user who
     wants to ``serve`` an (initially empty) tenant, or who prefers to provision the
@@ -1483,7 +1790,8 @@ def init_db(database_url):
     reachable PG16 and runs this. It is a THIN wrapper over the existing idempotent
     ``ensure_*`` seams — no new SQL — applying, IN ORDER:
     base (sql/001..003) -> cost (004) -> identity (005) -> drift (006) ->
-    web_metadata (007) -> rg_index (008) -> arm_overlay (009).
+    web_metadata (007) -> rg_index (008) -> arm_overlay (009) ->
+    arm_resolver (010).
 
     Provisioning belongs to the write path (``generate``) or to this explicit
     ``init-db``; the server does not create the base schema at boot, so a
@@ -1496,12 +1804,12 @@ def init_db(database_url):
     Reports HONESTLY: if a bundled migration file is absent — for example an
     installed package shipped without its ``sql/`` data files — the command exits
     nonzero and NAMES the missing migration(s) instead of printing a false
-    "Applied migrations 001..009" success. The host-only status line prints ONLY
+    "Applied migrations 001..010" success. The host-only status line prints ONLY
     on full success.
 
     ATOMIC (all-or-nothing): BEFORE opening any transaction, a pre-flight gate
-    verifies all nine migration files exist — a missing bundled file aborts with
-    the database untouched (no half-open connection). Only if all nine are present
+    verifies all ten migration files exist — a missing bundled file aborts with
+    the database untouched (no half-open connection). Only if all ten are present
     is a single writer transaction opened; ANY failure inside it (a partially
     applied base schema, or a migration whose file vanished at apply time) is raised
     inside the transaction so it rolls the whole thing back — the schema is never
@@ -1511,7 +1819,7 @@ def init_db(database_url):
 
     db_url = database_url or writer.DATABASE_URL
 
-    # Pre-flight file gate (P2a): verify ALL 9 migration files exist BEFORE opening
+    # Pre-flight file gate: verify ALL 10 migration files exist BEFORE opening
     # any transaction. A missing bundled file (the packaging bug) aborts here — no
     # DB connection is opened, nothing is touched.
     missing = [p for p in writer._all_migration_sql_files() if not p.is_file()]
@@ -1523,7 +1831,7 @@ def init_db(database_url):
             "built with force-include, or run against a repo checkout / docker initdb."
         )
 
-    # All nine present -> apply all-or-nothing inside ONE writer transaction. Any
+    # All ten present -> apply all-or-nothing inside ONE writer transaction. Any
     # exception raised here propagates OUT of the `with`, so open_writer rolls back
     # everything (never a record-then-commit-then-raise partial provision).
     with writer.open_writer(db_url) as conn:
@@ -1531,7 +1839,7 @@ def init_db(database_url):
         # partly-migrated base and rolls back; True/False is applied-vs-already-
         # present (Docker volume / re-run no-op), NOT a failure.
         writer.ensure_base_schema(conn)
-        # Twins (004..009) IN ORDER: a False return means the file vanished between
+        # Twins (004..010) IN ORDER: a False return means the file vanished between
         # the pre-flight gate and apply (should not happen after the gate) — treat
         # it as a hard failure and raise INSIDE the with so the base apply rolls back.
         for name, ensure in (
@@ -1541,6 +1849,7 @@ def init_db(database_url):
             ("007_web_metadata", writer.ensure_web_metadata_schema),
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
             ("009_arm_overlay", writer.ensure_arm_overlay_schema),
+            ("010_arm_resolver", writer.ensure_arm_resolver_schema),
         ):
             if not ensure(conn):
                 raise click.ClickException(
@@ -1550,7 +1859,7 @@ def init_db(database_url):
                 )
 
     # Status line: prints ONLY after a clean commit. Never echo the full
-    # database_url (T-07-02) — host only.
+    # database_url — host only.
     from urllib.parse import urlsplit
 
     host = urlsplit(db_url).hostname or "the configured host"
@@ -1558,6 +1867,7 @@ def init_db(database_url):
     # the deep structural inventory the mock-server runs at boot (arm_overlay_inventory). Say so
     # rather than imply a verification this path did not do.
     click.echo(
-        f"Applied migrations 001..009 against {host}. "
-        "The mock-server enforces structural verification of the overlay substrate at boot."
+        f"Applied migrations 001..010 against {host}. "
+        "The mock-server enforces structural verification of the overlay + resolver "
+        "substrate at boot."
     )
