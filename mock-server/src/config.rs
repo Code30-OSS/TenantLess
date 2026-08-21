@@ -66,6 +66,25 @@ pub struct Cli {
     #[arg(long, env = "ENABLE_CONTROL_PLANE", default_value_t = false)]
     pub enable_control_plane: bool,
 
+    /// Arm the generic ARM write plane (PUT/PATCH/DELETE) over the overlay substrate
+    /// (WAUTH-01, D-10/D-11). **Default OFF** — while unset every write method returns
+    /// `405 MethodNotAllowed` with an `Allow` header, and the server stays the read-only
+    /// surface it is today. This flag arms the write HANDLERS ONLY; it NEVER grants
+    /// authorization, bypasses authentication, or bypasses the fail-closed boot guard
+    /// (D-11). There is deliberately NO config-file / inference path — writes arm ONLY
+    /// via this explicit flag or its `ENABLE_ARM_WRITES` env var (WAUTH-01: no silent enable).
+    #[arg(long, env = "ENABLE_ARM_WRITES", default_value_t = false)]
+    pub enable_arm_writes: bool,
+
+    /// Insecure-development override for the D-12 unauthenticated-write safety guard
+    /// (WAUTH-03). **Default OFF.** Enabling unauthenticated writes (`--enable-arm-writes`
+    /// WITHOUT `--enforce-auth`) on a NON-loopback bind normally REFUSES startup; this
+    /// explicit override permits it anyway, for a knowingly-local/test deployment, WITH a
+    /// prominent startup WARN. It never affects a loopback bind (already permitted) and
+    /// never grants authorization. Local/test-only — see docs.
+    #[arg(long, env = "ALLOW_INSECURE_WRITES", default_value_t = false)]
+    pub allow_insecure_writes: bool,
+
     /// The control-plane admin secret (D-01). Presented by the browser in the
     /// `X-Control-Token` header and compared in constant time against its SHA-256 digest.
     /// A DISTINCT realm from the any-Bearer ARM gate — it is never coupled to the RS256/AAD
@@ -111,6 +130,57 @@ pub struct Cli {
     pub db_acquire_timeout_secs: u64,
 }
 
+/// Classify a bind `host` string as a genuine loopback interface (D-12 / WAUTH-03).
+///
+/// Returns `true` ONLY for an address that parses as an `IpAddr` whose `is_loopback()`
+/// holds (`127.0.0.0/8`, `::1`). Everything else is treated as NON-loopback — a
+/// conservative default so the Plan-05 unauthenticated-write refusal fails SAFE:
+/// - `0.0.0.0` / `::` parse as IPs but are *unspecified* (bind-all) → not loopback → unsafe.
+/// - A non-IP hostname (e.g. `example.com`) fails to parse → `false` → treated as public.
+///
+/// This is a pure classifier: no DNS resolution, no network access.
+pub fn host_is_loopback(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Byte-stable marker embedded in the D-12 startup-REFUSAL error message so the real-binary
+/// subprocess test (D-26, `write_startup_refusal.rs`) can distinguish a write-safety refusal
+/// from any unrelated startup failure. Do NOT reword — the subprocess test greps stderr for it.
+/// Credential-safe: names no token, header, or body.
+pub const UNAUTH_WRITE_REFUSAL_MARKER: &str =
+    "WRITE-SAFETY REFUSAL: ARM writes are enabled without --enforce-auth on a non-loopback bind";
+
+/// Byte-stable marker for the WAUTH-03 startup WARN (writes enabled without strict auth). The
+/// D-26 subprocess test asserts on this for the `--allow-insecure-writes` proceed-with-warn
+/// case. Credential-safe: names no token, header, or body (D-12).
+pub const UNAUTH_WRITE_WARN_MARKER: &str =
+    "SECURITY WARNING: ARM writes are enabled WITHOUT --enforce-auth";
+
+/// Pure guard predicate for the D-12 unauthenticated-write startup refusal (D-23).
+///
+/// Returns `true` (REFUSE to start) iff ARM writes are armed AND authentication is not
+/// enforced AND the bind is NOT loopback AND no explicit insecure-development override is
+/// supplied — i.e. an unauthenticated write plane would be exposed on a public interface.
+/// Every other combination returns `false` (proceed):
+///   * loopback bind → already local, not publicly exposed;
+///   * `--enforce-auth` → writes are authenticated;
+///   * `--allow-insecure-writes` → operator has knowingly opted into a local/test posture;
+///   * writes off → nothing to expose.
+///
+/// This is the SINGLE source of the D-12 decision: pure, total, and composing the existing
+/// [`host_is_loopback`] classifier (so `0.0.0.0`/`::`/non-IP hosts classify as non-loopback =
+/// unsafe). `main.rs` only composes it; the end-to-end proof on the real binary is D-26.
+pub fn should_refuse_unauth_writes(
+    enable_arm_writes: bool,
+    enforce_auth: bool,
+    host: &str,
+    allow_insecure_writes: bool,
+) -> bool {
+    enable_arm_writes && !enforce_auth && !host_is_loopback(host) && !allow_insecure_writes
+}
+
 #[cfg(test)]
 mod tests {
     use super::Cli;
@@ -143,5 +213,115 @@ mod tests {
         assert_eq!(cli.request_timeout_secs, 30);
         assert_eq!(cli.db_statement_timeout_ms, 10_000);
         assert_eq!(cli.db_acquire_timeout_secs, 5);
+    }
+
+    /// WAUTH-01: BOTH write-gating flags default OFF — no arg/env means no silent
+    /// enable. `enable_arm_writes` arms the write handlers; `allow_insecure_writes`
+    /// is the D-12 non-loopback insecure-development override. Neither may be true
+    /// by default.
+    #[test]
+    fn write_flags_default_off() {
+        let cli = Cli::try_parse_from(["tenantless-server"]).expect("defaults must parse");
+        assert!(!cli.enable_arm_writes, "writes must default OFF (WAUTH-01)");
+        assert!(
+            !cli.allow_insecure_writes,
+            "insecure-writes override must default OFF"
+        );
+    }
+
+    /// The explicit `--enable-arm-writes` / `--allow-insecure-writes` arg path arms
+    /// each flag. (The `env = "…"` wiring mirrors `enforce_auth` verbatim — not
+    /// re-tested here to avoid process-global env mutation racing the defaults test.)
+    #[test]
+    fn write_flags_parse_from_args() {
+        let cli = Cli::try_parse_from([
+            "tenantless-server",
+            "--enable-arm-writes",
+            "--allow-insecure-writes",
+        ])
+        .expect("write flags must parse");
+        assert!(cli.enable_arm_writes);
+        assert!(cli.allow_insecure_writes);
+    }
+
+    /// D-12 / D-23 / WAUTH-03: the pure `should_refuse_unauth_writes` guard is the SINGLE
+    /// source of the startup-refusal decision, proven by this behavioral matrix (NOT a source
+    /// grep of the main.rs call site). A row is REFUSE (`true`) iff ARM writes are enabled AND
+    /// auth is not enforced AND the bind is non-loopback AND no insecure-development override
+    /// is supplied; every other combination PROCEEDS (`false`).
+    #[test]
+    fn should_refuse_unauth_writes_matrix() {
+        use super::should_refuse_unauth_writes as refuse;
+
+        // REFUSE: writes + no-auth + non-loopback bind + no override.
+        assert!(
+            refuse(true, false, "0.0.0.0", false),
+            "0.0.0.0 bind-all + unauth writes + no override → refuse"
+        );
+        assert!(
+            refuse(true, false, "::", false),
+            ":: (unspecified IPv6) is non-loopback → refuse"
+        );
+        assert!(
+            refuse(true, false, "example.com", false),
+            "a non-IP hostname is conservatively non-loopback → refuse (fail-safe)"
+        );
+
+        // PROCEED: loopback bind (already safe — no public exposure).
+        assert!(
+            !refuse(true, false, "127.0.0.1", false),
+            "IPv4 loopback → proceed"
+        );
+        assert!(
+            !refuse(true, false, "::1", false),
+            "IPv6 loopback → proceed"
+        );
+
+        // PROCEED: explicit insecure-development override.
+        assert!(
+            !refuse(true, false, "0.0.0.0", true),
+            "--allow-insecure-writes override → proceed (with WARN)"
+        );
+
+        // PROCEED: auth enforced (writes are authenticated, so the guard does not apply).
+        assert!(
+            !refuse(true, true, "0.0.0.0", false),
+            "--enforce-auth → proceed"
+        );
+
+        // PROCEED: writes off entirely (nothing to expose).
+        assert!(
+            !refuse(false, false, "0.0.0.0", false),
+            "writes disabled → proceed"
+        );
+    }
+
+    /// D-12 / WAUTH-03: `host_is_loopback` classifies ONLY genuine loopback IPs as
+    /// loopback. `0.0.0.0` / `::` (unspecified = bind-all) and any non-IP hostname
+    /// are NON-loopback (conservative → the Plan-05 refusal fails safe).
+    #[test]
+    fn host_is_loopback_table() {
+        assert!(super::host_is_loopback("127.0.0.1"), "IPv4 loopback");
+        assert!(super::host_is_loopback("::1"), "IPv6 loopback");
+        assert!(
+            super::host_is_loopback("127.0.0.5"),
+            "the whole 127/8 block is loopback"
+        );
+        assert!(
+            !super::host_is_loopback("0.0.0.0"),
+            "0.0.0.0 is unspecified (bind-all), NOT loopback"
+        );
+        assert!(
+            !super::host_is_loopback("::"),
+            ":: is unspecified (bind-all), NOT loopback"
+        );
+        assert!(
+            !super::host_is_loopback("example.com"),
+            "a non-IP hostname is conservatively non-loopback"
+        );
+        assert!(
+            !super::host_is_loopback("10.0.0.1"),
+            "a private-range IP is not loopback"
+        );
     }
 }

@@ -58,6 +58,7 @@ fn disarmed_state(pool: &PgPool) -> AppState {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     }
 }
@@ -71,6 +72,7 @@ fn armed_state(pool: &PgPool, token: &str) -> AppState {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: Some(common::armed_control_plane(pool, token)),
     }
 }
@@ -229,6 +231,7 @@ async fn control_merge_keeps_arm_byte_identical() {
         metrics: Metrics::new(),
         signer: signer.clone(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     };
     let armed = AppState {
@@ -237,6 +240,7 @@ async fn control_merge_keeps_arm_byte_identical() {
         metrics: Metrics::new(),
         signer,
         enforce_auth: false,
+        enable_arm_writes: false,
         control: Some(common::armed_control_plane(&pool, TEST_TOKEN)),
     };
     let app_disarmed = build_router(disarmed);
@@ -519,6 +523,7 @@ fn armed_state_with(pool: &PgPool, cp: tenantless_server::job::ControlPlane) -> 
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: Some(cp),
     }
 }

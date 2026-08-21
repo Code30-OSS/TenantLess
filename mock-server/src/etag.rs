@@ -1,8 +1,9 @@
-//! Pure ETag *derivation* for the stateful ARM write plane.
+//! ETag *derivation* + conditional-precondition evaluation for the stateful ARM write plane.
 //!
-//! DERIVATION ONLY. Nothing here is wired into a handler/reader, no `ETag`
-//! HTTP header is emitted, and no `If-Match` comparison exists — emission and
-//! consumption are wired up in later work. This module + its unit/KAT tests stand alone.
+//! The derivation helpers ([`overlay_etag`] / [`baseline_resource_etag`] / [`baseline_rg_etag`])
+//! are pure and standalone (unit/KAT-tested here). As of Phase 23 they ARE wired: the read
+//! handlers emit the `ETag` header from these tokens, and the write handlers consume
+//! `If-Match` / `If-None-Match` through [`evaluate_precondition`] below (D-06/D-07/D-15/D-22).
 //!
 //! # Two ETag domains
 //! * Overlay / resurrected rows → `"o-<decimal-revision>"` — canonical decimal, no
@@ -214,6 +215,236 @@ fn write_opt_json(h: &mut Sha256, v: &Option<Value>) {
 /// Finalize the digest into the strong, quoted `"b-<lowercase-64-hex>"` token.
 fn finish(h: Sha256) -> String {
     format!("\"b-{}\"", hex::encode(h.finalize()))
+}
+
+/// Outcome of a conditional-write precondition evaluation.
+///
+/// `Proceed` = the request may go on to mutate; `Failed` = the precondition was not
+/// satisfied and the handler must return HTTP `412 PreconditionFailed`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Precond {
+    /// The precondition(s) held — the write may proceed.
+    Proceed,
+    /// A precondition was not satisfied — the handler returns `412`.
+    Failed,
+}
+
+/// Evaluate the `If-Match` / `If-None-Match` optimistic-concurrency preconditions for a
+/// write, per Phase-23 D-07 / D-15 / D-22.
+///
+/// * `if_match` / `if_none_match` are the RAW header values as received (may be
+///   comma-separated lists, may carry surrounding/per-member whitespace, may carry a
+///   weak validator `W/"…"`).
+/// * `current` is the resource's server-derived **STRONG** ETag token (e.g. `"o-42"` /
+///   `"b-<hex>"`), or `None` if the resource has no current live representation
+///   (absent / tombstoned).
+///
+/// Both preconditions are evaluated independently and the result is `Proceed` **only if
+/// both hold** — the `If-None-Match: "*"` case must never early-return past a conflicting
+/// `If-Match` (D-22). Semantics:
+/// * `If-None-Match` FAILS when a `*` member is present and the resource exists, OR when any
+///   **strong** member byte-equals `current`. A weak validator never strong-matches.
+/// * `If-Match` FAILS when the resource is absent (D-15 — `412`, evaluated before existence),
+///   OR when neither a `*` member (which requires the resource to exist) nor any strong
+///   member byte-equals `current`.
+/// * A weak validator (`W/"…"`) can NEVER satisfy the strong comparison ARM uses, for either
+///   header.
+///
+/// The comparison is byte-equality against the tokens produced by [`overlay_etag`] /
+/// [`baseline_resource_etag`] — no re-derivation and no weak→strong normalization.
+pub fn evaluate_precondition(
+    if_match: Option<&str>,
+    if_none_match: Option<&str>,
+    current: Option<&str>,
+) -> Precond {
+    // If-None-Match precondition (passes vacuously when the header is absent).
+    let if_none_match_ok = match if_none_match {
+        None => true,
+        Some(raw) => {
+            let (wildcard, strong) = parse_etag_members(raw);
+            // FAILS when a `*` member is present and the resource exists, OR when any
+            // strong (non-weak) member byte-equals the current strong token.
+            let fails =
+                (wildcard && current.is_some()) || strong.iter().any(|m| Some(*m) == current);
+            !fails
+        }
+    };
+
+    // If-Match precondition (passes vacuously when the header is absent).
+    let if_match_ok = match if_match {
+        None => true,
+        Some(raw) => {
+            let (wildcard, strong) = parse_etag_members(raw);
+            match current {
+                // D-15: an absent resource can never satisfy an If-Match (incl. `*`) → 412,
+                // evaluated before existence handling.
+                None => false,
+                // `*` requires existence (satisfied here); else any strong member must match.
+                Some(cur) => wildcard || strong.contains(&cur),
+            }
+        }
+    };
+
+    if if_none_match_ok && if_match_ok {
+        Precond::Proceed
+    } else {
+        Precond::Failed
+    }
+}
+
+/// Split a raw `If-Match`/`If-None-Match` header value into its members (comma-separated),
+/// trimming surrounding whitespace per member, and classify them. Returns
+/// `(has_wildcard, strong_members)`: a `*` member sets the wildcard flag; a member beginning
+/// with `W/` is a WEAK validator and is dropped (it can never satisfy the strong comparison
+/// ARM uses); every other non-empty member is a strong validator token compared byte-for-byte.
+fn parse_etag_members(raw: &str) -> (bool, Vec<&str>) {
+    let mut wildcard = false;
+    let mut strong = Vec::new();
+    for member in raw.split(',') {
+        let m = member.trim();
+        if m.is_empty() {
+            continue;
+        }
+        if m == "*" {
+            wildcard = true;
+        } else if m.starts_with("W/") {
+            // weak validator — never a strong match; drop it.
+        } else {
+            strong.push(m);
+        }
+    }
+    (wildcard, strong)
+}
+
+#[cfg(test)]
+mod precond {
+    use super::*;
+
+    #[test]
+    fn if_none_match_star_on_existing_fails() {
+        // Create-guard: resource exists → 412.
+        assert_eq!(
+            evaluate_precondition(None, Some("*"), Some("\"o-1\"")),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn if_none_match_star_on_absent_proceeds() {
+        assert_eq!(
+            evaluate_precondition(None, Some("*"), None),
+            Precond::Proceed
+        );
+    }
+
+    #[test]
+    fn if_match_byte_equal_strong_proceeds() {
+        assert_eq!(
+            evaluate_precondition(Some("\"o-5\""), None, Some("\"o-5\"")),
+            Precond::Proceed
+        );
+    }
+
+    #[test]
+    fn if_match_stale_fails() {
+        assert_eq!(
+            evaluate_precondition(Some("\"o-5\""), None, Some("\"o-6\"")),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn if_match_on_absent_fails_412_not_404_before_existence() {
+        // D-15: If-Match on an absent resource → 412, evaluated BEFORE existence handling
+        // (so a stale/absent-target conditional write is 412, never 404).
+        assert_eq!(
+            evaluate_precondition(Some("\"o-5\""), None, None),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn if_match_star_requires_existence() {
+        assert_eq!(
+            evaluate_precondition(Some("*"), None, Some("\"o-1\"")),
+            Precond::Proceed
+        );
+        assert_eq!(
+            evaluate_precondition(Some("*"), None, None),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn no_headers_proceeds_unconditional() {
+        assert_eq!(
+            evaluate_precondition(None, None, Some("\"o-1\"")),
+            Precond::Proceed
+        );
+        assert_eq!(evaluate_precondition(None, None, None), Precond::Proceed);
+    }
+
+    #[test]
+    fn if_match_comma_list_matches_any_strong_member() {
+        // D-22: any strong member matching current → proceed.
+        assert_eq!(
+            evaluate_precondition(Some("\"o-4\", \"o-5\""), None, Some("\"o-5\"")),
+            Precond::Proceed
+        );
+        // None of the list members match → 412.
+        assert_eq!(
+            evaluate_precondition(Some("\"o-4\", \"o-5\""), None, Some("\"o-9\"")),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn if_match_surrounding_and_per_member_whitespace_tolerated() {
+        // D-22: surrounding whitespace on a single value…
+        assert_eq!(
+            evaluate_precondition(Some("  \"o-5\"  "), None, Some("\"o-5\"")),
+            Precond::Proceed
+        );
+        // …and per-member whitespace inside a list.
+        assert_eq!(
+            evaluate_precondition(Some("  \"o-4\" ,  \"o-5\" "), None, Some("\"o-5\"")),
+            Precond::Proceed
+        );
+    }
+
+    #[test]
+    fn weak_validator_never_satisfies_if_match() {
+        // D-22: a weak validator W/"…" NEVER satisfies the strong comparison → 412.
+        assert_eq!(
+            evaluate_precondition(Some("W/\"o-5\""), None, Some("\"o-5\"")),
+            Precond::Failed
+        );
+    }
+
+    #[test]
+    fn weak_validator_in_if_none_match_does_not_trip_guard() {
+        // D-22: a weak tag does not strong-match, so the create/overwrite guard does NOT trip.
+        assert_eq!(
+            evaluate_precondition(None, Some("W/\"o-5\""), Some("\"o-5\"")),
+            Precond::Proceed
+        );
+    }
+
+    #[test]
+    fn both_headers_are_each_honored_no_masking() {
+        // D-22: If-None-Match:"*" must NOT mask a conflicting If-Match — the If-Match
+        // mismatch is still honored (both resolve to Failed here; the point is the
+        // If-None-Match early-return cannot skip the If-Match check).
+        assert_eq!(
+            evaluate_precondition(Some("\"o-5\""), Some("*"), Some("\"o-9\"")),
+            Precond::Failed
+        );
+        // Both preconditions pass together → Proceed.
+        assert_eq!(
+            evaluate_precondition(Some("\"o-5\""), Some("\"o-1\""), Some("\"o-5\"")),
+            Precond::Proceed
+        );
+    }
 }
 
 #[cfg(test)]

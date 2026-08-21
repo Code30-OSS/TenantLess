@@ -53,6 +53,18 @@ pub enum ApiError {
     /// server-side timeout is NOT malformed client input, so it is a 504, never a 400.
     /// (The cost endpoint keeps its own "query too expensive" 400 via its app deadline.)
     GatewayTimeout,
+    /// 412 PreconditionFailed — a conditional write (`If-Match` / `If-None-Match: "*"`)
+    /// did not hold against the resource's current resolved ETag (D-07/D-15). An
+    /// `If-Match` on an absent resource also lands here (evaluated before existence, D-15).
+    /// Optimistic-concurrency signal, NOT malformed input, so it is a 412 (never a 400/404).
+    PreconditionFailed,
+    /// 405 MethodNotAllowed — the requested write method is not served on this route:
+    /// the ARM write plane is disabled (`--enable-arm-writes` absent, D-10) or the route
+    /// is intentionally read-only (e.g. resource-group write paths = Phase 24, D-13/D-18).
+    /// Carries an `Allow` header naming the actually-enabled methods — a server-controlled
+    /// static string, never derived from request input (T-23-06). Distinct from a 400: the
+    /// body is not malformed, the method is simply not offered here.
+    MethodNotAllowed { allow: String },
     /// 500 InternalServerError — generic; wrapped detail is logged, never serialized.
     Internal(String),
 }
@@ -89,6 +101,15 @@ impl ApiError {
     pub fn busy() -> ApiError {
         ApiError::Busy
     }
+
+    /// 405 MethodNotAllowed carrying an `Allow` header — the ergonomic constructor write
+    /// handlers use to short-circuit a disabled/read-only write (D-10/D-13/D-18). The
+    /// `allow` string is server-controlled (e.g. `"GET, HEAD"`), never client-derived.
+    pub fn method_not_allowed(allow: &str) -> ApiError {
+        ApiError::MethodNotAllowed {
+            allow: allow.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -96,6 +117,12 @@ impl IntoResponse for ApiError {
         // Load-shed 503s carry `Retry-After: 1` (the client should retry shortly, not
         // give up). Captured before the match moves `self`.
         let retry_after = matches!(self, ApiError::ServiceUnavailable);
+        // The 405 carries an `Allow` header naming the enabled methods. Captured (cloned)
+        // before the match moves `self`, mirroring the `Retry-After` idiom above.
+        let allow_header = match &self {
+            ApiError::MethodNotAllowed { allow } => Some(allow.clone()),
+            _ => None,
+        };
         let (status, code, message): (StatusCode, &str, String) = match self {
             ApiError::NotFound { what } => (
                 StatusCode::NOT_FOUND,
@@ -145,6 +172,16 @@ impl IntoResponse for ApiError {
                 "GatewayTimeout",
                 "The request exceeded the server execution deadline.".to_string(),
             ),
+            ApiError::PreconditionFailed => (
+                StatusCode::PRECONDITION_FAILED,
+                "PreconditionFailed",
+                "The conditional request precondition (If-Match/If-None-Match) failed.".to_string(),
+            ),
+            ApiError::MethodNotAllowed { .. } => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "MethodNotAllowed",
+                "The requested method is not allowed on this resource.".to_string(),
+            ),
             ApiError::Internal(detail) => {
                 // Log the real cause server-side; NEVER put it in the response body.
                 tracing::error!(error = %detail, "internal server error");
@@ -165,6 +202,13 @@ impl IntoResponse for ApiError {
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static("1"),
             );
+        }
+        if let Some(allow) = allow_header
+            && let Ok(value) = axum::http::HeaderValue::from_str(&allow)
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::ALLOW, value);
         }
         response
     }
@@ -230,5 +274,55 @@ mod tests {
             matches!(err, ApiError::Internal(_)),
             "an unmapped sqlx error must stay Internal(500), got {err:?}"
         );
+    }
+
+    /// Read the rendered response body as JSON so a test can assert the ARM envelope.
+    async fn body_json(resp: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        serde_json::from_slice(&bytes).expect("body is JSON")
+    }
+
+    /// LIFE-09 / D-07: `PreconditionFailed` renders a `412` in the single ARM envelope
+    /// `{"error":{"code":"PreconditionFailed","message":<str>}}` — no new envelope shape.
+    #[tokio::test]
+    async fn precondition_failed_renders_412_envelope() {
+        let resp = ApiError::PreconditionFailed.into_response();
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        let body = body_json(resp).await;
+        assert_eq!(body["error"]["code"], "PreconditionFailed");
+        assert!(
+            body["error"]["message"].is_string(),
+            "message is a string in the ARM envelope"
+        );
+    }
+
+    /// LIFE-09 / D-10: `method_not_allowed(allow)` renders a `405` carrying the exact
+    /// server-controlled `Allow` header, with the ARM envelope code `MethodNotAllowed`.
+    #[tokio::test]
+    async fn method_not_allowed_renders_405_with_allow_header() {
+        let resp = ApiError::method_not_allowed("GET, HEAD").into_response();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            resp.headers()
+                .get(header::ALLOW)
+                .and_then(|v| v.to_str().ok()),
+            Some("GET, HEAD"),
+            "the 405 must advertise the enabled methods via Allow"
+        );
+        let body = body_json(resp).await;
+        assert_eq!(body["error"]["code"], "MethodNotAllowed");
+    }
+
+    /// D-03/D-05: the malformed-content / identity-conflict `400` reuses `BadRequest`
+    /// and renders the SAME single ARM envelope (code `InvalidRequestContent`).
+    #[tokio::test]
+    async fn bad_request_renders_400_arm_envelope() {
+        let resp = ApiError::bad_request("InvalidRequestContent").into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["error"]["code"], "InvalidRequestContent");
+        assert_eq!(body["error"]["message"], "InvalidRequestContent");
     }
 }

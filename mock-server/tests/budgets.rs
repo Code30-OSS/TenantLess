@@ -208,6 +208,7 @@ fn real_app() -> Router {
         metrics: Metrics::new(),
         signer: SharedSigner::new(JwtSigner::ephemeral(&tenant).expect("signer")),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     };
     build_router(state)

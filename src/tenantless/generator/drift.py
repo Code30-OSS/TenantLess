@@ -542,6 +542,7 @@ def mint_appear_leaf(
     rg,
     *,
     seen_ids: set[str] | None = None,
+    seen_lower: set[str] | None = None,
 ) -> resources.Resource:
     """Mint a NEW, unreferenced, seeded synthetic leaf into ``rg`` (D-12).
 
@@ -551,6 +552,17 @@ def mint_appear_leaf(
     data-boundary guard is reapplied on the new string-emitting naming path
     (memory: every new emitting path reapplies the guard + ships a leak test):
     the minted name must not be identifier-shaped; re-mint until it is clean.
+
+    ``seen_lower`` is the CASE-INSENSITIVE collision mirror. ``generate_resource``
+    avoids ``seen_ids`` case-SENSITIVELY (the ``synthetic.resources`` PK is
+    case-sensitive), but an appear leaf lands in ``arm_overlay`` whose identity is
+    the case-INSENSITIVE ``id_lower``. Without this, a canonical candidate
+    (``…/Microsoft.Storage/storageAccounts/foo``) could collide with a
+    differently-cased overlay id — e.g. a user tombstone stored
+    ``…/microsoft.storage/storageaccounts/foo`` — whose ``id_lower`` matches: the
+    D-04 guard would no-op the upsert, yet the phantom leaf would still enter
+    ``result_fingerprint``. So the minted id is ALSO rejected (and, on success,
+    recorded) by its lowercase form.
     """
     for _ in range(8):
         leaf = resources.generate_resource(
@@ -562,10 +574,15 @@ def mint_appear_leaf(
             resource_type_distributions={},  # empty → no real-derived values
             seen_ids=seen_ids,
         )
-        if not _is_identifier_shaped_value(leaf.name):
-            leaf.tags = {}  # appear leaves are unreferenced AND untagged (no real data)
-            return leaf
-    raise RuntimeError("mint_appear_leaf could not produce a privacy-clean name")
+        if _is_identifier_shaped_value(leaf.name):
+            continue  # re-mint: name must not be identifier-shaped (privacy)
+        if seen_lower is not None and leaf.id.lower() in seen_lower:
+            continue  # re-mint: case-insensitive (id_lower) overlay collision
+        leaf.tags = {}  # appear leaves are unreferenced AND untagged (no real data)
+        if seen_lower is not None:
+            seen_lower.add(leaf.id.lower())
+        return leaf
+    raise RuntimeError("mint_appear_leaf could not produce a privacy-clean, unique name")
 
 
 def compute_lifecycle(
@@ -588,6 +605,9 @@ def compute_lifecycle(
     rows = [r for rg in rgs for r in rg.resources]
     if seen_ids is None:
         seen_ids = {r.id for r in rows}
+    # Case-insensitive collision mirror (arm_overlay.id_lower semantics), grown as leaves are
+    # minted so appear ids stay mutually unique case-insensitively too — see mint_appear_leaf.
+    seen_lower = {s.lower() for s in seen_ids}
 
     deltas: list[dict] = []
 
@@ -607,7 +627,7 @@ def compute_lifecycle(
         if not sorted_rgs:
             break
         rg = sorted_rgs[i % len(sorted_rgs)]
-        leaf = mint_appear_leaf(ctx, rg, seen_ids=seen_ids)
+        leaf = mint_appear_leaf(ctx, rg, seen_ids=seen_ids, seen_lower=seen_lower)
         minted.append((rg, leaf))
         deltas.append(
             {"resource_id": leaf.id, "drift_code": CODE_APPEAR, **_appear_delta(leaf)}

@@ -53,6 +53,7 @@ async fn drift_app() -> (
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     });
     (app, container, pool, seed)
@@ -105,6 +106,7 @@ async fn simulator_drift_auth() {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: true,
+        enable_arm_writes: false,
         control: None,
     });
 

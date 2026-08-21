@@ -142,6 +142,17 @@ def _resource_column_value(robj, col: str):
 # The upsert is a STATIC statement — the ONLY spliced identifiers are the static
 # table/column names; id / present / body all bind as %s (body via Jsonb()), so
 # no user value is ever f-string-spliced (project SQL bar).
+#
+# D-04 drift-precedence guard (STATE-03): a user write takes OWNERSHIP of the
+# overlay row — it flips source='user' and is authoritative. Drift is the
+# overlay's OTHER writer and MUST NEVER overwrite or tombstone a user-owned row.
+# The `WHERE synthetic.arm_overlay.source <> 'user'` on the ON CONFLICT DO UPDATE
+# makes drift's upsert a NO-OP when the existing row is source='user' (the row is
+# neither rewritten nor re-revisioned — the BEFORE UPDATE trigger does not fire
+# when the conflict-update WHERE is false), so a source='user' row is a ONE-WAY
+# latch: once user-owned, drift yields. Mental model: hand-editing a resource
+# detaches it from drift simulation. (The symmetric revert-side DELETE guard —
+# `AND source <> 'user'` — lives in revert_drift's recompute below.)
 # --------------------------------------------------------------------------- #
 
 _OVERLAY_UPSERT_SQL = (
@@ -153,7 +164,9 @@ _OVERLAY_UPSERT_SQL = (
     "target_kind = EXCLUDED.target_kind, "
     "source = 'drift', "
     "present = EXCLUDED.present, "
-    "body = EXCLUDED.body"
+    "body = EXCLUDED.body "
+    # D-04: drift never clobbers a user-owned row (one-way ownership latch).
+    "WHERE synthetic.arm_overlay.source <> 'user'"
 )
 
 
@@ -1223,7 +1236,19 @@ def apply_drift(
             # Symmetric churn (vanish a few, add a few), each gated independently.
             disappear_count = d_count if do_disappear else 0
             appear_count = d_count if do_appear else 0
+            # Appear-mint collision set: the resolved-view ids (present resources + present
+            # overlay rows) PLUS every arm_overlay id INCLUDING tombstones. Tombstones are
+            # absent from the resolved view, so without them a deterministic appear could mint
+            # onto a user-owned tombstone id — the D-04 guard would no-op the upsert, yet the
+            # phantom leaf would still enter result_fp via minted_leaves and break the
+            # fingerprint chain (drift-phantom-fingerprint, appear-vs-tombstone). Minting a
+            # genuinely-fresh id keeps result_fp equal to the persisted served state.
             seen = {r.id for r in res_objs}
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM synthetic.arm_overlay WHERE target_kind = 'resource'"
+                )
+                seen |= {row[0] for row in cur.fetchall()}
             life_deltas, minted_leaves = drift.compute_lifecycle(
                 ctx,
                 rgs,
@@ -1253,25 +1278,78 @@ def apply_drift(
                 click.echo(note)
             return
 
+        # D-04 / drift-phantom-fingerprint guard: drift's overlay upsert is a NO-OP on a
+        # source='user' row (the `_OVERLAY_UPSERT_SQL` `WHERE source <> 'user'` latch), so a
+        # drift delta over a user-owned id NEVER persists. `compute_drift` already mutated that
+        # id's in-memory Resource, though — so recording its drift_records or folding its
+        # mutated values into result_fp would describe a change that did not happen, and the
+        # NEXT batch's parent_fp (read from the ACTUAL DB) would not chain. Detect the
+        # user-owned ids among the affected set ONCE, then (a) drop their deltas so no phantom
+        # drift_record is written, and (b) fingerprint their pre-drift (persisted) values.
+        affected_ids = {d["resource_id"] for d in deltas}
+        affected_ids |= {d["resource_id"] for d in life_deltas}
+        user_owned_lower: set = set()
+        if affected_ids:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM synthetic.arm_overlay "
+                    "WHERE source = 'user' AND id_lower = ANY(%s)",
+                    ([a.lower() for a in affected_ids],),
+                )
+                user_owned_lower = {row[0].lower() for row in cur.fetchall()}
+
+        if user_owned_lower:
+            deltas = [d for d in deltas if d["resource_id"].lower() not in user_owned_lower]
+            life_deltas = [
+                d for d in life_deltas if d["resource_id"].lower() not in user_owned_lower
+            ]
+            # Recompute the disappear set from the FILTERED life_deltas so a user-owned row
+            # drift wanted to disappear is NOT dropped from the active-set digest.
+            disappeared_ids = {
+                d["resource_id"]
+                for d in life_deltas
+                if d["field_path"] == "drift_deleted_at"
+            }
+            # The persisted-record count is what the applied echo should report.
+            planned = len(deltas) + len(life_deltas)
+
         # Result fingerprint over the post-mutation ACTIVE state so it CHAINS to the
         # next apply's parent fingerprint. The parent read is the
         # scoped `WHERE drift_deleted_at IS NULL` view, so the result_fp must cover
         # the SAME active-set convention: rows disappeared in THIS batch leave the
         # served/active view and are dropped from the digest (they would otherwise
         # be present here but absent from the next parent read → unchainable). Minted
-        # appear-leaves are active and are appended below.
-        post_rows = [
-            {
-                "id": r.id,
-                "tags": r.tags,
-                "sku": r.sku,
-                "kind": r.kind,
-                "properties": r.properties,
-                "drift_deleted_at": ddel_map.get(r.id),
-            }
-            for r in res_objs
-            if r.id not in disappeared_ids
-        ]
+        # appear-leaves are active and are appended below. A user-owned id contributes its
+        # PRE-drift (parent_rows) values — identical to what parent_fp hashed and to what
+        # actually persisted (drift skipped it) — so the fingerprint chain holds.
+        parent_by_id = {row["id"]: row for row in parent_rows}
+        post_rows = []
+        for r in res_objs:
+            if r.id in disappeared_ids:
+                continue
+            if r.id.lower() in user_owned_lower:
+                src = parent_by_id[r.id]
+                post_rows.append(
+                    {
+                        "id": r.id,
+                        "tags": src["tags"],
+                        "sku": src["sku"],
+                        "kind": src["kind"],
+                        "properties": src["properties"],
+                        "drift_deleted_at": ddel_map.get(r.id),
+                    }
+                )
+            else:
+                post_rows.append(
+                    {
+                        "id": r.id,
+                        "tags": r.tags,
+                        "sku": r.sku,
+                        "kind": r.kind,
+                        "properties": r.properties,
+                        "drift_deleted_at": ddel_map.get(r.id),
+                    }
+                )
         post_rows.extend(
             {
                 "id": leaf.id,
@@ -1744,9 +1822,15 @@ def revert_drift(batch_id_raw, dry_run, database_url):
                 # ON CONFLICT upsert (the sql/009 trigger advances the revision).
                 # A blind delete is NEVER issued — the else-branch always rewrites.
                 if _replay_equals_baseline(present, body, brow):
+                    # D-04: revert's from-baseline recompute NEVER deletes (or
+                    # overwrites — see the _OVERLAY_UPSERT_SQL guard) a user-owned
+                    # row. `AND source <> 'user'` makes this DELETE a no-op when the
+                    # id is source='user', so a user PUT/DELETE survives revert
+                    # untouched (the one-way ownership latch; STATE-03).
                     cur.execute(
                         "DELETE FROM synthetic.arm_overlay "
-                        "WHERE id_lower = lower(%s) AND target_kind = 'resource'",
+                        "WHERE id_lower = lower(%s) AND target_kind = 'resource' "
+                        "AND source <> 'user'",
                         (rid,),
                     )
                     deleted += 1

@@ -159,6 +159,7 @@ async fn tls_dual_bind_serves_identical_arm_json() {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     };
 
@@ -234,6 +235,7 @@ async fn no_tls_binds_http_only() {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     };
 
