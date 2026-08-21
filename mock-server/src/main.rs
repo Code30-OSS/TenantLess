@@ -18,7 +18,11 @@ use tenantless_server::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
+    // Logs go to STDERR (conventional for diagnostics) so the WAUTH-03 startup WARN and any
+    // startup error share one stream the D-26 subprocess test can observe deterministically.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     let cli = Cli::parse();
 
@@ -177,6 +181,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // error via `?` (`From<String> for Box<dyn Error + Send + Sync>`).
     tenantless_server::assert_no_legacy_inplace_drift(&pool).await?;
 
+    // D-12 / WAUTH-03 write-safety gate. Arming ARM writes WITHOUT `--enforce-auth` on a
+    // NON-loopback bind would expose an UNAUTHENTICATED write plane on a public interface —
+    // REFUSE to start unless the operator passes the explicit `--allow-insecure-writes`
+    // local/test override. The decision is the pure `should_refuse_unauth_writes` predicate
+    // (unit-tested by a behavioral matrix, D-23); `main` only composes it here. This guard is
+    // ADDITIVE to the fail-closed boot guard above (D-11: a structurally-bad substrate still
+    // refuses regardless of these flags) — it is checked AFTER the DB preflights/boot-guard and
+    // BEFORE `serve_dual`, so on a bootable tenant it is the write-safety gate that decides the
+    // bind. The `String` error surfaces verbatim as the boxed `main` error via `?` and the
+    // process exits non-zero WITHOUT binding. NEVER log tokens, Authorization headers, or
+    // request bodies (D-12) — the message names only the host and the operator's remedies.
+    if tenantless_server::config::should_refuse_unauth_writes(
+        cli.enable_arm_writes,
+        cli.enforce_auth,
+        &cli.host,
+        cli.allow_insecure_writes,
+    ) {
+        return Err(format!(
+            "{marker} (host={host}). ARM writes are armed but authentication is not enforced \
+             and the bind is not loopback, so the write plane would accept ANY request on a \
+             public interface. Choose one: add --enforce-auth to validate JWTs, bind loopback \
+             (--host 127.0.0.1), or pass --allow-insecure-writes for a knowingly-local/test \
+             deployment. See docs/arm-writes-security.md.",
+            marker = tenantless_server::config::UNAUTH_WRITE_REFUSAL_MARKER,
+            host = cli.host,
+        )
+        .into());
+    }
+
+    // WAUTH-03: a prominent startup WARN whenever writes are enabled without strict auth — both
+    // the loopback-permitted case and the `--allow-insecure-writes` override reach here. The
+    // mode is LOCAL/TEST-ONLY. Credential-safe: names no token, header, or body (D-12).
+    if cli.enable_arm_writes && !cli.enforce_auth {
+        tracing::warn!(
+            "{} — this is a LOCAL/TEST-ONLY posture and MUST NOT be exposed on a public bind. \
+             See docs/arm-writes-security.md.",
+            tenantless_server::config::UNAUTH_WRITE_WARN_MARKER,
+        );
+    }
+
     // The run's signer, wrapped in a HOT-SWAPPABLE shared handle (IAM staleness fix): the
     // control plane rebuilds it after a tenant-mutating job so the served identity tracks the
     // current tenant, not this boot-time one. `AppState` and the `ControlPlane` below hold
@@ -199,6 +243,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         signer,
         // Default OFF — any-Bearer preserved until the auth swap is wired in.
         enforce_auth: cli.enforce_auth,
+        // Default OFF — write methods 405 until explicitly armed (WAUTH-01). The
+        // D-12 non-loopback refusal guard is applied at startup; here the field is just plumbed.
+        enable_arm_writes: cli.enable_arm_writes,
         // `Some` only when armed; `build_router` merges `/_control` iff `Some`.
         control,
     };

@@ -61,6 +61,7 @@ fn seeded_router(pool: PgPool) -> axum::Router {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     })
 }

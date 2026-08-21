@@ -65,6 +65,7 @@ fn ui_state(pool: &PgPool, signer: tenantless_server::jwt::SharedSigner) -> AppS
         metrics: Metrics::new(),
         signer,
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     }
 }

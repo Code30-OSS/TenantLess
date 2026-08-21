@@ -28,6 +28,14 @@ pub struct AppState {
     /// presence-only any-Bearer contract is unchanged until Plan 10-04 wires the
     /// validation swap. Sourced from `--enforce-auth` / `ENFORCE_AUTH`.
     pub enforce_auth: bool,
+    /// Arm the generic ARM write plane (PUT/PATCH/DELETE) — WAUTH-01, D-10/D-11.
+    /// **Default false**: while off, every write method returns `405 MethodNotAllowed`
+    /// with an `Allow` header and the server keeps its read-only posture. Sourced from
+    /// `--enable-arm-writes` / `ENABLE_ARM_WRITES`. This arms the write HANDLERS ONLY —
+    /// it never grants authorization, bypasses auth, or bypasses the boot guard (D-11).
+    /// The startup guard reads this alongside `enforce_auth` for the D-12
+    /// non-loopback refusal; the write handlers short-circuit on it.
+    pub enable_arm_writes: bool,
     /// The armed control-plane bundle (Phase 17, D-02). `Some` **iff** the server was
     /// started with `--enable-control-plane` AND a non-empty control token; `None` (the
     /// default) keeps the read-only posture and leaves `/_control/*` unmerged (404).

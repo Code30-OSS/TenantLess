@@ -12,6 +12,7 @@ pub mod console;
 pub mod control;
 pub mod error;
 pub mod etag;
+pub mod expose_headers;
 pub mod filter;
 pub mod handlers;
 pub mod job;
@@ -22,6 +23,7 @@ pub mod sim;
 pub mod snapshot;
 pub mod state;
 pub mod ui;
+pub mod write_merge;
 
 use axum::{
     Router,
@@ -151,7 +153,13 @@ pub fn build_router_without_sim(state: AppState) -> Router {
         // now (no RG write path / overlay writer yet).
         .route(
             "/subscriptions/{sub}/resourceGroups/{rg}",
-            get(handlers::get_resource_group_detail),
+            // READ-ONLY: GET returns the RG detail. D-13/D-18: write methods return the
+            // EXPLICIT ARM 405 envelope + `Allow: GET, HEAD` (never axum's implicit 405) even
+            // when `--enable-arm-writes` is ON — resource-group CRUD is Phase 24.
+            get(handlers::get_resource_group_detail)
+                .put(handlers::rg_write_method_not_allowed)
+                .patch(handlers::rg_write_method_not_allowed)
+                .delete(handlers::rg_write_method_not_allowed),
         )
         .route(
             "/subscriptions/{sub}/resources",
@@ -209,10 +217,26 @@ pub fn build_router_without_sim(state: AppState) -> Router {
         // method-merge (POST+GET on ONE path is the standard axum merge — no
         // static-vs-catch-all panic). `cost_query_scoped` 404s any tail other than
         // `Microsoft.CostManagement/query`.
+        // Generic ARM write plane (PUT/PATCH/DELETE) method-merged onto the SAME catch-all as
+        // the detail GET + RG-scoped cost POST — one path, no static-vs-wildcard overlap. The
+        // handlers are registered ALWAYS (not conditionally on the flag) so a disabled write
+        // returns the controlled ARM 405 + `Allow` header (D-10) instead of axum's implicit
+        // 405; they sit INSIDE the bearer layer below so authn precedes any body (WAUTH-02/D-11).
         .route(
             "/subscriptions/{sub}/resourceGroups/{rg}/providers/{*tail}",
-            get(handlers::get_resource_detail).post(handlers::cost_query_scoped),
+            get(handlers::get_resource_detail)
+                .post(handlers::cost_query_scoped)
+                .put(handlers::put_resource)
+                .patch(handlers::patch_resource)
+                .delete(handlers::delete_resource),
         )
+        // D-25: append `Access-Control-Expose-Headers: ETag` to any arm response carrying an
+        // ETag (detail GET/HEAD, PUT/PATCH mutation, DELETE 204) so a browser can read the
+        // validator. Innermost of the three layers so it observes the handler's ETag directly;
+        // no state, no new dependency, no CORS-origin policy.
+        .layer(axum::middleware::from_fn(
+            expose_headers::expose_etag_header,
+        ))
         .layer(from_fn_with_state(state.clone(), auth::bearer_auth))
         .layer(from_fn_with_state(state.clone(), metrics::record_metrics))
         .with_state(state.clone());

@@ -9,6 +9,45 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.5.0 — Generic ARM writes (off by default)
+
+Minor release. Adds a generic, service-model-independent ARM write plane — `PUT` / `PATCH` /
+`DELETE` on any resource id — on top of the overlay substrate. No breaking changes: the write
+methods are gated behind `--enable-arm-writes` and stay **off by default**, so with writes
+disabled every response shape, header, CLI flag, and the profile schema are unchanged and ARM
+reads remain byte-identical to 1.4.0. Writes are synchronous (the terminal status is returned
+inline, never a long-running-operation poll).
+
+### Added
+
+- **Synchronous generic write plane (opt-in).** With `--enable-arm-writes`, `PUT` creates or
+  full-replaces a resource, `PATCH` applies a two-level merge over the current body, and
+  `DELETE` tombstones it — for any resource type, including deeply nested and uncatalogued
+  ("opaque") ones, whose extra top-level keys survive a create → read round-trip verbatim.
+  Every accepted write is a copy-on-write overlay snapshot; the baseline stays immutable.
+- **Conditional writes with `If-Match` / `If-None-Match`.** Reads emit a strong `ETag`, and
+  writes honour it: a stale `If-Match` is a `412`, `If-None-Match: *` guards creation, and the
+  read → check → write is serialized so concurrent conditional writers cannot lose an update.
+- **Atomic containment cascade on `DELETE`.** Deleting a parent tombstones every strict nested
+  descendant in one transaction (by parsed id segments, so `servers/s1` never sweeps
+  `servers/s10`); the descendant set is gathered inside the same transaction as the writes.
+- **Write-safety perimeter.** Writes are off by default; when enabled, the server refuses to
+  start on a non-loopback host without authentication unless an explicit
+  `--allow-insecure-writes` override is passed, and never grants authorization on its own.
+
+### Changed
+
+- **A user write takes ownership of a resource.** A row written through the ARM plane is
+  latched to the user: configuration drift (`apply-drift` / `revert-drift`) no longer
+  overwrites, tombstones, or re-mints onto it, so hand-edited resources detach cleanly from
+  drift simulation and the drift fingerprint chain stays consistent across the co-existence.
+
+### Verified
+
+- The full write lifecycle (create, replace, merge, conditional writes, nested cascade delete,
+  opaque round-trip, case-insensitive routing) plus the off-by-default gating and the
+  non-loopback startup refusal, validated end-to-end against ephemeral PostgreSQL 16.
+
 ## 1.4.0 — The stateful ARM overlay goes live
 
 Minor release. Turns on the persistent write-plane substrate that 1.3.0 landed dormant: every

@@ -88,6 +88,7 @@ async fn harness_seeds_known_fixture() {
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     });
 }
@@ -105,6 +106,7 @@ async fn seeded_app() -> (
         metrics: Metrics::new(),
         signer: common::test_signer(),
         enforce_auth: false,
+        enable_arm_writes: false,
         control: None,
     });
     (app, container)
@@ -1388,6 +1390,7 @@ mod cost {
             metrics: Metrics::new(),
             signer: common::test_signer(),
             enforce_auth: false,
+            enable_arm_writes: false,
             control: None,
         });
         (app, container, pool, seed)
@@ -1920,6 +1923,7 @@ mod cost {
             metrics: Metrics::new(),
             signer: common::test_signer(),
             enforce_auth: false,
+            enable_arm_writes: false,
             control: None,
         });
 
@@ -2185,6 +2189,7 @@ mod identity {
             metrics: Metrics::new(),
             signer: common::test_signer(),
             enforce_auth: false,
+            enable_arm_writes: false,
             control: None,
         });
         (app, container, pool, seed)
@@ -2760,6 +2765,7 @@ mod identity {
             metrics: Metrics::new(),
             signer: common::test_signer(),
             enforce_auth: true, // enforce ON — token + JWKS must STILL be reachable.
+            enable_arm_writes: false,
             control: None,
         });
 
@@ -2827,6 +2833,7 @@ mod identity {
             metrics: Metrics::new(),
             signer: signer.clone(),
             enforce_auth: true,
+            enable_arm_writes: false,
             control: None,
         });
         // The app holds the shared handle (clone above); this test mints/inspects tokens
@@ -2970,6 +2977,7 @@ mod identity {
             metrics: Metrics::new(),
             signer: common::test_signer(),
             enforce_auth: false,
+            enable_arm_writes: false,
             control: None,
         });
         let (status, body) = common::request(
