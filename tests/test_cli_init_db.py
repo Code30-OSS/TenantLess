@@ -38,9 +38,10 @@ def test_init_db_help_documents_database_url():
 
 
 def test_init_db_applies_full_chain_in_order(monkeypatch):
-    """A DB-free init-db invocation calls the eight ensure_* seams IN ORDER:
+    """A DB-free init-db invocation calls the nine ensure_* seams IN ORDER:
     base -> cost -> identity -> drift -> web_metadata -> rg_index -> arm_overlay ->
-    arm_resolver (sql/001..010)."""
+    arm_id_key -> arm_resolver (sql/001..011). The identity fold functions (011) are
+    applied BEFORE the resolver (010) — the boot-safety ordering."""
     calls: list[str] = []
 
     class _FakeConn:
@@ -82,6 +83,15 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
     )
     monkeypatch.setattr(
         writer_mod,
+        "ensure_arm_id_key_schema",
+        lambda conn: (calls.append("arm_id_key"), True)[1],
+    )
+    # The D-04 audit runs after the chain; stub it (its own proofs live in
+    # tests/test_arm_id_audit.py) so this order assertion stays focused on the seams.
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
+    monkeypatch.setattr(
+        writer_mod,
         "ensure_arm_resolver_schema",
         lambda conn: (calls.append("arm_resolver"), True)[1],
     )
@@ -97,8 +107,9 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "web_metadata",
         "rg_index",
         "arm_overlay",
+        "arm_id_key",
         "arm_resolver",
-    ], f"init-db must apply 001..010 in order; got {calls}"
+    ], f"init-db must apply 001..011 in order (011 before 010); got {calls}"
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +188,7 @@ def test_init_db_rolls_back_on_apply_failure(monkeypatch):
     assert "004" in combined, f"the failing migration must be named: {combined!r}"
     assert spies["rollback"] == 1, "a mid-apply failure must roll back"
     assert spies["commit"] == 0, "no commit may happen on a mid-apply failure"
-    assert "Applied migrations 001..010" not in combined, (
+    assert "Applied migrations 001..011" not in combined, (
         "no false-success line on a rolled-back apply"
     )
 
@@ -194,9 +205,12 @@ def test_init_db_all_present_commits(monkeypatch):
         "ensure_web_metadata_schema",
         "ensure_rg_index_schema",
         "ensure_arm_overlay_schema",
+        "ensure_arm_id_key_schema",
         "ensure_arm_resolver_schema",
     ):
         monkeypatch.setattr(writer_mod, fn, lambda conn: True)
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -209,4 +223,4 @@ def test_init_db_all_present_commits(monkeypatch):
     out = result.output or ""
     assert "example-host" in out, "host-only status line must name the host"
     assert "secretpw" not in out, "password must never be echoed (T-07-02)"
-    assert "Applied migrations 001..010" in out
+    assert "Applied migrations 001..011" in out

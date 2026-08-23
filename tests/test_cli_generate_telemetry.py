@@ -68,6 +68,12 @@ def mocked_writer(monkeypatch):
     # seam so it stays DB-free on the _FakeConn (mirrors the identity/cost stubs above).
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
+    # Phase 24 (this additive unit): generate now provisions the additive ARM-ID fold functions
+    # (sql/011) and runs the D-04 fail-loud identity audit in the prov seam — stub both
+    # so this fixture stays DB-free on the _FakeConn (mirrors the rg_index stub above).
+    monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
 
 def _run_generate(extra=None):
@@ -179,6 +185,9 @@ def test_no_identity_still_provisions_identity_schema(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_cost_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
     monkeypatch.setattr(
         writer_mod,
         "ensure_identity_schema",
@@ -245,6 +254,13 @@ def test_generate_ensures_base_schema_first(monkeypatch):
         "ensure_rg_index_schema",
         lambda conn: (calls.append("rg_index"), True)[1],
     )
+    monkeypatch.setattr(
+        writer_mod,
+        "ensure_arm_id_key_schema",
+        lambda conn: (calls.append("arm_id_key"), True)[1],
+    )
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
     result = _run_generate()
     assert result.exit_code == 0, result.output + (result.stderr or "")
