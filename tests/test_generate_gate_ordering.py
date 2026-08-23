@@ -60,6 +60,8 @@ def db_free_writer(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_identity_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_web_metadata_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
 
 
 def _spy_generate(monkeypatch):

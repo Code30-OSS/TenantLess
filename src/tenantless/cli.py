@@ -787,6 +787,11 @@ def generate(
             # build + the D-04 fold audit. Behaviour-neutral in this unit: no seam,
             # CHECK, view, or predicate consumes them yet (D-22a additive-only).
             writer.ensure_arm_id_key_schema(prov_conn)
+            # D-04 fail-loud pre-cutover audit — run right after the fold functions are
+            # provisioned. On the current all-ASCII estate all three checks return 0
+            # rows (behaviour-neutral); a non-ASCII divergence or fold-collision RAISES,
+            # naming the offending ARM ids, and open_writer rolls the provisioning back.
+            writer.audit_arm_id_identity(prov_conn)
 
         # Emptiness / destructive-confirm gate (gate-before-generate preserved) in
         # its OWN short transaction, under the session lock. --only-if-empty inspects
@@ -1964,6 +1969,12 @@ def init_db(database_url):
                     "unavailable during apply (bundled sql/ missing). Nothing was "
                     "committed; the database is unchanged."
                 )
+        # D-04 fail-loud pre-cutover ARM-ID identity audit — after the full chain
+        # (base + overlay + fold functions) is applied so both synthetic.resources and
+        # synthetic.arm_overlay exist. On the current all-ASCII estate all checks return
+        # 0 rows (behaviour-neutral); any divergence / fold-collision RAISES (naming the
+        # offending ARM ids) INSIDE the with, so open_writer rolls the whole apply back.
+        writer.audit_arm_id_identity(conn)
 
     # Status line: prints ONLY after a clean commit. Never echo the full
     # database_url — host only.

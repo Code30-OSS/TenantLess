@@ -175,6 +175,7 @@ def test_init_db_success_prints_host_only(fake_open_writer):
     monkeypatch.setattr(writer_mod, "ensure_arm_overlay_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_resolver_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
 
     runner = CliRunner()
     result = runner.invoke(

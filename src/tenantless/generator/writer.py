@@ -434,6 +434,100 @@ def ensure_arm_id_key_schema(conn: psycopg.Connection) -> bool:
     return True
 
 
+class ArmIdIdentityAuditError(click.ClickException):
+    """Raised when the pre-cutover ARM-ID identity audit (D-04) finds divergence/collision.
+
+    Subclasses :class:`click.ClickException` so an UNCAUGHT raise is formatted cleanly
+    (non-zero exit, no traceback) by BOTH callers — ``generate`` and ``init-db`` — with
+    zero per-caller handling, exactly like :class:`PartialBaseSchemaError`. ``open_writer``
+    already rolls back on any exception, so a tripped audit leaves the DB untouched and NO
+    identity is silently changed / merged.
+
+    The message NAMES the offending ARM ids ONLY — never tags / properties / bodies /
+    tokens (T-24ai-04) — honouring the project no-request-body logging rule.
+    """
+
+
+def audit_arm_id_identity(conn: psycopg.Connection) -> None:
+    """Fail-loud pre-cutover ARM-ID identity audit (D-04) — a PRODUCTION migration helper.
+
+    Runs THREE read-only checks against live PG (requires ``synthetic.arm_id_key`` to
+    exist — call AFTER :func:`ensure_arm_id_key_schema`):
+
+    1. **Baseline divergence** — any ``synthetic.resources`` id whose legacy ``lower(id)``
+       differs from the new ``synthetic.arm_id_key(id)`` (a non-ASCII id that a
+       locale-aware ``lower()`` would fold differently than the ASCII-only key).
+    2. **Overlay divergence** — the same check on the ``synthetic.arm_overlay`` stored
+       ``id_lower`` derivation (skipped when the overlay table is absent, e.g. a bare
+       ``generate`` provisioning path that never provisions the overlay).
+    3. **Fold collision** — two DISTINCT baseline ids that fold to the SAME
+       ``arm_id_key`` (a case-only duplicate the identity contract would silently merge).
+
+    Each check must return 0 rows; ANY hit raises :class:`ArmIdIdentityAuditError`
+    naming the offending ARM ids ONLY (bounded to the first 50 per check; never emits
+    tag / property / body / token values — T-24ai-04). This is the gate 00a-ii MUST pass
+    BEFORE it converts the ``arm_overlay`` CHECK, drops the retained ``lower()`` indexes,
+    or cuts over any predicate. It is ADDITIVE + behaviour-neutral on the current
+    all-ASCII estate (it only trips on real divergence / collision) and changes NO
+    identity itself. All values bind as ``%s``; relation/column names are static.
+    """
+    _CAP = 50
+    problems: list[str] = []
+    with conn.cursor() as cur:
+        # (1) baseline resources: lower(id) <> arm_id_key(id)
+        cur.execute(
+            "SELECT id FROM synthetic.resources "
+            "WHERE lower(id) <> synthetic.arm_id_key(id) "
+            "ORDER BY id LIMIT %s",
+            (_CAP,),
+        )
+        div = [r[0] for r in cur.fetchall()]
+        if div:
+            problems.append(
+                f"{len(div)} baseline id(s) whose lower(id) <> arm_id_key(id): "
+                + ", ".join(div)
+            )
+
+        # (2) overlay stored id_lower derivation — only if the overlay table exists.
+        cur.execute("SELECT to_regclass('synthetic.arm_overlay')")
+        if cur.fetchone()[0] is not None:
+            cur.execute(
+                "SELECT id FROM synthetic.arm_overlay "
+                "WHERE id_lower <> synthetic.arm_id_key(id) "
+                "ORDER BY id LIMIT %s",
+                (_CAP,),
+            )
+            odiv = [r[0] for r in cur.fetchall()]
+            if odiv:
+                problems.append(
+                    f"{len(odiv)} overlay id(s) whose id_lower <> arm_id_key(id): "
+                    + ", ".join(odiv)
+                )
+
+        # (3) fold collision: two DISTINCT baseline ids folding to one key.
+        cur.execute(
+            "SELECT array_agg(id ORDER BY id) FROM synthetic.resources "
+            "GROUP BY synthetic.arm_id_key(id) HAVING count(DISTINCT id) > 1 "
+            "ORDER BY 1 LIMIT %s",
+            (_CAP,),
+        )
+        collisions = ["{" + ", ".join(row[0]) + "}" for row in cur.fetchall()]
+        if collisions:
+            problems.append(
+                f"{len(collisions)} fold-collision group(s) (distinct ids sharing one "
+                "arm_id_key): " + "; ".join(collisions)
+            )
+
+    if problems:
+        raise ArmIdIdentityAuditError(
+            "ARM-ID identity audit FAILED before cutover — refusing to change identity "
+            "or merge collisions (D-04). Offending ARM ids: "
+            + " | ".join(problems)
+            + ". Resolve the divergence/collision (rename the non-ASCII id, or de-dup the "
+            "case-only collision) before migrating identity to arm_id_key."
+        )
+
+
 def ensure_arm_resolver_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/010_arm_resolver.sql`` migration — the resolver
     substrate (``synthetic.drift_batches.storage_mode`` provenance column + the two per-kind
