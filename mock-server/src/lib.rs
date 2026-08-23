@@ -413,7 +413,7 @@ pub async fn ensure_arm_overlay_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::
 /// consumes the functions — `sql/010` still references `lower(...)` and is UNCHANGED. It runs
 /// at boot AFTER [`ensure_arm_overlay_schema`] (sql/009) and BEFORE [`ensure_arm_resolver_schema`]
 /// (sql/010) purely so the functions EXIST before any future sql/010 that references
-/// `arm_id_key` (00a-ii) is applied against an upgraded volume — the boot-safety guarantee.
+/// `arm_id_key` (the later predicate cutover) is applied against an upgraded volume — the boot-safety guarantee.
 /// No `011 -> audit -> 012 -> 010` cutover ordering is wired here.
 ///
 /// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),

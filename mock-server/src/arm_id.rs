@@ -22,11 +22,11 @@
 //! versions. This is pure identity: NO structural parsing / validation (segment
 //! parsing lives in `write_merge::parse_segments`).
 //!
-//! BOUNDARY (00a-i is additive, behaviour-neutral, D-22a): this module is DEFINED
+//! BOUNDARY (this unit is additive, behaviour-neutral, D-22a): this module is DEFINED
 //! but consumed by NO handler yet. The five stateful seams migrate onto it in
-//! 00a-ii. The in-memory [`audit_fold`] helper below is likewise AVAILABLE but not
+//! a later cutover step. The in-memory [`audit_fold`] helper below is likewise AVAILABLE but not
 //! wired into any boot path — the fail-loud pre-cutover migration audit that gates
-//! 00a-ii is the DB-backed Python helper (`writer.audit_arm_id_identity`).
+//! the later cutover is the DB-backed Python helper (`writer.audit_arm_id_identity`).
 
 /// Fold ASCII `A-Z` to `a-z`; leave every other byte unchanged (D-01/D-28).
 ///
@@ -81,7 +81,7 @@ impl ArmId {
 /// This is a pure helper (std-only, no DB): it mirrors the collision half of the
 /// D-04 audit so a caller (e.g. a future conformance check) can assert non-merging
 /// without a database round trip. It is NOT invoked by any boot / handler path in
-/// this unit — the production fail-loud migration audit that gates the 00a-ii
+/// this unit — the production fail-loud migration audit that gates the later
 /// cutover is `writer.audit_arm_id_identity` against live PG.
 pub fn audit_fold<I, S>(ids: I) -> Vec<(String, Vec<String>)>
 where

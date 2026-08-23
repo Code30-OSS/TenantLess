@@ -155,7 +155,7 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "008_rg_lower_index.sql"),
         resource_path("sql", "009_arm_overlay.sql"),
         # 011 (the identity fold functions) is applied BEFORE 010 so the functions
-        # exist before any future sql/010 that references arm_id_key (00a-ii) — the
+        # exist before any future sql/010 that references arm_id_key (the later cutover) — the
         # boot-safety ordering that mirrors the Rust boot preflight.
         resource_path("sql", "011_arm_id_key.sql"),
         resource_path("sql", "010_arm_resolver.sql"),
@@ -421,7 +421,7 @@ def ensure_arm_id_key_schema(conn: psycopg.Connection) -> bool:
     CHECK, builds NO index, edits NO view, and cuts over NO predicate. In THIS unit NOTHING
     consumes the functions (``sql/010`` still references ``lower(...)`` and is UNCHANGED); it is
     applied BEFORE ``ensure_arm_resolver_schema`` (010) only so the functions EXIST before any
-    future 010 that references ``arm_id_key`` (00a-ii) — the boot-safety ordering.
+    future 010 that references ``arm_id_key`` (the later predicate cutover) — the boot-safety ordering.
 
     The statement text is a STATIC project file, never user/profile input — no injection
     surface. Returns True if applied, False if the file was not found (installed package with
@@ -465,7 +465,7 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
 
     Each check must return 0 rows; ANY hit raises :class:`ArmIdIdentityAuditError`
     naming the offending ARM ids ONLY (bounded to the first 50 per check; never emits
-    tag / property / body / token values — T-24ai-04). This is the gate 00a-ii MUST pass
+    tag / property / body / token values — T-24ai-04). This is the gate the later cutover MUST pass
     BEFORE it converts the ``arm_overlay`` CHECK, drops the retained ``lower()`` indexes,
     or cuts over any predicate. It is ADDITIVE + behaviour-neutral on the current
     all-ASCII estate (it only trips on real divergence / collision) and changes NO
@@ -647,11 +647,11 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
     path nor the init-db/generate writer transaction):
 
     * ``idx_res_arm_id_key`` ON ``synthetic.resources (synthetic.arm_id_key(id))`` — the
-      identity index the 00a-ii predicate cutover will hit (single-column, mirroring
+      identity index the later predicate cutover will hit (single-column, mirroring
       sql/003's single-column ``lower(id)`` identity index);
     * ``idx_res_rg_ascii_fold`` ON
       ``synthetic.resources (subscription_id, synthetic.ascii_fold(resource_group_name), id)``
-      — the fold-backed RG-name index (D-28) the 00a-ii RG-predicate cutover will use. It
+      — the fold-backed RG-name index (D-28) the later RG-predicate cutover will use. It
       MIRRORS the RETAINED sql/008 ``idx_res_rg_lower``
       ``(subscription_id, lower(resource_group_name), id)`` shape EXACTLY so the cutover
       keeps the same scoped (``subscription_id`` prefix) + keyset-pagination (trailing
@@ -659,10 +659,10 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
 
     ADDITIVE (D-22a): both are created ALONGSIDE the RETAINED ``idx_res_lower_id`` (sql/003)
     and ``idx_res_rg_lower`` (sql/008) ``lower()`` indexes — this unit drops NOTHING and cuts
-    over NO predicate; the old-index drops + predicate cutover are deferred to 00a-ii after
+    over NO predicate; the old-index drops + predicate cutover are deferred to a later step after
     the D-04 audit passes.
 
-    Deadlock-safe (Pitfall 1, project memory ``server-startup-alter-lock-deadlock``):
+    Deadlock-safe (the known server-boot ALTER-lock deadlock hazard):
     ``CONCURRENTLY`` takes only ``SHARE UPDATE EXCLUSIVE`` (never the ACCESS EXCLUSIVE that
     a plain ``CREATE INDEX`` on the populated ~520K-row heap would take at boot), a bounded
     session ``lock_timeout`` caps the brief locks it still needs, and a SESSION advisory lock
@@ -966,7 +966,7 @@ def _dropped_secondary_indexes(
     ``table`` as a ``%s::regclass`` parameter; the DROP/CREATE then replay trusted
     catalog strings (an identifier/DDL cannot be a bound ``$N`` literal), so this
     introduces NO profile-derived SQL and NO injection surface — the COPY column
-    contract below is untouched (project memory "mock-server SQL injection bar").
+    contract below is untouched (matching the established mock-server SQL-injection safety bar).
 
     Unique / primary-key indexes are NEVER dropped: the PK index backs the
     ``fk_violations_resource`` / ``fk_cost_resource`` foreign keys and the id
@@ -1136,8 +1136,8 @@ def copy_violations(
 
     ``None``/empty is a clean no-op (matches :func:`copy_dependencies`). The
     column literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     rows = list(rows or [])
     if not rows:
@@ -1181,8 +1181,8 @@ def copy_cost_records(
 
     ``None``/empty is a clean no-op (matches :func:`copy_violations`). The column
     literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     # iterate the source rows DIRECTLY — GenerationResult.cost_records
     # is a frozen tuple, and materializing it into a fresh list here re-copied (at
@@ -1230,8 +1230,8 @@ def copy_principals(
 
     ``None``/empty is a clean no-op (matches :func:`copy_cost_records`). The column
     literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     rows = list(rows or [])
     if not rows:

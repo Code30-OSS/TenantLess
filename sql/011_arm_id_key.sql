@@ -2,7 +2,7 @@
 --
 -- Defines the two-layer fold primitive (D-01/D-02/D-28) as schema-qualified,
 -- IMMUTABLE STRICT SQL functions so they are usable in expression indexes and
--- match the query expressions the seam cutover (00a-ii) will bind:
+-- match the query expressions the later seam cutover will bind:
 --   * synthetic.ascii_fold(text)  — the low-level primitive: ASCII A-Z -> a-z and
 --                                    NOTHING else (non-ASCII, slashes, percent-
 --                                    encoding all pass through unchanged);
@@ -12,7 +12,7 @@
 -- The fold uses translate($1, 'A..Z', 'a..z') — DELIBERATELY NOT lower(): locale
 -- lower() diverges on Turkish dotted-I / sharp-s / across Unicode versions, exactly
 -- the cross-engine drift INV-01 eliminates. The 52-character literal is static so
--- 00a-ii's expression index / predicates can match one canonical symbol. These are
+-- the later cutover's expression index / predicates can match one canonical symbol. These are
 -- byte-identical to Rust ArmId (to_ascii_lowercase) + Python identity.py
 -- (str.translate), pinned by tests/kat/arm_id_kat.json.
 --
@@ -20,7 +20,7 @@
 -- It changes NO CHECK constraint, creates NO index, edits NO view, and cuts over NO
 -- predicate. Nothing in the running system consumes these functions yet — the five
 -- stateful seams, the arm_overlay CHECK, the sql/010 joins, and the RG-name
--- predicates are migrated atomically in 00a-ii.
+-- predicates are migrated atomically in a later step.
 --
 -- Idempotency: the whole file is safe to run on every boot / init-db — CREATE OR
 -- REPLACE FUNCTION is a no-op-equivalent re-definition on an already-migrated

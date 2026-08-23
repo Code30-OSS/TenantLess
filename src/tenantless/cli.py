@@ -871,9 +871,9 @@ def generate(
         # committed (CONCURRENTLY cannot run inside a transaction; it needs the
         # just-committed fold functions + populated rows); on the skip path nothing was
         # written and CONCURRENTLY IF NOT EXISTS is idempotent, so the repeat is a
-        # no-op. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout, Pitfall
-        # 1). ADDITIVE: the old lower() indexes (idx_res_lower_id / idx_res_rg_lower)
-        # are RETAINED; the drops + predicate cutover are deferred to 00a-ii (D-22a).
+        # no-op. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout, avoiding
+        # the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes (idx_res_lower_id / idx_res_rg_lower)
+        # are RETAINED; the drops + predicate cutover are deferred to a later step (D-22a).
         writer.build_arm_id_key_indexes_concurrently()
 
         # Release the session lock explicitly (belt-and-suspenders; the autocommit
@@ -1154,7 +1154,7 @@ def apply_drift(
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
         # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
         # Behaviour-neutral in this unit: nothing consumes them yet.
         writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
@@ -1584,7 +1584,7 @@ def reset(dry_run, database_url):
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
         # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
         # Behaviour-neutral in this unit: nothing consumes them yet.
         writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
@@ -1698,7 +1698,7 @@ def revert_drift(batch_id_raw, dry_run, database_url):
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
         # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
         # Behaviour-neutral in this unit: nothing consumes them yet.
         writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
@@ -1916,7 +1916,7 @@ def init_db(database_url):
     web_metadata (007) -> rg_index (008) -> arm_overlay (009) ->
     arm_id_key (011) -> arm_resolver (010). The identity fold functions (011) are
     applied BEFORE the resolver (010) so they exist before any future 010 that
-    references arm_id_key (00a-ii) — the boot-safety ordering.
+    references arm_id_key (the later cutover) — the boot-safety ordering.
 
     Provisioning belongs to the write path (``generate``) or to this explicit
     ``init-db``; the server does not create the base schema at boot, so a
@@ -1975,7 +1975,7 @@ def init_db(database_url):
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
             ("009_arm_overlay", writer.ensure_arm_overlay_schema),
             # 011 (identity fold functions) applied BEFORE 010 so the functions exist
-            # before any future 010 referencing arm_id_key (00a-ii) — boot-safety order.
+            # before any future 010 referencing arm_id_key (the later cutover) — boot-safety order.
             ("011_arm_id_key", writer.ensure_arm_id_key_schema),
             ("010_arm_resolver", writer.ensure_arm_resolver_schema),
         ):
@@ -1996,8 +1996,8 @@ def init_db(database_url):
     # autocommit connection AFTER the migration transaction has COMMITTED (CONCURRENTLY
     # cannot run inside a transaction, and the index expression needs the just-committed
     # fold functions). Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout,
-    # Pitfall 1). ADDITIVE: the old lower() indexes are RETAINED; drops are deferred to
-    # 00a-ii. Idempotent (IF NOT EXISTS), so a re-run of init-db is a no-op.
+    # avoiding the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes are RETAINED; drops are deferred to
+    # a later step. Idempotent (IF NOT EXISTS), so a re-run of init-db is a no-op.
     writer.build_arm_id_key_indexes_concurrently(db_url)
 
     # Status line: prints ONLY after a clean commit. Never echo the full

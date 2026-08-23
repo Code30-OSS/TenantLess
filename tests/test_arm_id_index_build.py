@@ -6,7 +6,7 @@ Two operator-review findings are pinned here against a live PG16 (``:5433``):
 * FIX 1 — the fold-backed RG-name index ``idx_res_rg_ascii_fold`` must mirror the
   RETAINED sql/008 ``idx_res_rg_lower`` scoped/pagination shape
   ``(subscription_id, <fold>(resource_group_name), id)`` — NOT a single-column
-  ``(<fold>(resource_group_name))`` — so the 00a-ii RG-predicate cutover keeps the
+  ``(<fold>(resource_group_name))`` — so the later RG-predicate cutover keeps the
   same scoped + keyset-pagination plan the ``lower()`` index served.
 
 * FIX 3 — ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` can FALSELY succeed on a

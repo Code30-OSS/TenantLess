@@ -6,8 +6,8 @@ provisioned. It asserts, against live PG, that for EVERY persisted id the legacy
 ``lower(id)`` equals the new ``synthetic.arm_id_key(id)`` (no non-ASCII divergence)
 and that no two DISTINCT baseline ids fold to the SAME key (no collision). On any
 divergence / collision it RAISES non-zero, NAMING the offending ARM ids ONLY (never
-tags / properties / bodies / tokens — T-24ai-04), so 00a-ii cannot cut over the
-CHECK / drop the old indexes / migrate predicates on a divergent estate.
+tags / properties / bodies / tokens — T-24ai-04), so the later migration step cannot
+cut over the CHECK / drop the old indexes / migrate predicates on a divergent estate.
 
 These proofs WRAP the SAME production helper: they assert it passes clean on an
 all-ASCII estate and RAISES (naming the id) on a seeded non-ASCII divergence
