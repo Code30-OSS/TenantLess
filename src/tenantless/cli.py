@@ -781,6 +781,12 @@ def generate(
             # UNCONDITIONAL (idempotent twin) so a pre-v1.1.10 volume gains it here,
             # committing before the CPU phase so no DDL lock crosses the fork.
             writer.ensure_rg_index_schema(prov_conn)
+            # The additive ARM-ID identity fold functions (sql/011) — UNCONDITIONAL
+            # (idempotent CREATE OR REPLACE FUNCTION twin). Provisioned here so the
+            # functions exist before the post-generation CONCURRENT expression index
+            # build + the D-04 fold audit. Behaviour-neutral in this unit: no seam,
+            # CHECK, view, or predicate consumes them yet (D-22a additive-only).
+            writer.ensure_arm_id_key_schema(prov_conn)
 
         # Emptiness / destructive-confirm gate (gate-before-generate preserved) in
         # its OWN short transaction, under the session lock. --only-if-empty inspects
@@ -1126,6 +1132,10 @@ def apply_drift(
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1552,6 +1562,10 @@ def reset(dry_run, database_url):
         # idempotent; a no-op on an already-provisioned tenant.
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1662,6 +1676,10 @@ def revert_drift(batch_id_raw, dry_run, database_url):
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (00a-ii).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1875,7 +1893,9 @@ def init_db(database_url):
     ``ensure_*`` seams — no new SQL — applying, IN ORDER:
     base (sql/001..003) -> cost (004) -> identity (005) -> drift (006) ->
     web_metadata (007) -> rg_index (008) -> arm_overlay (009) ->
-    arm_resolver (010).
+    arm_id_key (011) -> arm_resolver (010). The identity fold functions (011) are
+    applied BEFORE the resolver (010) so they exist before any future 010 that
+    references arm_id_key (00a-ii) — the boot-safety ordering.
 
     Provisioning belongs to the write path (``generate``) or to this explicit
     ``init-db``; the server does not create the base schema at boot, so a
@@ -1933,6 +1953,9 @@ def init_db(database_url):
             ("007_web_metadata", writer.ensure_web_metadata_schema),
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
             ("009_arm_overlay", writer.ensure_arm_overlay_schema),
+            # 011 (identity fold functions) applied BEFORE 010 so the functions exist
+            # before any future 010 referencing arm_id_key (00a-ii) — boot-safety order.
+            ("011_arm_id_key", writer.ensure_arm_id_key_schema),
             ("010_arm_resolver", writer.ensure_arm_resolver_schema),
         ):
             if not ensure(conn):
@@ -1951,7 +1974,7 @@ def init_db(database_url):
     # the deep structural inventory the mock-server runs at boot (arm_overlay_inventory). Say so
     # rather than imply a verification this path did not do.
     click.echo(
-        f"Applied migrations 001..010 against {host}. "
+        f"Applied migrations 001..011 against {host}. "
         "The mock-server enforces structural verification of the overlay + resolver "
         "substrate at boot."
     )

@@ -5,6 +5,7 @@
 //! Every module in this crate is re-exported here.
 
 pub mod arm;
+pub mod arm_id;
 pub mod auth;
 pub mod casing;
 pub mod config;
@@ -394,6 +395,32 @@ pub async fn ensure_arm_overlay_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::
     arm_overlay_inventory(pool)
         .await
         .map_err(sqlx::Error::Protocol)
+}
+
+/// Idempotently provision the ARM-ID identity fold functions by applying
+/// `sql/011_arm_id_key.sql`: the `synthetic.ascii_fold(text)` primitive and the
+/// `synthetic.arm_id_key(text)` whole-ID wrapper, both `IMMUTABLE STRICT` `translate()`
+/// functions (INV-01, D-01/D-02/D-28).
+///
+/// Safe to run on every boot. The migration is `CREATE OR REPLACE FUNCTION` only, so it is
+/// a no-op-equivalent re-definition on an already-migrated schema; it takes NO table lock,
+/// touches NOTHING on the populated `synthetic.resources` table, and needs no advisory-lock
+/// preamble (function redefinition does not contend). Requires the `synthetic` schema to
+/// already exist (the caller confirms a tenant first).
+///
+/// ADDITIVE + behaviour-neutral (D-22a): this ONLY defines the two functions. It changes NO
+/// CHECK, builds NO index, edits NO view, and cuts over NO predicate. In THIS unit NOTHING
+/// consumes the functions — `sql/010` still references `lower(...)` and is UNCHANGED. It runs
+/// at boot AFTER [`ensure_arm_overlay_schema`] (sql/009) and BEFORE [`ensure_arm_resolver_schema`]
+/// (sql/010) purely so the functions EXIST before any future sql/010 that references
+/// `arm_id_key` (00a-ii) is applied against an upgraded volume — the boot-safety guarantee.
+/// No `011 -> audit -> 012 -> 010` cutover ordering is wired here.
+///
+/// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
+/// mirroring the Python twin `writer.ensure_arm_id_key_schema`.
+pub async fn ensure_arm_id_key_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    const SQL_011: &str = include_str!("../../sql/011_arm_id_key.sql");
+    apply_schema_batch(pool, SQL_011).await
 }
 
 /// Idempotently provision the resolver substrate by applying `sql/010_arm_resolver.sql`:
