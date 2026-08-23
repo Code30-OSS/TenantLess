@@ -89,6 +89,7 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
     # The D-04 audit runs after the chain; stub it (its own proofs live in
     # tests/test_arm_id_audit.py) so this order assertion stays focused on the seams.
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
     monkeypatch.setattr(
         writer_mod,
         "ensure_arm_resolver_schema",
@@ -209,6 +210,7 @@ def test_init_db_all_present_commits(monkeypatch):
     ):
         monkeypatch.setattr(writer_mod, fn, lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
     runner = CliRunner()
     result = runner.invoke(

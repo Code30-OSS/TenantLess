@@ -862,6 +862,15 @@ def generate(
                         role_assignments=result.role_assignments,
                     )
 
+            # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a
+            # dedicated autocommit connection AFTER the write transaction has committed
+            # (CONCURRENTLY cannot run inside a transaction; it needs the just-committed
+            # fold functions + populated rows). Deadlock-safe (SHARE UPDATE EXCLUSIVE +
+            # bounded lock_timeout, Pitfall 1). ADDITIVE: the old lower() indexes
+            # (idx_res_lower_id / idx_res_rg_lower) are RETAINED; the drops + predicate
+            # cutover are deferred to 00a-ii (D-22a additive-only).
+            writer.build_arm_id_key_indexes_concurrently()
+
         # Release the session lock explicitly (belt-and-suspenders; the autocommit
         # lock connection close on __exit__ also releases it).
         writer.release_generate_lock_session(lock_conn, GENERATE_LOCK_KEY)
@@ -1975,6 +1984,14 @@ def init_db(database_url):
         # 0 rows (behaviour-neutral); any divergence / fold-collision RAISES (naming the
         # offending ARM ids) INSIDE the with, so open_writer rolls the whole apply back.
         writer.audit_arm_id_identity(conn)
+
+    # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a dedicated
+    # autocommit connection AFTER the migration transaction has COMMITTED (CONCURRENTLY
+    # cannot run inside a transaction, and the index expression needs the just-committed
+    # fold functions). Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout,
+    # Pitfall 1). ADDITIVE: the old lower() indexes are RETAINED; drops are deferred to
+    # 00a-ii. Idempotent (IF NOT EXISTS), so a re-run of init-db is a no-op.
+    writer.build_arm_id_key_indexes_concurrently(db_url)
 
     # Status line: prints ONLY after a clean commit. Never echo the full
     # database_url — host only.

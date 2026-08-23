@@ -528,6 +528,63 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
         )
 
 
+# Advisory-lock key serializing concurrent additive-index builders (a session lock,
+# NOT a transaction lock — CONCURRENTLY cannot run inside a transaction).
+_ARM_ID_KEY_INDEX_LOCK = "synthetic.arm_id_key_indexes:011"
+
+
+def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
+    """Build the TWO additive ARM-ID fold expression indexes CONCURRENTLY (INV-01, D-28).
+
+    Creates, on a DEDICATED autocommit connection (``CREATE INDEX CONCURRENTLY`` CANNOT
+    run inside a transaction, so it must NOT ride the boot-time ``apply_schema_batch``
+    path nor the init-db/generate writer transaction):
+
+    * ``idx_res_arm_id_key`` ON ``synthetic.resources (synthetic.arm_id_key(id))`` — the
+      identity index the 00a-ii predicate cutover will hit;
+    * ``idx_res_rg_ascii_fold`` ON ``synthetic.resources (synthetic.ascii_fold(resource_group_name))``
+      — the fold-backed RG-name index (D-28) the 00a-ii RG-predicate cutover will use.
+
+    ADDITIVE (D-22a): both are created ALONGSIDE the RETAINED ``idx_res_lower_id`` (sql/003)
+    and ``idx_res_rg_lower`` (sql/008) ``lower()`` indexes — this unit drops NOTHING and cuts
+    over NO predicate; the old-index drops + predicate cutover are deferred to 00a-ii after
+    the D-04 audit passes.
+
+    Deadlock-safe (Pitfall 1, project memory ``server-startup-alter-lock-deadlock``):
+    ``CONCURRENTLY`` takes only ``SHARE UPDATE EXCLUSIVE`` (never the ACCESS EXCLUSIVE that
+    a plain ``CREATE INDEX`` on the populated ~520K-row heap would take at boot), a bounded
+    session ``lock_timeout`` caps the brief locks it still needs, and a SESSION advisory lock
+    serializes racing builders. ``IF NOT EXISTS`` makes a re-run a no-op. Requires
+    ``synthetic.arm_id_key`` / ``synthetic.ascii_fold`` to already exist (call AFTER
+    :func:`ensure_arm_id_key_schema` has COMMITTED). The relation / column / index names are
+    STATIC — no injection surface. Returns True once both builds have been issued.
+    """
+    conn = psycopg.connect(conn_str or DATABASE_URL, autocommit=True)
+    try:
+        # Bounded session lock_timeout: a brief ACCESS SHARE UPDATE wait cannot hang the
+        # provisioning path (autocommit -> session-scoped, reverted on close).
+        conn.execute("SET lock_timeout = '3s'")
+        # Serialize concurrent builders (a SESSION advisory lock — a transaction/xact lock
+        # is impossible here since CONCURRENTLY forbids a transaction). Released in finally.
+        conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,))
+        try:
+            conn.execute(
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_res_arm_id_key "
+                "ON synthetic.resources (synthetic.arm_id_key(id))"
+            )
+            conn.execute(
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_res_rg_ascii_fold "
+                "ON synthetic.resources (synthetic.ascii_fold(resource_group_name))"
+            )
+        finally:
+            conn.execute(
+                "SELECT pg_advisory_unlock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,)
+            )
+    finally:
+        conn.close()
+    return True
+
+
 def ensure_arm_resolver_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/010_arm_resolver.sql`` migration — the resolver
     substrate (``synthetic.drift_batches.storage_mode`` provenance column + the two per-kind

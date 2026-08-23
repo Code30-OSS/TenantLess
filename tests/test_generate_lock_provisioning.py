@@ -86,6 +86,7 @@ def event_log(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
     monkeypatch.setattr(
         writer_mod, "schema_is_empty",
         lambda conn: log.append(("gate", "schema_is_empty")) or True,
