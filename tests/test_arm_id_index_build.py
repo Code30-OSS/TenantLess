@@ -42,8 +42,10 @@ def pg_conn():
 
     ``autocommit=True`` is REQUIRED (SP-5) — ``CREATE/DROP INDEX CONCURRENTLY``
     and the schema-ensure DDL cannot run inside a transaction. Self-provisions the
-    base synthetic schema (so ``synthetic.resources`` exists) and the sql/011 fold
-    functions (so the expression indexes are buildable).
+    base synthetic schema (so ``synthetic.resources`` exists), the retained
+    sql/008 ``idx_res_rg_lower`` twin (NOT part of base schema — required by
+    ``test_retained_lower_indexes_untouched`` and absent on a fresh CI database),
+    and the sql/011 fold functions (so the expression indexes are buildable).
     """
     psycopg = pytest.importorskip("psycopg")
     try:
@@ -52,6 +54,7 @@ def pg_conn():
         pytest.skip(f"Postgres on 5433 unavailable: {exc}")
     try:
         writer.ensure_base_schema(conn)
+        writer.ensure_rg_index_schema(conn)
         writer.ensure_arm_id_key_schema(conn)
         yield conn
     finally:
