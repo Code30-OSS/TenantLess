@@ -862,17 +862,24 @@ def generate(
                         role_assignments=result.role_assignments,
                     )
 
-            # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a
-            # dedicated autocommit connection AFTER the write transaction has committed
-            # (CONCURRENTLY cannot run inside a transaction; it needs the just-committed
-            # fold functions + populated rows). Deadlock-safe (SHARE UPDATE EXCLUSIVE +
-            # bounded lock_timeout, Pitfall 1). ADDITIVE: the old lower() indexes
-            # (idx_res_lower_id / idx_res_rg_lower) are RETAINED; the drops + predicate
-            # cutover are deferred to 00a-ii (D-22a additive-only).
-            writer.build_arm_id_key_indexes_concurrently()
+        # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a
+        # dedicated autocommit connection. Runs on BOTH paths — a fresh generation
+        # AND the --only-if-empty populated SKIP (FIX 2): the sql/011 fold functions
+        # were provisioned above (prov seam, before the skip decision), so an existing
+        # demo volume hitting the skip is the NORMAL upgrade path that must still gain
+        # the indexes. On the write path this runs AFTER the write transaction has
+        # committed (CONCURRENTLY cannot run inside a transaction; it needs the
+        # just-committed fold functions + populated rows); on the skip path nothing was
+        # written and CONCURRENTLY IF NOT EXISTS is idempotent, so the repeat is a
+        # no-op. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout, Pitfall
+        # 1). ADDITIVE: the old lower() indexes (idx_res_lower_id / idx_res_rg_lower)
+        # are RETAINED; the drops + predicate cutover are deferred to 00a-ii (D-22a).
+        writer.build_arm_id_key_indexes_concurrently()
 
         # Release the session lock explicitly (belt-and-suspenders; the autocommit
-        # lock connection close on __exit__ also releases it).
+        # lock connection close on __exit__ also releases it). Reached on BOTH the
+        # generation and the populated-skip paths, so the session lock is acquired and
+        # released exactly once per invocation (never leaked, never double-released).
         writer.release_generate_lock_session(lock_conn, GENERATE_LOCK_KEY)
 
     if skipped:
