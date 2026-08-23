@@ -532,6 +532,112 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
 # NOT a transaction lock — CONCURRENTLY cannot run inside a transaction).
 _ARM_ID_KEY_INDEX_LOCK = "synthetic.arm_id_key_indexes:011"
 
+# The additive ARM-ID fold expression indexes, as
+# ``(index_name, ON-clause, ordered pg_get_indexdef fragments)`` — a STATIC project
+# constant (never user/profile input), so interpolating any of these into DDL below
+# introduces NO injection surface. The ``fragments`` are the substrings that MUST
+# appear, in left-to-right column order, in ``pg_get_indexdef`` for the built index to
+# be considered the CORRECT (non-stale) shape (FIX 3 catalog validation).
+_ARM_ID_KEY_INDEX_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "idx_res_arm_id_key",
+        "ON synthetic.resources (synthetic.arm_id_key(id))",
+        ("arm_id_key(id)",),
+    ),
+    (
+        "idx_res_rg_ascii_fold",
+        "ON synthetic.resources "
+        "(subscription_id, synthetic.ascii_fold(resource_group_name), id)",
+        ("subscription_id", "ascii_fold(resource_group_name)", "id)"),
+    ),
+)
+
+
+class ArmIdIndexBuildError(click.ClickException):
+    """Raised when an additive ARM-ID fold index cannot be built VALID even after a
+    repair attempt (FIX 3).
+
+    Subclasses :class:`click.ClickException` so an uncaught raise exits non-zero
+    with a clean, actionable message (no traceback) from both callers — ``generate``
+    and ``init-db`` — exactly like :class:`ArmIdIdentityAuditError`. This is the
+    fail-loud half of the leftover-index guard: a ``CREATE INDEX CONCURRENTLY
+    IF NOT EXISTS`` that got FALSELY skipped by an interrupted-build INVALID index (or
+    a stale-shaped same-named index) must never be reported as success.
+    """
+
+
+def _validate_arm_id_index(
+    conn: psycopg.Connection, name: str, fragments: tuple[str, ...]
+) -> tuple[bool, str]:
+    """Catalog-validate the just-built index ``name`` (FIX 3).
+
+    Reads ``pg_index.indisvalid`` / ``indisready`` + ``pg_get_indexdef`` (the same
+    trusted catalog infra :func:`_dropped_secondary_indexes` uses). Returns
+    ``(ok, detail)`` where ``ok`` is True only when the index is PRESENT, VALID,
+    READY, and its definition contains ``fragments`` in the given column order — so a
+    leftover INVALID (interrupted-build) index OR a stale-shaped same-named index
+    (which ``IF NOT EXISTS`` would silently keep) is reported as NOT-ok. ``name`` is
+    bound as ``%s``; the fold-schema qualifier is a static literal.
+    """
+    row = conn.execute(
+        "SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid) "
+        "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'synthetic' AND c.relname = %s",
+        (name,),
+    ).fetchone()
+    if row is None:
+        return False, f"{name} is absent after the build"
+    valid, ready, indexdef = row
+    if not valid or not ready:
+        return False, (
+            f"{name} is INVALID/not-ready (indisvalid={valid}, indisready={ready}) — "
+            "a leftover from an interrupted CONCURRENTLY build"
+        )
+    pos = 0
+    for frag in fragments:
+        found = indexdef.find(frag, pos)
+        if found < 0:
+            return False, (
+                f"{name} definition is stale/unexpected (missing {frag!r} in expected "
+                f"column order): {indexdef}"
+            )
+        pos = found + len(frag)
+    return True, indexdef
+
+
+def _build_and_validate_arm_id_index(
+    conn: psycopg.Connection, name: str, on_clause: str, fragments: tuple[str, ...]
+) -> None:
+    """Build ONE additive fold index CONCURRENTLY, then catalog-validate + repair it
+    (FIX 3).
+
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` can FALSELY succeed on a leftover
+    same-named index that is INVALID (an interrupted prior build) or stale-shaped: the
+    ``IF NOT EXISTS`` skips it and this function would otherwise report success on a
+    broken/wrong index. So after the build we validate ``indisvalid``/``indisready`` +
+    the def; on failure we REPAIR ONCE (``DROP INDEX CONCURRENTLY`` the leftover +
+    rebuild) and re-validate. If it STILL cannot be made valid we FAIL LOUD
+    (:class:`ArmIdIndexBuildError`). ``name`` / ``on_clause`` come from the STATIC
+    :data:`_ARM_ID_KEY_INDEX_SPECS` — no injection surface.
+    """
+    conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {on_clause}")
+    ok, detail = _validate_arm_id_index(conn, name, fragments)
+    if ok:
+        return
+    # Repair: the IF NOT EXISTS FALSELY skipped a leftover INVALID / stale-shaped
+    # index. Drop it CONCURRENTLY (deadlock-safe like the build) and rebuild once.
+    conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS synthetic.{name}")
+    conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {on_clause}")
+    ok, detail = _validate_arm_id_index(conn, name, fragments)
+    if not ok:
+        raise ArmIdIndexBuildError(
+            f"additive ARM-ID index {name} could not be built valid after a repair "
+            f"attempt: {detail}. Manually drop the leftover index "
+            f"(DROP INDEX CONCURRENTLY IF EXISTS synthetic.{name}) and re-run the "
+            "provisioning (init-db / generate)."
+        )
+
 
 def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
     """Build the TWO additive ARM-ID fold expression indexes CONCURRENTLY (INV-01, D-28).
@@ -563,7 +669,18 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
     serializes racing builders. ``IF NOT EXISTS`` makes a re-run a no-op. Requires
     ``synthetic.arm_id_key`` / ``synthetic.ascii_fold`` to already exist (call AFTER
     :func:`ensure_arm_id_key_schema` has COMMITTED). The relation / column / index names are
-    STATIC — no injection surface. Returns True once both builds have been issued.
+    STATIC — no injection surface.
+
+    FIX 3 — leftover-index guard: ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` can
+    FALSELY succeed on a leftover same-named index that is INVALID (an interrupted
+    prior build) or stale-shaped — ``IF NOT EXISTS`` skips it and a naive builder
+    returns True on a broken/wrong index. After EACH build this validates
+    ``indisvalid``/``indisready`` + the definition via the catalog and REPAIRS
+    (drop-concurrently + rebuild) a leftover, or FAILS LOUD
+    (:class:`ArmIdIndexBuildError`) if a valid index still cannot be produced.
+
+    Returns True once BOTH indexes are confirmed present, valid, ready, and correctly
+    shaped.
     """
     conn = psycopg.connect(conn_str or DATABASE_URL, autocommit=True)
     try:
@@ -574,15 +691,8 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
         # is impossible here since CONCURRENTLY forbids a transaction). Released in finally.
         conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,))
         try:
-            conn.execute(
-                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_res_arm_id_key "
-                "ON synthetic.resources (synthetic.arm_id_key(id))"
-            )
-            conn.execute(
-                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_res_rg_ascii_fold "
-                "ON synthetic.resources "
-                "(subscription_id, synthetic.ascii_fold(resource_group_name), id)"
-            )
+            for name, on_clause, fragments in _ARM_ID_KEY_INDEX_SPECS:
+                _build_and_validate_arm_id_index(conn, name, on_clause, fragments)
         finally:
             conn.execute(
                 "SELECT pg_advisory_unlock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,)
