@@ -541,9 +541,15 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
     path nor the init-db/generate writer transaction):
 
     * ``idx_res_arm_id_key`` ON ``synthetic.resources (synthetic.arm_id_key(id))`` — the
-      identity index the 00a-ii predicate cutover will hit;
-    * ``idx_res_rg_ascii_fold`` ON ``synthetic.resources (synthetic.ascii_fold(resource_group_name))``
-      — the fold-backed RG-name index (D-28) the 00a-ii RG-predicate cutover will use.
+      identity index the 00a-ii predicate cutover will hit (single-column, mirroring
+      sql/003's single-column ``lower(id)`` identity index);
+    * ``idx_res_rg_ascii_fold`` ON
+      ``synthetic.resources (subscription_id, synthetic.ascii_fold(resource_group_name), id)``
+      — the fold-backed RG-name index (D-28) the 00a-ii RG-predicate cutover will use. It
+      MIRRORS the RETAINED sql/008 ``idx_res_rg_lower``
+      ``(subscription_id, lower(resource_group_name), id)`` shape EXACTLY so the cutover
+      keeps the same scoped (``subscription_id`` prefix) + keyset-pagination (trailing
+      ``id``) plan — a single-column fold index could serve neither.
 
     ADDITIVE (D-22a): both are created ALONGSIDE the RETAINED ``idx_res_lower_id`` (sql/003)
     and ``idx_res_rg_lower`` (sql/008) ``lower()`` indexes — this unit drops NOTHING and cuts
@@ -574,7 +580,8 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
             )
             conn.execute(
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_res_rg_ascii_fold "
-                "ON synthetic.resources (synthetic.ascii_fold(resource_group_name))"
+                "ON synthetic.resources "
+                "(subscription_id, synthetic.ascii_fold(resource_group_name), id)"
             )
         finally:
             conn.execute(
