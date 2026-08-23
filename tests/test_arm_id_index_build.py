@@ -113,3 +113,75 @@ def test_retained_lower_indexes_untouched(pg_conn):
         row = _index_row(pg_conn, name)
         assert row is not None, f"retained index {name} must still exist"
         assert expected in row[2], f"{name} def changed: {row[2]!r}"
+
+
+# --------------------------------------------------------------------------- #
+# FIX 3 — CONCURRENTLY IF NOT EXISTS must not FALSELY succeed on a leftover
+#         INVALID / stale-shaped same-named index
+# --------------------------------------------------------------------------- #
+def test_normal_build_yields_valid_indexes_with_expected_def(pg_conn):
+    """After a clean build BOTH additive indexes are ``indisvalid`` AND
+    ``indisready`` with their expected definition (the positive half of FIX 3)."""
+    pg_conn.execute("DROP INDEX CONCURRENTLY IF EXISTS synthetic.idx_res_arm_id_key")
+    pg_conn.execute("DROP INDEX CONCURRENTLY IF EXISTS synthetic.idx_res_rg_ascii_fold")
+    assert writer.build_arm_id_key_indexes_concurrently(DATABASE_URL) is True
+    for name, frags in (
+        ("idx_res_arm_id_key", ["arm_id_key(id)"]),
+        (
+            "idx_res_rg_ascii_fold",
+            ["subscription_id", "ascii_fold(resource_group_name)", "id)"],
+        ),
+    ):
+        row = _index_row(pg_conn, name)
+        assert row is not None, f"{name} must exist after build"
+        assert row[0] and row[1], f"{name} must be valid+ready: {row!r}"
+        _assert_ordered(row[2], frags)
+
+
+def test_injected_invalid_leftover_is_repaired_not_falsely_accepted(pg_conn):
+    """A leftover INVALID same-named index (as an interrupted CONCURRENTLY build
+    leaves) must be DETECTED and REPAIRED — never silently accepted because
+    ``IF NOT EXISTS`` skipped it and the builder returned True on a broken index."""
+    # Ensure the index exists, then mark it INVALID in the catalog (superuser) to
+    # simulate a leftover from an interrupted CONCURRENTLY build.
+    writer.build_arm_id_key_indexes_concurrently(DATABASE_URL)
+    pg_conn.execute(
+        "UPDATE pg_index SET indisvalid = false "
+        "WHERE indexrelid = 'synthetic.idx_res_arm_id_key'::regclass"
+    )
+    setup = _index_row(pg_conn, "idx_res_arm_id_key")
+    assert setup is not None and setup[0] is False, (
+        f"setup: idx_res_arm_id_key must be marked INVALID, got {setup!r}"
+    )
+
+    # The builder must not accept the invalid leftover as success.
+    assert writer.build_arm_id_key_indexes_concurrently(DATABASE_URL) is True
+    row = _index_row(pg_conn, "idx_res_arm_id_key")
+    assert row is not None, "index must exist after repair"
+    assert row[0] and row[1], (
+        f"the INVALID leftover must be repaired to valid+ready, got {row!r}"
+    )
+    _assert_ordered(row[2], ["arm_id_key(id)"])
+
+
+def test_stale_shape_leftover_is_repaired(pg_conn):
+    """A pre-FIX-1 single-column ``idx_res_rg_ascii_fold`` left on an upgraded volume
+    must be detected as stale and rebuilt to the scoped shape — ``IF NOT EXISTS``
+    alone would silently keep the wrong-shaped index forever."""
+    pg_conn.execute("DROP INDEX CONCURRENTLY IF EXISTS synthetic.idx_res_rg_ascii_fold")
+    # The OLD single-column fold index (valid, but stale shape).
+    pg_conn.execute(
+        "CREATE INDEX idx_res_rg_ascii_fold ON synthetic.resources "
+        "(synthetic.ascii_fold(resource_group_name))"
+    )
+    stale = _index_row(pg_conn, "idx_res_rg_ascii_fold")
+    assert stale is not None and "subscription_id" not in stale[2], (
+        f"setup: index must start single-column, got {stale!r}"
+    )
+
+    assert writer.build_arm_id_key_indexes_concurrently(DATABASE_URL) is True
+    row = _index_row(pg_conn, "idx_res_rg_ascii_fold")
+    assert row is not None and row[0] and row[1], f"must be valid+ready: {row!r}"
+    _assert_ordered(
+        row[2], ["subscription_id", "ascii_fold(resource_group_name)", "id)"]
+    )
