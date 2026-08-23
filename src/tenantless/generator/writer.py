@@ -476,7 +476,7 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         # (1) baseline resources: lower(id) <> arm_id_key(id)
         cur.execute(
-            "SELECT id FROM synthetic.resources "
+            "SELECT id FROM synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect id-fold divergence
             "WHERE lower(id) <> synthetic.arm_id_key(id) "
             "ORDER BY id LIMIT %s",
             (_CAP,),
@@ -506,7 +506,7 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
 
         # (3) fold collision: two DISTINCT baseline ids folding to one key.
         cur.execute(
-            "SELECT array_agg(id ORDER BY id) FROM synthetic.resources "
+            "SELECT array_agg(id ORDER BY id) FROM synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect fold collisions
             "GROUP BY synthetic.arm_id_key(id) HAVING count(DISTINCT id) > 1 "
             "ORDER BY 1 LIMIT %s",
             (_CAP,),
@@ -546,7 +546,7 @@ _ARM_ID_KEY_INDEX_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "idx_res_rg_ascii_fold",
-        "ON synthetic.resources "
+        "ON synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: additive fold-index DDL on the baseline table (retained lower() index untouched)
         "(subscription_id, synthetic.ascii_fold(resource_group_name), id)",
         ("subscription_id", "ascii_fold(resource_group_name)", "id)"),
     ),
@@ -664,7 +664,7 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
 
     Deadlock-safe (the known server-boot ALTER-lock deadlock hazard):
     ``CONCURRENTLY`` takes only ``SHARE UPDATE EXCLUSIVE`` (never the ACCESS EXCLUSIVE that
-    a plain ``CREATE INDEX`` on the populated ~520K-row heap would take at boot), a bounded
+    a plain ``CREATE INDEX`` on a populated resources heap would take at boot), a bounded
     session ``lock_timeout`` caps the brief locks it still needs, and a SESSION advisory lock
     serializes racing builders. ``IF NOT EXISTS`` makes a re-run a no-op. Requires
     ``synthetic.arm_id_key`` / ``synthetic.ascii_fold`` to already exist (call AFTER
