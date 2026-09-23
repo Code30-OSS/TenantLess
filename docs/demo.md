@@ -86,7 +86,7 @@ Two things worth noticing:
 - **`--cost-as-of` is pinned.** Cost billing periods derive from it rather than from today,
   so this command produces the same estate whenever you run it.
 - **`downgraded_to_generic`** counts resource groups whose contents did not justify the
-  workload name their composition suggested. Tenantless would rather name a group
+  workload name their composition suggested. TenantLess would rather name a group
   generically than claim something its contents do not evidence.
 
 Scale it with `--resources` / `--subscriptions`, and speed it up with `--jobs 0` (all
@@ -227,7 +227,7 @@ uv run tenantless generate --profile enterprise --seed 42 --cost-as-of 2026-01-0
 ```
 
 Same profile, same seed, same `--cost-as-of`, same estate — down to the bytes. This is what
-makes a bug report against Tenantless a `(profile, seed, cost-as-of)` triple rather than a
+makes a bug report against TenantLess a `(profile, seed, cost-as-of)` triple rather than a
 database dump.
 
 ## Serving in Docker

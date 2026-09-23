@@ -15,7 +15,7 @@ control plane is held to a stricter security posture than the read-only ARM API 
 
 > **Runtime requirement — the control plane runs on a source host, not the slim image.**
 > The generate and analyze jobs shell out to `uv run tenantless`, so the server must run
-> where **uv, Python, and the Tenantless package/repository** are installed. The slim,
+> where **uv, Python, and the TenantLess package/repository** are installed. The slim,
 > server-only Docker image contains only the Rust binary (no uv, no Python generator), so
 > its control plane cannot run generate or analyze. Save/restore snapshots separately require
 > the PostgreSQL client tools (`pg_dump` / `pg_restore`) — see §4.

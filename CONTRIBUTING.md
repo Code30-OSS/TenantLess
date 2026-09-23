@@ -1,4 +1,4 @@
-# Contributing to Tenantless
+# Contributing to TenantLess
 
 Thanks for considering it. This document covers how to get set up, what the review bar is,
 and the few areas where this project's rules are stricter than you might expect.
@@ -164,7 +164,7 @@ Participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Licensing
 
-Tenantless is licensed under [Apache-2.0](LICENSE), and Code30 holds the copyright on the
+TenantLess is licensed under [Apache-2.0](LICENSE), and Code30 holds the copyright on the
 initial published work. Contributions are submitted under that same Apache-2.0 license: you
 keep the copyright in your contribution and license it to the project and its users under
 Apache-2.0. There is **no Contributor License Agreement (CLA) and no copyright assignment** —
