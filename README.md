@@ -28,11 +28,15 @@ estate, and parallel generation (`--jobs N`) is byte-identical to single-threade
 (`--jobs 1`). Cost billing periods derive from `--cost-as-of`, so pin it whenever a run
 needs to be reproducible.
 
-**Scope — read-only, covered surface.** Tenantless serves the *covered* ARM
+**Scope — covered surface, read by default.** Tenantless serves the *covered* ARM
 management-plane endpoints and JSON shapes a discovery scan exercises (list, detail,
-`$filter`, Cost Management query, RBAC) — not the whole of Azure ARM. The surface is
-**read-only**: there is no `PUT`/`DELETE` and no live-resource behavior, so a
-`terraform apply` will not persist against it.
+`$filter`, Cost Management query, RBAC) — not the whole of Azure ARM. Out of the box the
+surface is **read-only**. Since 1.5.0 an **opt-in** generic write plane
+(`--enable-arm-writes`: `PUT` / `PATCH` / `DELETE` on any resource id, with `ETag` /
+`If-Match`) persists changes as an overlay over the immutable synthetic baseline — see
+[docs/arm-writes-security.md](docs/arm-writes-security.md). There is no live-resource
+behavior, and resource-group create/delete and a full `terraform apply` workflow are not
+yet supported.
 
 ## Why
 
@@ -67,14 +71,21 @@ Latency is machine-dependent; treat it as a shape, not a promise about your hard
 
 ## Roadmap
 
-Tenantless 1.0 is **read-only**. The next milestone — **v2.0 Stateful ARM Lifecycle** — turns it
-into a persistent, mutable ARM management plane: create / update / delete through the ARM API
-(opt-in, off by default), durable overlay state layered over the immutable synthetic baseline, and
-a representative `terraform plan → apply → refresh → destroy` workflow that converges against the
-mock — all while the generated estate stays byte-for-byte reproducible.
+Tenantless shipped read-only in [v1.0.0](https://github.com/Code30-OSS/TenantLess/releases/tag/v1.0).
+The **Stateful ARM Lifecycle** milestone is landing incrementally on the 1.x line, each step
+additive and off by default:
 
-→ **[v1.0.0 release](https://github.com/Code30-OSS/TenantLess/releases/tag/v1.0)** ·
-**[v2.0 roadmap →](https://github.com/Code30-OSS/TenantLess/issues/32)**
+- **1.3.0** — overlay / tombstone / revision substrate over the immutable synthetic baseline.
+- **1.4.0** — the stateful overlay goes live: one resolver behind every ARM read, `ETag`s on detail reads.
+- **1.5.0** — opt-in generic ARM writes: `PUT` / `PATCH` / `DELETE` on any resource id,
+  conditional writes (`If-Match` / `If-None-Match`), and an atomic nested-delete cascade.
+
+Still ahead: resource-group create/delete with container cascade, and a representative
+`terraform plan → apply → refresh → destroy` workflow that converges against the mock — all
+while the generated estate stays byte-for-byte reproducible.
+
+→ **[Releases](https://github.com/Code30-OSS/TenantLess/releases)** ·
+**[Stateful ARM Lifecycle roadmap →](https://github.com/Code30-OSS/TenantLess/issues/32)**
 
 ## Architecture
 
@@ -286,8 +297,9 @@ validation against the built-in JWKS endpoint when you want to exercise a client
 handling. Opt-in TLS (`serve --tls`) adds an HTTPS listener on `:8443` with an ephemeral
 self-signed certificate alongside the default plain-HTTP `:8080`.
 
-**The ARM surface is read-only** (see *Scope* above): there is no `PUT`/`DELETE`, so a
-`terraform apply` will not persist against it.
+**The ARM surface is read-only by default** (see *Scope* above). Writes are opt-in via
+`--enable-arm-writes`; when enabled on a non-loopback host the server refuses to start without
+authentication unless explicitly overridden — see [docs/arm-writes-security.md](docs/arm-writes-security.md).
 
 ## Configuration drift
 

@@ -394,7 +394,7 @@
         <span class="eyebrow">Synthetic Azure estates · Apache-2.0</span>
         <h1 class="title">A tenant<br>you can <span class="u">specify.</span></h1>
         <p class="lede">TenantLess generates a <strong>statistically realistic</strong> Azure estate and serves it over ARM-compatible HTTP — so an unmodified scanner, policy engine or cost tool runs against it as if it were real.</p>
-        <p class="scope-note">Read-only, covered surface. Nothing it generates is running; everything it generates is <em>shaped</em> like production. Reproducible byte-for-byte from (profile, seed, cost-as-of).</p>
+        <p class="scope-note">Covered surface, read-only by default with opt-in ARM writes. Nothing it generates is running; everything it generates is <em>shaped</em> like production. Reproducible byte-for-byte from (profile, seed, cost-as-of).</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#start">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
@@ -644,7 +644,7 @@ curl -H <span class="s">"Authorization: Bearer anything"</span> \
     <div class="wrap">
       <div class="sec-head">
         <span class="eyebrow">Roadmap</span>
-        <h2>Read-only today. Mutable next.</h2>
+        <h2>Readable from day one. Writable, opt-in, since 1.5.</h2>
       </div>
       <div class="road">
         <div class="road-card">
@@ -658,13 +658,13 @@ curl -H <span class="s">"Authorization: Bearer anything"</span> \
           </ul>
         </div>
         <div class="road-card next">
-          <span class="status-pill planned"><span class="d"></span>Next · v2.0</span>
+          <span class="status-pill planned"><span class="d"></span>In progress · 1.3 → 1.5</span>
           <h3>Stateful ARM Lifecycle</h3>
-          <p>A persistent, mutable management plane — create / update / delete through the ARM API, opt-in and off by default.</p>
+          <p>A persistent, mutable management plane, landing step by step — opt-in and off by default.</p>
           <ul>
-            <li>Durable overlay state over the immutable synthetic baseline</li>
-            <li>A representative <span class="mono">plan → apply → refresh → destroy</span> that converges against the mock</li>
-            <li>The generated estate stays byte-for-byte reproducible</li>
+            <li>Shipped: durable overlay state over the immutable baseline, <span class="mono">ETag</span>s on detail reads</li>
+            <li>Shipped: <span class="mono">PUT / PATCH / DELETE</span> on any resource id, <span class="mono">If-Match</span>, nested-delete cascade</li>
+            <li>Next: resource-group create/delete, then <span class="mono">plan → apply → refresh → destroy</span> converging against the mock</li>
           </ul>
         </div>
       </div>
@@ -679,7 +679,7 @@ curl -H <span class="s">"Authorization: Bearer anything"</span> \
       <div class="foot-links">
         <a href="https://github.com/Code30-OSS/TenantLess">GitHub</a>
         <a href="https://github.com/Code30-OSS/TenantLess/releases">Releases</a>
-        <a href="https://github.com/Code30-OSS/TenantLess/issues/32">v2.0 roadmap</a>
+        <a href="https://github.com/Code30-OSS/TenantLess/issues/32">Roadmap</a>
         <a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/architecture.md">Architecture</a>
       </div>
     </div>
