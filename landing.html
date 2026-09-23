@@ -30,6 +30,7 @@
   --a:#2a5fa5; --a-dk:#1f4a85; --a-lt:#bfd0ea; --a-dim:rgba(42,95,165,.08);
   --ok:#2d7a3a; --ok-dim:rgba(45,122,58,.08); --warn:#98700d; --bad:#a6432e;
   --code:#0a0a0a; --code2:#1a1a1a; --code-ink:#a1a1a6; --code-mut:#6e6e73; --code-a:#8fb3e8;
+  --grid:rgba(10,10,10,.045); --grid2:rgba(10,10,10,.022);
   --sans:'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   --mono:'Space Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
@@ -42,12 +43,13 @@
     --a:#6f9ee0; --a-dk:#8fb3e8; --a-lt:#2a3f5e; --a-dim:rgba(111,158,224,.10);
     --ok:#6fbe85; --ok-dim:rgba(111,190,133,.10); --warn:#dfb255; --bad:#de7a62;
     --code:#000; --code2:#0f0f0e;
+    --grid:rgba(111,158,224,.07); --grid2:rgba(111,158,224,.03);
   }
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body{background-color:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px),linear-gradient(var(--grid2) 1px,transparent 1px),linear-gradient(90deg,var(--grid2) 1px,transparent 1px);background-size:60px 60px,60px 60px,12px 12px,12px 12px;background-position:-1px -1px;color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:1000;opacity:.02;
   background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 .wrap{max-width:72rem;margin-inline:auto;padding-inline:1.5rem}
@@ -63,7 +65,7 @@ h1,h2,h3{letter-spacing:-.03em;text-wrap:balance;font-weight:700}
 .small{font-size:.93rem;line-height:1.6}
 
 /* nav */
-header.site{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header.site{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 header.site .wrap{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:.9rem;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:.65rem;color:var(--ink)}
 .brand:hover{text-decoration:none}
@@ -118,7 +120,7 @@ h1 span{color:var(--a)}
 
 /* sections */
 section.s{padding-block:5rem;border-top:1px solid var(--line)}
-section.alt{background:var(--bg2)}
+section.alt{background-color:color-mix(in srgb,var(--bg3) 38%,transparent)}
 .head{max-width:46rem;margin-bottom:2.4rem}
 .head h2{font-size:clamp(1.8rem,4vw,2.8rem);line-height:1.1;margin:.8rem 0 1rem}
 .head p{color:var(--ink2)}
@@ -189,6 +191,14 @@ td:first-child{color:var(--ink)}
 /* training */
 .lab{font-family:var(--mono);font-size:.78rem;background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:.75rem .9rem;margin-top:1rem;line-height:1.65;color:var(--ink2)}
 .lab b{color:var(--a-dk);font-weight:700}
+.train-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem}
+@media (max-width:980px){.train-grid{grid-template-columns:1fr}}
+.train-grid .card{display:flex;flex-direction:column}
+.train-grid .card .lab{margin-top:auto}
+.train-grid .card p{margin-bottom:1rem}
+.skills{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem;margin-top:1.6rem;border-top:1px solid var(--line);padding-top:1.6rem}
+@media (max-width:820px){.skills{grid-template-columns:1fr}}
+.skills p{margin-top:.45rem;font-size:.93rem;color:var(--ink2)}
 
 /* quickstart */
 .split{display:grid;grid-template-columns:1fr 1.1fr;gap:3rem;align-items:center}
@@ -249,7 +259,7 @@ footer p{color:var(--ink2)}
     <div class="inner">
       <span class="pill fade d1"><i></i>v1.5.0 · opt-in ARM writes</span>
       <h1 class="fade d1">A disposable <span>Azure tenant</span> for testing the code that reads one</h1>
-      <p class="lede fade d2">TenantLess generates statistically realistic Azure estates and serves them over ARM-compatible HTTP. Your unmodified scanner, policy engine or cost tool walks 145,000 resources that were never provisioned. Read by default; ARM writes are opt-in.</p>
+      <p class="lede fade d2">TenantLess generates statistically realistic Azure estates and serves them over ARM-compatible HTTP. Your unmodified scanner, policy engine or cost tool, or a whole class of trainees, walks 145,000 resources that were never provisioned. Read by default; ARM writes are opt-in.</p>
       <div class="btns fade d3">
         <a class="btn p" href="#start">Run it in one command</a>
         <a class="btn s" href="https://github.com/Code30-OSS/TenantLess">View on GitHub</a>
@@ -289,7 +299,7 @@ footer p{color:var(--ink2)}
         <span class="badge no">Rarely worth it</span>
         <h3>You read your own estate</h3>
         <p>Platform team, internal FinOps, in-house governance tooling. Your dev subscription already looks like your production, and it's free to look at.</p>
-        <p>Two exceptions: rehearsing a tooling change before it touches production, and building a synthetic twin of your own estate for <a href="#training">training and simulation</a>.</p>
+        <p>Two exceptions: rehearsing a tooling change before it touches production, and a synthetic twin of your own estate for <a href="#training">training new joiners</a>.</p>
       </div>
     </div>
     <p class="callout"><b>This includes three-person companies.</b> A studio launching an Azure cost tool has this problem on day one, and harder than a large vendor that can afford sandbox tenants. The vocabulary is enterprise; the need isn't.</p>
@@ -299,9 +309,10 @@ footer p{color:var(--ink2)}
         <tbody>
           <tr><td>Scanner / CSPM / FinOps SaaS vendor on Azure</td><td><span class="v yes">yes, day one</span></td><td>Reproducing a customer's bug is impossible any other way. Company size is irrelevant.</td></tr>
           <tr><td>Consultancy with Azure audit tooling</td><td><span class="v yes">yes</span></td><td>Same reason, plus sales demos: show 18 violation types without exposing a real client.</td></tr>
-          <tr><td>Enterprise L&amp;D / internal cloud academy</td><td><span class="v yes">yes</span></td><td>Build a synthetic twin from your own tenant's statistics and let 200 trainees break it with zero blast radius.</td></tr>
+          <tr><td>Multinational onboarding cloud, FinOps or SRE joiners</td><td><span class="v yes">yes</span></td><td>A twin generated from your own tenant's statistics: joiners practise on it before they get production access.</td></tr>
+          <tr><td>Training or certification provider</td><td><span class="v yes">yes</span></td><td>The same scenario for 5 learners or 5,000, reset between sessions, with no tenant per seat.</td></tr>
           <tr><td>Large enterprise: cost and drift simulation on its own estate</td><td><span class="v yes">yes</span></td><td>Rehearse FinOps scenarios and drift-detection runbooks on a production-shaped twin, without waiting for the real estate to misbehave.</td></tr>
-          <tr><td>University or bootcamp teaching cloud governance</td><td><span class="v yes">yes</span></td><td>A realistic 50K-resource estate as course material, at zero Azure cost. Fixed seeds make labs gradable.</td></tr>
+          <tr><td>University or bootcamp teaching cloud</td><td><span class="v yes">yes</span></td><td>A realistic 50K-resource estate as course material, at zero Azure cost. Fixed seeds make labs gradable.</td></tr>
           <tr><td>Platform team, 50+ subscriptions, internal tooling</td><td><span class="v mid">maybe</span></td><td>Useful for CI and for rehearsing tooling changes before production. Not indispensable.</td></tr>
           <tr><td>Platform team, a handful of subscriptions</td><td><span class="v no">no</span></td><td>Your dev subscription does the job, for free and more faithfully.</td></tr>
           <tr><td>AWS-only team</td><td><span class="v no">no</span></td><td>No Azure. For API-call testing, your equivalent is moto.</td></tr>
@@ -379,26 +390,34 @@ footer p{color:var(--ink2)}
 <section class="s alt" id="training">
   <div class="wrap">
     <div class="head">
-      <span class="label">Training and simulation</span>
-      <h2>A production-shaped twin you can break on purpose</h2>
-      <p>The ownership rule has one inversion: a large company wants a copy of its own estate, precisely because nobody can be let loose on the original. TenantLess builds that twin from statistics alone.</p>
+      <span class="label">Training and enablement</span>
+      <h2>Every trainee, the same realistic estate</h2>
+      <p>Teaching FinOps, SRE, DevOps and cloud governance means practising on infrastructure. Production is off limits, sandboxes are small and expensive, and no two people can safely share one. TenantLess gives every learner the same production-shaped Azure estate, with no Azure bill, no real data and no blast radius.</p>
     </div>
-    <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(18rem,1fr))">
+    <div class="train-grid">
       <div class="card">
-        <h3>Enterprise cloud academies</h3>
-        <p>Profile your production tenant: only statistical distributions leave it, enforced by automated privacy checks and minimum group sizes. Generate a twin shaped like your landing zones and give every trainee access, with zero blast radius and zero data exposure.</p>
+        <span class="badge yes">Universities and bootcamps</span>
+        <h3>A real estate to teach on</h3>
+        <p>Student credits buy a handful of resources, not 300 subscriptions with hub-and-spoke networking, cost history and misconfigurations to find. A fixed seed gives every student the identical estate, so labs are gradable and cohorts comparable, year after year.</p>
         <div class="lab"><b>Lab:</b> find the storage accounts allowing public blob access across 250 subscriptions. The injected violations are the grader's answer key.</div>
       </div>
       <div class="card">
-        <h3>Cost and drift simulation</h3>
-        <p>Rehearse FinOps work against the Cost Management API on the twin: onboard a new cost tool, validate ingestion, replay a billing period. Then apply a repeatable batch of drift, confirm your scanners and runbooks catch exactly that change, undo it, repeat.</p>
-        <div class="lab"><b>Drill:</b> apply a chaos drift batch with a fixed seed, page the on-call team, measure detection time, undo it in one step.</div>
+        <span class="badge yes">Training and certification providers</span>
+        <h3>A lab range that never runs out</h3>
+        <p>Cloud academies, certification programmes and the platform vendors' own learning teams can run the same scenario for 5 learners or 5,000, without provisioning a tenant per seat or cleaning up after each class. Reset between sessions and the estate is exactly as it was.</p>
+        <div class="lab"><b>Exercise:</b> allocate a month of cost to business units, find the anomaly, then fix the tagging through the ARM API and re-run the report.</div>
       </div>
       <div class="card">
-        <h3>Universities and bootcamps</h3>
-        <p>Teaching cloud governance or FinOps needs an estate with realistic problems, and student credits buy a handful of resources, not 300 subscriptions with hub-and-spoke networking. Fixed seeds give every student the same estate, so labs are gradable.</p>
-        <div class="lab"><b>Lab:</b> find the misconfiguration with a scanner, fix it through the ARM API (writes enabled), then re-scan to prove it's gone.</div>
+        <span class="badge yes">Multinationals onboarding new joiners</span>
+        <h3>Practise on a twin before touching production</h3>
+        <p>New cloud, FinOps and SRE hires learn your landing-zone shapes, naming and policies on a synthetic twin generated from your own tenant's statistics. Only distributions leave the real estate, enforced by automated privacy checks, so joiners can break things freely before they get production access.</p>
+        <div class="lab"><b>Drill:</b> apply a batch of drift with a fixed seed, have the new team detect exactly that change, undo it in one step, repeat with a new seed.</div>
       </div>
+    </div>
+    <div class="skills">
+      <div><span class="label">FinOps</span><p>Cost allocation, anomaly hunting and chargeback against the Cost Management API, pinned to a date so every run matches.</p></div>
+      <div><span class="label">SRE and DevOps</span><p>Detect and remediate misconfigurations, then practise drift detection and one-step undo on an estate that resets.</p></div>
+      <div><span class="label">Governance</span><p>18 violation types across severities, injected at rates you choose: a graded range for audit and policy training.</p></div>
     </div>
   </div>
 </section>
