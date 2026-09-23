@@ -90,32 +90,16 @@ nav.top a:hover{color:var(--a);text-decoration:none}
 @media (max-width:980px){.hero .inner{grid-template-columns:1fr;gap:2.4rem;padding-block:3.5rem 2.5rem}}
 .hero .lede{margin-inline:0}
 .hero .btns,.hero .oneline{justify-content:flex-start}
-.rcpt{background:var(--code);border-radius:6px;padding:1.1rem;box-shadow:0 30px 60px -30px rgba(0,0,0,.55);font-family:var(--mono);color:var(--code-ink)}
-.rcpt .top{display:flex;align-items:center;gap:.45rem;margin-bottom:.9rem}
-.rcpt .top i{width:11px;height:11px;border-radius:50%;display:block}
-.rcpt .top span{margin-left:auto;font-size:.64rem;letter-spacing:.12em;text-transform:uppercase;color:var(--code-mut)}
-.rcpt .body{background:var(--code2);border-radius:3px;padding:1.1rem 1.15rem;font-size:.8rem;line-height:1.7}
-.rcpt .cmd{color:#e8e6e1;word-break:break-word}
-.rcpt .cmd .k{color:var(--code-a)}
-.rcpt .kv{display:grid;grid-template-columns:7.5rem 1fr;gap:.1rem .8rem;margin-top:.8rem}
-.rcpt .kv .k{color:var(--code-mut)}
-.rcpt .kv .val{color:#e8e6e1}
-.rcpt .kv .val em{font-style:normal;color:#7fbf8f}
-.rcpt .arrow{display:flex;align-items:center;gap:.8rem;color:var(--code-mut);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;margin:1rem 0 .9rem}
-.rcpt .arrow::before,.rcpt .arrow::after{content:"";flex:1;height:1px;background:#2a2a2a}
-.rcpt .estate{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#2a2a2a;border:1px solid #2a2a2a;border-radius:3px;overflow:hidden}
-.rcpt .estate div{background:var(--code2);padding:.75rem .85rem}
-.rcpt .estate .n{display:block;font-size:1.35rem;font-weight:700;color:var(--code-a);letter-spacing:-.02em;font-variant-numeric:tabular-nums;transition:opacity .15s}
-.rcpt .estate .l{display:block;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--code-mut)}
-.rcpt .hash{display:flex;align-items:center;justify-content:space-between;gap:.8rem;margin-top:1rem;padding-top:.85rem;border-top:1px dashed #333;font-size:.74rem;flex-wrap:wrap}
-.rcpt .hash b{color:#e8e6e1;font-weight:400}
-#regen{appearance:none;font:400 .72rem var(--mono);border:1px solid #3a3a3a;background:transparent;color:#e8e6e1;padding:.35rem .7rem;border-radius:2px;cursor:pointer;display:inline-flex;align-items:center;gap:.45rem}
-#regen:hover{border-color:var(--code-a);color:var(--code-a)}
-#regen .spin{width:10px;height:10px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;display:none}
-#regen.busy .spin{display:inline-block;animation:spin .6s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.rcpt .ok{margin-top:.55rem;font-size:.74rem;color:#7fbf8f;min-height:1.2em}
-.rcpt .src{display:block;margin-top:.7rem;font-size:.6rem;color:var(--code-mut);letter-spacing:.04em}
+.hterm{background:#1a1713;border:1px solid #2e2921;border-radius:10px;overflow:hidden;box-shadow:0 22px 56px -22px rgba(20,16,8,.5);font-family:var(--mono)}
+.hterm .bar{display:flex;align-items:center;gap:.45rem;padding:.65rem .95rem;border-bottom:1px solid #2e2921}
+.hterm .bar i{width:10px;height:10px;border-radius:50%;background:#3e382c;display:block}
+.hterm .bar span{margin-left:auto;color:#6e6759;font-size:.68rem;letter-spacing:.04em}
+.hterm pre{margin:0;padding:1rem 1.1rem 1.1rem;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;color:#cfc8bb;font-size:clamp(.66rem,1.05vw,.74rem);line-height:1.68}
+.hterm .p{color:#8fb3e8}
+.hterm .c{color:#6e6759}
+.hterm .g{color:#8fbe9b}
+.hterm .k{color:#b7a8df}
+.hterm .src{display:block;padding:.6rem 1.1rem .8rem;border-top:1px solid #2e2921;font-size:.62rem;color:#6e6759;letter-spacing:.03em}
 .pill{display:inline-flex;align-items:center;gap:.55rem;padding:.45rem 1rem;border:1px solid var(--line);border-radius:999px;background:var(--bg);font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
 .pill i{width:8px;height:8px;border-radius:50%;background:var(--a);display:block}
 @media (prefers-reduced-motion:no-preference){.pill i{animation:pulse 2s ease infinite}.fade{animation:up .6s ease both}.d1{animation-delay:.1s}.d2{animation-delay:.2s}.d3{animation-delay:.3s}}
@@ -235,7 +219,7 @@ td:first-child{color:var(--ink)}
 .term{background:var(--code);border-radius:6px;padding:1.2rem;box-shadow:0 24px 50px -24px rgba(0,0,0,.45)}
 .dots{display:flex;gap:.45rem;margin-bottom:.9rem}
 .dots i{width:11px;height:11px;border-radius:50%;display:block}
-.term pre{background:var(--code2);border-radius:3px;padding:1.05rem 1.15rem;font-family:var(--mono);font-size:.78rem;line-height:1.75;color:var(--code-ink);overflow-x:auto;white-space:pre}
+.term pre{background:var(--code2);border-radius:3px;padding:1.05rem 1.15rem;font-family:var(--mono);font-size:.78rem;line-height:1.75;color:var(--code-ink);overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
 .term .k{color:var(--code-a)}
 .term .c{color:var(--code-mut)}
 .term .src{display:block;margin-top:.75rem;font-family:var(--mono);font-size:.64rem;color:var(--code-mut);letter-spacing:.04em}
@@ -301,30 +285,27 @@ footer p{color:var(--ink2)}
       <p class="fine">Apache-2.0 · Rust + Python + PostgreSQL</p>
       </div>
 
-      <div class="rcpt fade d2" id="receipt" aria-label="Generating an estate from a seed is reproducible">
-        <div class="top" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#ffbd2e"></i><i style="background:#28c840"></i><span>generate</span></div>
-        <div class="body">
-          <div class="cmd"><span class="k">$</span> tenantless generate --profile demo --seed 42 --cost-as-of 2026-01-01 --jobs 8</div>
-          <div class="kv">
-            <span class="k">profile</span><span class="val">demo</span>
-            <span class="k">seed</span><span class="val">42</span>
-            <span class="k">cost date</span><span class="val">2026-01-01 <em># pinned</em></span>
-            <span class="k">jobs</span><span class="val">8 <em># same bytes as --jobs 1</em></span>
-          </div>
-          <div class="arrow">materializes</div>
-          <div class="estate">
-            <div><span class="n">~50</span><span class="l">subscriptions</span></div>
-            <div><span class="n">~5,000</span><span class="l">resources</span></div>
-            <div><span class="n">8</span><span class="l">RBAC roles</span></div>
-            <div><span class="n">18</span><span class="l">violation types</span></div>
-          </div>
-          <div class="hash">
-            <span>estate <b>byte-identical on every run</b></span>
-            <button type="button" id="regen" aria-label="Regenerate the estate from the same inputs"><span class="spin" aria-hidden="true"></span><span id="regen-label">regenerate</span></button>
-          </div>
-          <div class="ok" id="verify" aria-live="polite"></div>
-        </div>
-        <span class="src">Demo profile as in the README (about 50 subscriptions, 5,000 resources). The regenerate button illustrates the guarantee.</span>
+      <div class="hterm fade d2" aria-label="Real output of the one-command demo">
+        <div class="bar"><i></i><i></i><i></i><span>local · v1.5.0</span></div>
+<pre><span class="p">$</span> docker compose --profile demo up
+<span class="c">generator-1   |</span> Generated tenant 56d2557f…36e9:
+<span class="c">generator-1   |</span>   <span class="g">50 subscriptions</span>, 828 resource groups,
+<span class="c">generator-1   |</span>   <span class="g">4960 resources</span>, 1238 violations, …
+<span class="c">generator-1   |</span>   (seed=42, …, elapsed=2748ms)
+<span class="c">mock-server-1 |</span> tenantless-server listening (HTTP)
+<span class="c">mock-server-1 |</span>   addr=0.0.0.0:8080
+
+<span class="p">$</span> curl -H "Authorization: Bearer anything" \
+    "localhost:8080/subscriptions?api-version=2022-12-01"
+{
+  <span class="k">"value"</span>: [
+    { <span class="k">"subscriptionId"</span>: <span class="g">"04379017-…-acf97defd49f"</span>,
+      <span class="k">"displayName"</span>: <span class="g">"infra-sbx-portal-sub"</span>,
+      <span class="k">"state"</span>: <span class="g">"Enabled"</span>, … },
+    <span class="c">…49 more subscriptions</span>
+  ]
+}</pre>
+        <span class="src">Captured from the published v1.5.0 images, lightly trimmed. Same seed, same estate, every run.</span>
       </div>
     </div>
 
@@ -583,19 +564,6 @@ footer p{color:var(--ink2)}
   range.addEventListener("input",function(){render(+range.value);});
   ticks.forEach(function(b){b.addEventListener("click",function(){render(+b.dataset.i);range.focus();});});
   render(2);
-
-  var regen=document.getElementById("regen"),rl=document.getElementById("regen-label"),ver=document.getElementById("verify");
-  var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  regen.addEventListener("click",function(){
-    if(regen.classList.contains("busy"))return;
-    ver.textContent="";
-    var nums=[].slice.call(document.querySelectorAll("#receipt .estate .n"));
-    function settle(){nums.forEach(function(n){n.style.opacity="1";});regen.classList.remove("busy");rl.textContent="regenerate";ver.textContent="✓ identical: same inputs, same estate";}
-    if(reduce){settle();return;}
-    regen.classList.add("busy");rl.textContent="generating";
-    nums.forEach(function(n){n.style.opacity=".25";});
-    setTimeout(settle,750);
-  });
 
   var cb=document.getElementById("copy-cmd");
   cb.addEventListener("click",function(){
