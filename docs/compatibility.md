@@ -21,8 +21,9 @@
 ## Azure API versions
 
 Tenantless implements the **covered ARM endpoints and JSON shapes** a discovery scan
-exercises — not the whole Azure ARM surface — and the management plane is **read-only**
-(no `PUT` / `DELETE`, no live-resource behavior). Within that covered surface, the mock
+exercises — not the whole Azure ARM surface — and the management plane is **read-only by
+default** (opt-in `PUT` / `PATCH` / `DELETE` since 1.5.0 via `--enable-arm-writes`; no
+live-resource behavior). Within that covered surface, the mock
 server accepts the `api-version` query parameter and serves shapes matching these versions.
 Requests carrying a different `api-version` are still served — the parameter is not used to
 switch response shape — so a client pinned to a nearby version generally works.

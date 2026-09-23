@@ -148,10 +148,11 @@ These hold across stages and are each pinned by a gate:
 
 ## What is deliberately absent
 
-- **ARM writes.** No `PUT` / `DELETE`, no long-running-operation polling, no `ETag` /
-  `If-Match`. A stateful lifecycle store is out of scope for this read-only surface — a
-  different problem, because once writes persist, "just regenerate" stops being a recovery
-  path.
+- **ARM writes by default.** The served surface is read-only unless `--enable-arm-writes`
+  is passed. Since 1.5.0 that flag arms a generic `PUT` / `PATCH` / `DELETE` plane with
+  `ETag` / `If-Match`, persisted as a copy-on-write overlay over the immutable baseline (see
+  [arm-writes-security.md](arm-writes-security.md)). Writes are synchronous: there is no
+  long-running-operation polling, and resource-group create/delete is not yet supported.
 - **Behavioral realism.** Resources look right and relate correctly. They do not run,
   serve traffic, or emit real metrics.
 - **Complete service coverage.** The catalog covers common solution shapes and grows from
