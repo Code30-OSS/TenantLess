@@ -13,7 +13,7 @@
 [![Azure](https://img.shields.io/badge/Azure-ARM%20API%20mock-0078D4.svg)](docs/compatibility.md)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](docker-compose.yml)
 
-**Tenantless simulates statistically realistic Azure estates for scanner, governance,
+**TenantLess simulates statistically realistic Azure estates for scanner, governance,
 FinOps, drift and cross-subscription risk testing.**
 
 It generates a synthetic Azure tenant from statistical distributions and serves it over
@@ -28,7 +28,7 @@ estate, and parallel generation (`--jobs N`) is byte-identical to single-threade
 (`--jobs 1`). Cost billing periods derive from `--cost-as-of`, so pin it whenever a run
 needs to be reproducible.
 
-**Scope — covered surface, read by default.** Tenantless serves the *covered* ARM
+**Scope — covered surface, read by default.** TenantLess serves the *covered* ARM
 management-plane endpoints and JSON shapes a discovery scan exercises (list, detail,
 `$filter`, Cost Management query, RBAC) — not the whole of Azure ARM. Out of the box the
 surface is **read-only**. Since 1.5.0 an **opt-in** generic write plane
@@ -47,7 +47,7 @@ Testing anything that reads an Azure estate leaves you two bad options:
 - **Hand-write fixtures** — reproducible, but they encode what you already thought of, at a
   scale that never exposes what scale actually breaks.
 
-Tenantless is the third option: a tenant you can *specify*. Ask for 300 subscriptions with
+TenantLess is the third option: a tenant you can *specify*. Ask for 300 subscriptions with
 a hub-and-spoke topology, an 8% rate of storage accounts allowing public blob access, and a
 long tail of resource types — then scan it, break it, regenerate it, and get the same thing
 back tomorrow.
@@ -71,7 +71,7 @@ Latency is machine-dependent; treat it as a shape, not a promise about your hard
 
 ## Roadmap
 
-Tenantless shipped read-only in [v1.0.0](https://github.com/Code30-OSS/TenantLess/releases/tag/v1.0).
+TenantLess shipped read-only in [v1.0.0](https://github.com/Code30-OSS/TenantLess/releases/tag/v1.0).
 The **Stateful ARM Lifecycle** milestone is landing incrementally on the 1.x line, each step
 additive and off by default:
 
@@ -186,7 +186,7 @@ Then open <http://localhost:8080/ui> for the web console.
 > contain the Python generator — it does **not** generate an estate. Populate one first with
 > the host-side `uv run tenantless generate` step (step 4). The control plane's generate and
 > analyze actions also shell out to `uv run tenantless`, so they need a source-host
-> deployment (uv, Python, and the Tenantless package/repository) — they do **not** run inside
+> deployment (uv, Python, and the TenantLess package/repository) — they do **not** run inside
 > the slim server image.
 
 `generate` accepts a bundled profile name (`enterprise`, `small`) or a path to your own
@@ -334,7 +334,7 @@ This starts PostgreSQL and the mock server, but **does not generate an estate** 
 Compose database is empty and the slim server image does not include the Python generator.
 Populate one first with the host-side `uv run tenantless generate` (see the Docker-assisted
 Quickstart). The control plane's generate/analyze actions also shell out to `uv run
-tenantless`, so they require a source-host deployment with uv, Python and the Tenantless
+tenantless`, so they require a source-host deployment with uv, Python and the TenantLess
 package — they do not run inside the slim server image.
 
 ## Compatibility
@@ -424,14 +424,14 @@ uv run python scripts/bench_arm_latency.py --subscriptions 300 --resources 15000
 
 ## Notice
 
-Tenantless is an independent Apache-2.0 open-source project developed and maintained by
+TenantLess is an independent Apache-2.0 open-source project developed and maintained by
 [Code30](https://code30.io/).
 
 It is **not affiliated with, endorsed by, or sponsored by Microsoft**. Azure and Microsoft
 are trademarks of Microsoft Corporation. ARM resource-type names and API shapes appear here
 descriptively, to identify the API surface this project emulates.
 
-Tenantless does not connect to, proxy, or replace any Microsoft service. It serves
+TenantLess does not connect to, proxy, or replace any Microsoft service. It serves
 synthetic data from your own machine.
 
 ## License

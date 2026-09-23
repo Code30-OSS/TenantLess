@@ -1,810 +1,500 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TenantLess</title>
-<meta name="description" content="A synthetic Azure tenant you can specify.">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TenantLess — a disposable Azure tenant for testing the code that reads one</title>
+<meta name="description" content="TenantLess generates statistically realistic Azure estates and serves them over ARM-compatible HTTP, so scanners, governance engines, FinOps tools and trainees can run against a tenant that doesn't exist. Open source by Code30.">
+<meta name="theme-color" content="#0a0a0a">
+<meta property="og:type" content="website">
+<meta property="og:title" content="TenantLess — a disposable Azure tenant for testing the code that reads one">
+<meta property="og:description" content="Statistically realistic Azure estates over ARM-compatible HTTP. Point an unmodified scanner at 145,000 resources that were never provisioned. One Docker command.">
+<meta property="og:image" content="https://raw.githubusercontent.com/Code30-OSS/TenantLess/main/docs/assets/site/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:url" content="https://github.com/Code30-OSS/TenantLess">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="TenantLess — a disposable Azure tenant for testing the code that reads one">
+<meta name="twitter:description" content="Statistically realistic Azure estates over ARM-compatible HTTP. One Docker command.">
+<meta name="twitter:image" content="https://raw.githubusercontent.com/Code30-OSS/TenantLess/main/docs/assets/site/og-image.png">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-70 -110 154 128'%3E%3Crect x='-70' y='-110' width='154' height='128' rx='14' fill='%230a0a0a'/%3E%3Cg fill='none' stroke-linecap='round' stroke-width='6'%3E%3Cpath d='M-50 -67V-25L0 0M0 -92L-50 -67M0 -92V-33' stroke='%23ffffff'/%3E%3Cpath d='M0 -33V0' stroke='%23ffffff' stroke-dasharray='6 8' opacity='.5'/%3E%3Cpath d='M50 -67V-25L0 0M0 -92L50 -67' stroke='%236f9ee0' stroke-dasharray='8 7' opacity='.85'/%3E%3C/g%3E%3Cg fill='%236f9ee0'%3E%3Ccircle cx='25' cy='-9' r='3.6' opacity='.55'/%3E%3Ccircle cx='43' cy='-34' r='4.2' opacity='.42'/%3E%3Ccircle cx='58' cy='-48' r='3.4' opacity='.3'/%3E%3Ccircle cx='63' cy='-16' r='3' opacity='.25'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=Space+Mono:wght@400;700&display=swap">
 <style>
-  /* ---------- Tokens: light is the bare :root ---------- */
-  :root {
-    --ink: #10151c;
-    --paper: #f3f5f8;
-    --surface: #ffffff;
-    --surface-2: #eef1f5;
-    --line: #d3dae3;
-    --line-strong: #b6c1cd;
-    --text: #10151c;
-    --text-dim: #55606d;
-    --text-faint: #8b96a3;
-    --azure: #0a6ebd;
-    --azure-bright: #1183d6;
-    --azure-wash: rgba(17, 131, 214, 0.08);
-    --good: #1f9d63;
-    --warn: #b7791f;
-    --crit: #c23b3b;
-    --grid: rgba(16, 21, 28, 0.045);
-    --grid-strong: rgba(16, 21, 28, 0.08);
-    --shadow: 0 1px 2px rgba(16,21,28,.06), 0 12px 32px -18px rgba(16,21,28,.28);
-    --radius: 6px;
-    color-scheme: light;
+/* Code30 graphic chart (code30.io), accent swapped gold -> Cobalt for Code30 OSS */
+:root{
+  --bg:#ffffff; --bg2:#f8f7f5; --bg3:#f0eeea;
+  --ink:#0a0a0a; --ink2:#4a4a4a; --muted:#8a8a8a;
+  --line:#e5e3df; --line2:#d0cdc6;
+  --a:#2a5fa5; --a-dk:#1f4a85; --a-lt:#bfd0ea; --a-dim:rgba(42,95,165,.08);
+  --ok:#2d7a3a; --ok-dim:rgba(45,122,58,.08); --warn:#98700d; --bad:#a6432e;
+  --code:#0a0a0a; --code2:#1a1a1a; --code-ink:#a1a1a6; --code-mut:#6e6e73; --code-a:#8fb3e8;
+  --sans:'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:'Space Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    color-scheme:dark;
+    --bg:#0a0a0a; --bg2:#131312; --bg3:#1b1b19;
+    --ink:#f3f1ed; --ink2:#b9b5ae; --muted:#7f7b74;
+    --line:#262522; --line2:#3a3834;
+    --a:#6f9ee0; --a-dk:#8fb3e8; --a-lt:#2a3f5e; --a-dim:rgba(111,158,224,.10);
+    --ok:#6fbe85; --ok-dim:rgba(111,190,133,.10); --warn:#dfb255; --bad:#de7a62;
+    --code:#000; --code2:#0f0f0e;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --ink: #0e1116;
-      --paper: #0e1116;
-      --surface: #161b22;
-      --surface-2: #1c222b;
-      --line: #262d38;
-      --line-strong: #333c49;
-      --text: #e6ebf1;
-      --text-dim: #9aa6b4;
-      --text-faint: #667283;
-      --azure: #4cc2ff;
-      --azure-bright: #6fceff;
-      --azure-wash: rgba(76, 194, 255, 0.10);
-      --good: #4fd08a;
-      --warn: #e0a54a;
-      --crit: #f2726f;
-      --grid: rgba(120, 160, 200, 0.05);
-      --grid-strong: rgba(120, 170, 220, 0.10);
-      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 20px 48px -24px rgba(0,0,0,.7);
-      color-scheme: dark;
-    }
-  }
-  :root[data-theme="dark"] {
-    --ink: #0e1116;
-    --paper: #0e1116;
-    --surface: #161b22;
-    --surface-2: #1c222b;
-    --line: #262d38;
-    --line-strong: #333c49;
-    --text: #e6ebf1;
-    --text-dim: #9aa6b4;
-    --text-faint: #667283;
-    --azure: #4cc2ff;
-    --azure-bright: #6fceff;
-    --azure-wash: rgba(76, 194, 255, 0.10);
-    --good: #4fd08a;
-    --warn: #e0a54a;
-    --crit: #f2726f;
-    --grid: rgba(120, 160, 200, 0.05);
-    --grid-strong: rgba(120, 170, 220, 0.10);
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 20px 48px -24px rgba(0,0,0,.7);
-    color-scheme: dark;
-  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:1000;opacity:.02;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.wrap{max-width:72rem;margin-inline:auto;padding-inline:1.5rem}
+.narrow{max-width:46rem}
+a{color:var(--a-dk);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--a);outline-offset:3px;border-radius:2px}
+code{font-family:var(--mono);font-size:.84em;background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:.05em .35em}
+h1,h2,h3{letter-spacing:-.03em;text-wrap:balance;font-weight:700}
+.label{font-family:var(--mono);font-size:.72rem;letter-spacing:.15em;text-transform:uppercase;color:var(--a);display:inline-flex;align-items:center;gap:.5rem}
+.label::before{content:"\25C6";font-size:.58rem}
+.muted{color:var(--muted)}
+.small{font-size:.93rem;line-height:1.6}
 
-  * { box-sizing: border-box; }
-  img { max-width: 100%; height: auto; }
-  [hidden] { display: none !important; }
-  html { scroll-behavior: smooth; }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+/* nav */
+header.site{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header.site .wrap{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:.9rem;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:.65rem;color:var(--ink)}
+.brand:hover{text-decoration:none}
+.brand svg{width:34px;height:34px;flex:none}
+.brand .w{font-weight:700;font-size:1.12rem;letter-spacing:-.02em}
+.brand .by{font-family:var(--mono);font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);border-left:1px solid var(--line);padding-left:.65rem}
+.brand .by b{color:var(--a);font-weight:700}
+nav.top{display:flex;gap:1.4rem;align-items:center;font-size:.92rem}
+nav.top a{color:var(--ink2)}
+nav.top a:hover{color:var(--a);text-decoration:none}
+.gh{font-family:var(--mono);font-size:.78rem;border:1px solid var(--line2);border-radius:2px;padding:.35rem .75rem;color:var(--ink)!important}
+.gh:hover{border-color:var(--a)}
+@media (max-width:760px){nav.top a:not(.gh){display:none}}
 
-  body {
-    margin: 0;
-    background-color: var(--paper);
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size: 28px 28px;
-    color: var(--text);
-    font-family: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
+/* hero */
+.hero{position:relative;overflow:hidden}
+.hero .grid{position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 59px,var(--line) 59px,var(--line) 60px),repeating-linear-gradient(90deg,transparent,transparent 59px,var(--line) 59px,var(--line) 60px);
+  -webkit-mask-image:radial-gradient(ellipse 80% 50% at 50% 50%,#000 20%,transparent 100%);mask-image:radial-gradient(ellipse 80% 50% at 50% 50%,#000 20%,transparent 100%)}
+.hero .orb{position:absolute;width:500px;height:500px;border-radius:50%;right:-240px;top:6rem;pointer-events:none;background:radial-gradient(circle,var(--a-dim) 0%,transparent 70%);filter:blur(40px)}
+.hero .inner{position:relative;text-align:center;padding-block:5.5rem 3rem;max-width:58rem;margin-inline:auto}
+.pill{display:inline-flex;align-items:center;gap:.55rem;padding:.45rem 1rem;border:1px solid var(--line);border-radius:999px;background:var(--bg);font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.pill i{width:8px;height:8px;border-radius:50%;background:var(--a);display:block}
+@media (prefers-reduced-motion:no-preference){.pill i{animation:pulse 2s ease infinite}.fade{animation:up .6s ease both}.d1{animation-delay:.1s}.d2{animation-delay:.2s}.d3{animation-delay:.3s}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes up{from{opacity:.001;transform:translateY(14px)}to{opacity:1;transform:none}}
+h1{font-size:clamp(2.4rem,6.4vw,4.6rem);line-height:1.04;margin:1.6rem 0 1.3rem}
+h1 span{color:var(--a)}
+.lede{font-size:clamp(1.05rem,2vw,1.3rem);color:var(--ink2);max-width:42rem;margin-inline:auto}
+.btns{display:flex;flex-wrap:wrap;gap:1rem;justify-content:center;margin-top:2.2rem}
+.btn{font-size:.92rem;font-weight:500;padding:.8rem 1.5rem;border-radius:2px;border:1px solid transparent;display:inline-block;cursor:pointer;font-family:var(--sans)}
+.btn:hover{text-decoration:none}
+.btn.p{background:var(--ink);color:var(--bg)}
+.btn.p:hover{background:var(--a);color:#fff}
+.btn.s{border-color:var(--a);color:var(--a-dk);background:transparent}
+.btn.s:hover{background:var(--a-dim)}
+@media (prefers-reduced-motion:no-preference){.btn{transition:all .2s}.btn:hover{transform:translateY(-2px)}}
+.oneline{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:.6rem;margin-top:1.3rem;font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+.copy{display:inline-flex;align-items:center;gap:.6rem;background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:.35rem .4rem .35rem .7rem;color:var(--ink)}
+.copy button{appearance:none;border:1px solid var(--line2);background:var(--bg);color:var(--ink2);font:400 .68rem var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:.2rem .5rem;border-radius:2px;cursor:pointer}
+.copy button:hover{border-color:var(--a);color:var(--a)}
+.fine{margin-top:1rem;font-family:var(--mono);font-size:.7rem;color:var(--muted)}
 
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
-  .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* product shot */
+.shot{position:relative;margin-top:.5rem;padding-bottom:4rem}
+.frame{border:1px solid var(--line2);border-radius:6px;overflow:hidden;background:var(--bg2);box-shadow:0 30px 70px -40px rgba(0,0,0,.45)}
+.frame .bar{display:flex;align-items:center;gap:.45rem;padding:.6rem .8rem;border-bottom:1px solid var(--line);background:var(--bg)}
+.frame .bar i{width:10px;height:10px;border-radius:50%;background:var(--line2);display:block}
+.frame .bar span{margin-left:.6rem;font-family:var(--mono);font-size:.68rem;color:var(--muted)}
+.frame img{display:block;width:100%;height:auto;max-width:100%}
+.shot figcaption{margin-top:.9rem;text-align:center;font-size:.86rem;color:var(--muted)}
 
-  h1, h2, h3 { font-family: "Archivo", "IBM Plex Sans", sans-serif; text-wrap: balance; margin: 0; }
+/* sections */
+section.s{padding-block:5rem;border-top:1px solid var(--line)}
+section.alt{background:var(--bg2)}
+.head{max-width:46rem;margin-bottom:2.4rem}
+.head h2{font-size:clamp(1.8rem,4vw,2.8rem);line-height:1.1;margin:.8rem 0 1rem}
+.head p{color:var(--ink2)}
 
-  a { color: var(--azure); text-decoration: none; }
-  a:hover { text-decoration: underline; text-underline-offset: 3px; }
-  :focus-visible { outline: 2px solid var(--azure-bright); outline-offset: 3px; border-radius: 2px; }
+/* audience */
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem}
+@media (max-width:780px){.cards{grid-template-columns:1fr}}
+.card{position:relative;overflow:hidden;background:var(--bg);border:1px solid var(--line);padding:1.8rem}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--a);transform:scaleX(0);transform-origin:left;transition:transform .3s ease}
+.card:hover::before{transform:scaleX(1)}
+@media (prefers-reduced-motion:no-preference){.card{transition:transform .2s,border-color .2s}.card:hover{transform:translateY(-4px);border-color:var(--a)}}
+.card h3{font-size:1.28rem;margin-bottom:.6rem;letter-spacing:-.02em}
+.card p{color:var(--ink2);font-size:.96rem}
+.card p+p{margin-top:.6rem}
+.badge{display:inline-flex;font-family:var(--mono);font-size:10px;letter-spacing:1.2px;text-transform:uppercase;padding:4px 10px;border-radius:3px;font-weight:700;margin-bottom:1rem;border:1px solid}
+.badge.yes{background:var(--ok-dim);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.badge.no{background:var(--bg3);color:var(--muted);border-color:var(--line)}
+.callout{border-left:2px solid var(--a);padding:.5rem 0 .5rem 1.2rem;margin-top:2rem;color:var(--ink2);max-width:48rem}
+.callout b{color:var(--ink)}
 
-  .eyebrow {
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 12px; font-weight: 500;
-    letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--azure); margin: 0 0 18px;
-    display: inline-flex; align-items: center; gap: 10px;
-  }
-  .eyebrow::before {
-    content: ""; width: 22px; height: 1px; background: var(--azure); opacity: .7;
-  }
+/* tables */
+.tw{overflow-x:auto;border:1px solid var(--line);background:var(--bg);margin-top:2rem}
+table{width:100%;border-collapse:collapse;font-size:.93rem;min-width:36rem}
+th,td{text-align:left;vertical-align:top;padding:.85rem 1.1rem;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:400;background:var(--bg2)}
+td:first-child{font-weight:500}
+td{color:var(--ink2)}
+td:first-child{color:var(--ink)}
+.v{font-family:var(--mono);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap;font-weight:700}
+.v.yes{color:var(--ok)}.v.no{color:var(--bad)}.v.mid{color:var(--warn)}
 
-  /* ---------- Top bar ---------- */
-  header.bar {
-    position: sticky; top: 0; z-index: 50;
-    backdrop-filter: blur(10px);
-    background: color-mix(in srgb, var(--paper) 82%, transparent);
-    border-bottom: 1px solid var(--line);
-  }
-  .bar-inner { display: flex; align-items: center; gap: 20px; height: 60px; }
-  .brand { display: flex; align-items: baseline; gap: 2px; font-family: "Archivo"; font-weight: 800; font-size: 19px; letter-spacing: -0.02em; color: var(--text); }
-  .brand b { color: var(--azure); font-weight: 800; }
-  .brand .cursor { display:inline-block; width:8px; height:16px; background: var(--azure); margin-left:4px; transform: translateY(2px); }
-  @media (prefers-reduced-motion: no-preference) { .brand .cursor { animation: blink 1.15s steps(1) infinite; } }
-  @keyframes blink { 50% { opacity: 0; } }
-  .bar nav { margin-left: auto; display: flex; align-items: center; gap: 26px; }
-  .bar nav a { color: var(--text-dim); font-size: 14px; }
-  .bar nav a:hover { color: var(--text); text-decoration: none; }
-  .ghost-btn {
-    font-family: "IBM Plex Mono", monospace; font-size: 13px;
-    border: 1px solid var(--line-strong); background: transparent; color: var(--text);
-    padding: 7px 13px; border-radius: var(--radius); cursor: pointer; line-height: 1;
-  }
-  .ghost-btn:hover { border-color: var(--azure); color: var(--azure); }
-  .nav-hide { }
-  @media (max-width: 760px) { .nav-hide { display: none; } }
+/* scale ladder */
+.scale{border:1px solid var(--line);background:var(--bg)}
+.stops{display:flex;border-bottom:1px solid var(--line);overflow-x:auto}
+.stops button{flex:1 0 auto;min-width:4.5rem;appearance:none;background:none;border:0;border-right:1px solid var(--line);padding:.95rem .6rem;font:400 .82rem var(--mono);color:var(--muted);cursor:pointer}
+.stops button:last-child{border-right:0}
+.stops button:hover{color:var(--a)}
+.stops button[aria-pressed="true"]{background:var(--a-dim);color:var(--a-dk);font-weight:700;box-shadow:inset 0 -2px 0 var(--a)}
+.sbody{padding:1.5rem 1.6rem;display:flex;flex-direction:column;gap:1rem}
+.shead{display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap}
+.shead .n{font-family:var(--mono);font-size:1.7rem;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.srow{display:grid;grid-template-columns:9.5rem 1fr;gap:1rem;font-size:.95rem;line-height:1.6;color:var(--ink2)}
+.srow .k{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding-top:.25rem}
+@media (max-width:640px){.srow{grid-template-columns:1fr;gap:.1rem}}
+.tag{display:inline-flex;font-family:var(--mono);font-size:.64rem;letter-spacing:.06em;text-transform:uppercase;padding:.2rem .55rem;border-radius:2px;border:1px solid currentColor}
+.tag.yes{color:var(--ok)}.tag.no{color:var(--muted)}.tag.mid{color:var(--warn)}
 
-  /* ---------- Hero ---------- */
-  .hero { padding: 76px 0 64px; }
-  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: start; }
-  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
+/* planes */
+.planes{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem}
+.plane{background:var(--bg);border:1px solid var(--line);padding:1.3rem 1.4rem}
+.plane .label{margin-bottom:.5rem;color:var(--ink);opacity:.75}
+.plane .label::before{color:var(--a)}
+.plane p{font-size:.92rem;color:var(--ink2)}
 
-  h1.title {
-    font-size: clamp(40px, 6.2vw, 68px); font-weight: 900;
-    line-height: 0.98; letter-spacing: -0.03em; margin-bottom: 22px;
-  }
-  h1.title .u { color: var(--azure); }
-  .lede { font-size: 19px; color: var(--text-dim); max-width: 34ch; margin-bottom: 12px; }
-  .lede strong { color: var(--text); font-weight: 600; }
-  .scope-note {
-    font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--text-faint);
-    border-left: 2px solid var(--line-strong); padding-left: 12px; margin: 22px 0 30px; max-width: 42ch;
-  }
-  .cta-row { display: flex; flex-wrap: wrap; gap: 12px; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 9px;
-    font-family: "IBM Plex Mono", monospace; font-size: 14px; font-weight: 500;
-    padding: 12px 18px; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent;
-  }
-  .btn-primary { background: var(--azure); color: #06121c; }
-  :root[data-theme="dark"] .btn-primary, :root:not([data-theme="light"]) .btn-primary { color: #06121c; }
-  .btn-primary:hover { background: var(--azure-bright); text-decoration: none; }
-  .btn-secondary { background: transparent; color: var(--text); border-color: var(--line-strong); }
-  .btn-secondary:hover { border-color: var(--azure); color: var(--azure); text-decoration: none; }
-  .btn svg { width: 16px; height: 16px; }
+/* training */
+.lab{font-family:var(--mono);font-size:.78rem;background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:.75rem .9rem;margin-top:1rem;line-height:1.65;color:var(--ink2)}
+.lab b{color:var(--a-dk);font-weight:700}
 
-  /* ---------- Seed receipt panel ---------- */
-  .receipt {
-    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
-    box-shadow: var(--shadow); overflow: hidden;
-  }
-  .receipt-head {
-    display: flex; align-items: center; gap: 8px; padding: 12px 16px;
-    border-bottom: 1px solid var(--line); background: var(--surface-2);
-  }
-  .dot { width: 10px; height: 10px; border-radius: 50%; }
-  .receipt-head .label { margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-faint); letter-spacing: .1em; text-transform: uppercase; }
-  .receipt-body { padding: 20px 16px; font-family: "IBM Plex Mono", monospace; font-size: 13.5px; }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin-bottom: 6px; }
-  .kv .k { color: var(--text-faint); }
-  .kv .v { color: var(--text); }
-  .kv .v .cmt { color: var(--good); }
-  .arrow-line { display: flex; align-items: center; gap: 12px; color: var(--text-faint); margin: 16px 0; font-size: 12px; }
-  .arrow-line::before, .arrow-line::after { content: ""; height: 1px; background: var(--line); flex: 1; }
-  .estate { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-  .estate div { background: var(--surface); padding: 12px 14px; }
-  .estate .n { font-size: 20px; font-weight: 600; color: var(--azure); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-  .estate .l { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
-  .hash-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-strong);
-    font-family: "IBM Plex Mono", monospace; font-size: 12px;
-  }
-  .hash-row .h { color: var(--text-dim); word-break: break-all; }
-  .hash-row .h b { color: var(--text); font-weight: 500; }
-  #regen {
-    font-family: "IBM Plex Mono", monospace; font-size: 12px; white-space: nowrap;
-    border: 1px solid var(--line-strong); background: transparent; color: var(--text);
-    padding: 6px 11px; border-radius: 5px; cursor: pointer; display: inline-flex; gap: 7px; align-items: center;
-  }
-  #regen:hover { border-color: var(--azure); color: var(--azure); }
-  #regen .spin { width: 11px; height: 11px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; display: none; }
-  #regen.busy .spin { display: inline-block; animation: spin .6s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .verify { color: var(--good); }
-  .receipt.pulse .estate .n { transition: opacity .12s; }
+/* quickstart */
+.split{display:grid;grid-template-columns:1fr 1.1fr;gap:3rem;align-items:center}
+@media (max-width:900px){.split{grid-template-columns:1fr;gap:2rem}}
+.term{background:var(--code);border-radius:6px;padding:1.2rem;box-shadow:0 24px 50px -24px rgba(0,0,0,.45)}
+.dots{display:flex;gap:.45rem;margin-bottom:.9rem}
+.dots i{width:11px;height:11px;border-radius:50%;display:block}
+.term pre{background:var(--code2);border-radius:3px;padding:1.05rem 1.15rem;font-family:var(--mono);font-size:.78rem;line-height:1.75;color:var(--code-ink);overflow-x:auto;white-space:pre}
+.term .k{color:var(--code-a)}
+.term .c{color:var(--code-mut)}
+.term .src{display:block;margin-top:.75rem;font-family:var(--mono);font-size:.64rem;color:var(--code-mut);letter-spacing:.04em}
+.steps{list-style:none;display:flex;flex-direction:column;gap:1rem;margin-top:1.5rem}
+.steps li{display:grid;grid-template-columns:2rem 1fr;gap:.8rem;color:var(--ink2)}
+.steps li b{font-family:var(--mono);color:var(--a);font-size:.85rem;padding-top:.15rem}
 
-  /* ---------- Section frame ---------- */
-  section { padding: 68px 0; border-top: 1px solid var(--line); }
-  .sec-head { max-width: 60ch; margin-bottom: 40px; }
-  h2 { font-size: clamp(26px, 3.4vw, 36px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; }
-  .sec-head p { color: var(--text-dim); font-size: 17px; margin: 14px 0 0; }
+/* releases */
+.rel{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+@media (max-width:820px){.rel{grid-template-columns:1fr}}
+.rel div{border:1px solid var(--line);background:var(--bg);padding:1.3rem 1.4rem}
+.rel .ver{font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--a)}
+.rel h3{font-size:1.05rem;margin:.35rem 0 .45rem;letter-spacing:-.01em}
+.rel p{font-size:.9rem;color:var(--ink2)}
+.next{margin-top:1.2rem;font-size:.93rem;color:var(--ink2)}
 
-  /* ---------- Why: two options vs third ---------- */
-  .why-grid { display: grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 18px; }
-  @media (max-width: 860px) { .why-grid { grid-template-columns: 1fr; } }
-  .why-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; background: var(--surface); }
-  .why-card.bad { background: transparent; }
-  .why-card.good { border-color: var(--azure); box-shadow: 0 0 0 1px var(--azure-wash), var(--shadow); }
-  .why-card .tag { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; display: block; }
-  .why-card.bad .tag { color: var(--crit); }
-  .why-card.good .tag { color: var(--azure); }
-  .why-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
-  .why-card p { color: var(--text-dim); font-size: 14.5px; margin: 0; }
-  .why-card.good p { color: var(--text); }
-
-  /* ---------- Audience ---------- */
-  .aud-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 780px) { .aud-grid { grid-template-columns: 1fr; } }
-  .aud-card { border: 1px solid var(--line); border-radius: 8px; padding: 26px 24px; background: var(--surface); display: flex; flex-direction: column; gap: 12px; }
-  .aud-card.yes { border-color: var(--azure); box-shadow: 0 0 0 1px var(--azure-wash), var(--shadow); }
-  .aud-verdict { align-self: flex-start; font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; padding: 4px 10px; border-radius: 4px; border: 1px solid currentColor; }
-  .aud-card.no .aud-verdict { color: var(--crit); }
-  .aud-card.yes .aud-verdict { color: var(--azure); }
-  .aud-card h3 { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
-  .aud-card p { margin: 0; font-size: 14.5px; color: var(--text-dim); }
-  .aud-card.yes p { color: var(--text); }
-  .aud-card p em { font-style: normal; color: var(--text); font-weight: 600; }
-
-  .aud-callout {
-    margin-top: 20px; border-left: 3px solid var(--azure);
-    background: var(--azure-wash); padding: 18px 22px; border-radius: 0 6px 6px 0;
-    font-size: 15px; line-height: 1.6; color: var(--text-dim);
-  }
-  .aud-callout b { font-family: "Archivo"; font-weight: 700; color: var(--text); }
-
-  .verdicts { margin-top: 24px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
-  .vrow { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 15px 20px; border-top: 1px solid var(--line); }
-  .vrow:first-child { border-top: none; }
-  .vrow .who { font-size: 14.5px; color: var(--text); }
-  .vrow .who small { display: block; color: var(--text-faint); font-size: 12.5px; margin-top: 2px; }
-  .vpill { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; padding: 5px 11px; border-radius: 20px; border: 1px solid currentColor; }
-  .vpill.y { color: var(--good); }
-  .vpill.m { color: var(--warn); }
-  .vpill.n { color: var(--crit); }
-
-  /* ---------- Training block ---------- */
-  .training { margin-top: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 28px 26px; display: grid; grid-template-columns: 1.1fr 1fr; gap: 30px; align-items: start; }
-  @media (max-width: 780px) { .training { grid-template-columns: 1fr; gap: 20px; } }
-  .training .t-lead h3 { font-size: 21px; font-weight: 800; letter-spacing: -0.01em; margin: 12px 0 10px; }
-  .training .t-lead p { margin: 0; font-size: 14.5px; color: var(--text-dim); }
-  .training ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; }
-  .training li { font-size: 14px; color: var(--text-dim); line-height: 1.5; }
-  .training li b { display: block; font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--azure); margin-bottom: 3px; font-weight: 500; }
-
-  /* ---------- Scale ladder ("cursor") ---------- */
-  .ladder { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
-  .ladder-head { padding: 20px 22px 18px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
-  .ladder-head .lh-label { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--azure); display: block; margin-bottom: 14px; }
-  input[type=range].scale-range { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 3px; background: var(--line-strong); margin: 4px 0 0; cursor: pointer; }
-  input[type=range].scale-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--azure); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--azure); cursor: grab; }
-  input[type=range].scale-range:active::-webkit-slider-thumb { cursor: grabbing; }
-  input[type=range].scale-range::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--azure); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--azure); cursor: grab; }
-  input[type=range].scale-range::-moz-range-track { height: 4px; border-radius: 3px; background: var(--line-strong); }
-  .ticks { display: flex; justify-content: space-between; gap: 4px; margin-top: 14px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-faint); }
-  .ticks span { flex: 1; text-align: center; cursor: pointer; }
-  .ticks span:first-child { text-align: left; } .ticks span:last-child { text-align: right; }
-  .ticks span.on { color: var(--azure); font-weight: 600; }
-  .ladder-body { padding: 24px 22px; display: flex; flex-direction: column; gap: 16px; }
-  .lb-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .lb-n { font-family: "Archivo"; font-weight: 800; font-size: 32px; letter-spacing: -.03em; font-variant-numeric: tabular-nums; color: var(--text); }
-  .lb-sub { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--text-dim); }
-  .lb-row { display: grid; grid-template-columns: 8.5rem 1fr; gap: 16px; align-items: start; }
-  @media (max-width: 560px) { .lb-row { grid-template-columns: 1fr; gap: 3px; } }
-  .lb-k { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); padding-top: 3px; }
-  .lb-v { font-size: 14px; line-height: 1.58; color: var(--text-dim); }
-  .lb-v code { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
-  .lb-v em { font-style: normal; color: var(--text); font-weight: 600; }
-  .lb-verdict { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 4px 11px; border-radius: 20px; border: 1px solid currentColor; white-space: nowrap; }
-  .lb-verdict.vt-no { color: var(--crit); } .lb-verdict.vt-mid { color: var(--warn); } .lb-verdict.vt-yes { color: var(--good); }
-
-  /* ---------- Planes grid ---------- */
-  .planes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  @media (max-width: 820px) { .planes { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 540px) { .planes { grid-template-columns: 1fr; } }
-  .plane { background: var(--surface); padding: 22px 20px; position: relative; }
-  .plane:hover { background: var(--surface-2); }
-  .plane .pn { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-faint); letter-spacing: .1em; }
-  .plane h3 { font-size: 16.5px; font-weight: 700; margin: 6px 0 8px; display: flex; align-items: center; gap: 9px; }
-  .plane h3 .mk { width: 8px; height: 8px; border-radius: 2px; background: var(--azure); flex: none; }
-  .plane p { font-size: 13.5px; color: var(--text-dim); margin: 0; }
-
-  /* ---------- Pipeline ---------- */
-  .pipe { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 0; }
-  @media (max-width: 820px) { .pipe { grid-template-columns: 1fr; gap: 14px; } .pipe .conn { display: none; } }
-  .stage { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 22px 20px; }
-  .stage .st-lang { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--azure); letter-spacing: .1em; text-transform: uppercase; }
-  .stage h3 { font-size: 17px; font-weight: 700; margin: 8px 0 8px; }
-  .stage p { font-size: 13.5px; color: var(--text-dim); margin: 0; }
-  .conn { display: flex; align-items: center; justify-content: center; width: 56px; color: var(--text-faint); font-family: "IBM Plex Mono", monospace; }
-  .conn span { font-size: 20px; }
-
-  /* ---------- Benchmark tiles ---------- */
-  .bench { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
-  @media (max-width: 820px) { .bench { grid-template-columns: 1fr 1fr; } }
-  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 24px 22px; background: var(--surface); }
-  .tile .big { font-family: "Archivo"; font-weight: 800; font-size: clamp(30px, 4.6vw, 46px); letter-spacing: -0.03em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-  .tile .big u { color: var(--azure); text-decoration: none; font-size: .5em; font-weight: 600; margin-left: 3px; letter-spacing: 0; }
-  .tile .cap { font-size: 13px; color: var(--text-dim); margin-top: 12px; }
-  .bench-note { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--text-faint); margin-top: 20px; }
-
-  /* ---------- Quickstart ---------- */
-  .qs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 820px) { .qs-grid { grid-template-columns: 1fr; } }
-  .code {
-    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-  }
-  .code-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
-  .code-head .t { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--text-faint); letter-spacing: .08em; text-transform: uppercase; }
-  .copy { margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; border: 1px solid var(--line-strong); background: transparent; color: var(--text-dim); padding: 4px 9px; border-radius: 5px; cursor: pointer; }
-  .copy:hover { color: var(--azure); border-color: var(--azure); }
-  .copy.done { color: var(--good); border-color: var(--good); }
-  pre { margin: 0; padding: 16px 16px; overflow-x: auto; font-family: "IBM Plex Mono", monospace; font-size: 13px; line-height: 1.7; }
-  pre .c { color: var(--text-faint); }
-  pre .p { color: var(--azure); }
-  pre .s { color: var(--good); }
-
-  /* ---------- Roadmap ---------- */
-  .road { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 820px) { .road { grid-template-columns: 1fr; } }
-  .road-card { border: 1px solid var(--line); border-radius: 8px; padding: 24px; background: var(--surface); position: relative; }
-  .road-card.next { border-color: var(--azure); }
-  .status-pill { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; padding: 3px 9px; border-radius: 20px; display: inline-flex; align-items: center; gap: 7px; }
-  .status-pill.shipped { color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
-  .status-pill.planned { color: var(--azure); border: 1px solid color-mix(in srgb, var(--azure) 40%, transparent); }
-  .status-pill .d { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .road-card h3 { font-size: 20px; font-weight: 800; margin: 16px 0 10px; letter-spacing: -0.01em; }
-  .road-card p { color: var(--text-dim); font-size: 14.5px; margin: 0 0 14px; }
-  .road-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-  .road-card li { font-size: 13.5px; color: var(--text-dim); padding-left: 20px; position: relative; }
-  .road-card li::before { content: "→"; position: absolute; left: 0; color: var(--azure); font-family: "IBM Plex Mono", monospace; }
-
-  /* ---------- Footer ---------- */
-  footer { border-top: 1px solid var(--line); padding: 48px 0 60px; }
-  .foot-grid { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; }
-  .foot-grid .brand { font-size: 17px; }
-  .foot-links { margin-left: auto; display: flex; flex-wrap: wrap; gap: 22px; }
-  .foot-links a { color: var(--text-dim); font-size: 14px; }
-  .foot-links a:hover { color: var(--text); text-decoration: none; }
-  .foot-meta { margin-top: 26px; font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--text-faint); display: flex; flex-wrap: wrap; gap: 18px; }
-  .foot-meta span { display: inline-flex; align-items: center; gap: 7px; }
-  .foot-meta .sep { color: var(--line-strong); }
+/* footer */
+footer.site{border-top:1px solid var(--line);padding-block:3rem;font-size:.88rem;color:var(--muted)}
+.cols{display:grid;grid-template-columns:2fr 1fr 1fr;gap:2rem}
+@media (max-width:760px){.cols{grid-template-columns:1fr}}
+footer h3{font-family:var(--mono);font-size:.68rem;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);font-weight:400;margin-bottom:.8rem}
+footer ul{list-style:none;display:flex;flex-direction:column;gap:.45rem}
+footer p{color:var(--ink2)}
+.notice{margin-top:2.2rem;padding-top:1.4rem;border-top:1px solid var(--line);font-size:.8rem;line-height:1.6;color:var(--muted)}
 </style>
 </head>
 <body>
 
-<header class="bar">
-  <div class="wrap bar-inner">
-    <div class="brand">Tenant<b>Less</b><span class="cursor" aria-hidden="true"></span></div>
-    <nav>
-      <a class="nav-hide" href="#why">Why</a>
-      <a class="nav-hide" href="#audience">Who it's for</a>
-      <a class="nav-hide" href="#planes">What it serves</a>
-      <a class="nav-hide" href="#architecture">Architecture</a>
-      <a class="nav-hide" href="#start">Quickstart</a>
-      <button class="ghost-btn" id="theme-toggle" aria-label="Toggle color theme">theme</button>
-      <a class="btn btn-primary" style="padding:8px 14px" href="https://github.com/Code30-OSS/TenantLess">GitHub</a>
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="TenantLess, a Code30 OSS project">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 -100 134 108" aria-hidden="true"><g fill="none" stroke-linecap="round" stroke-width="6"><path d="M-50 -67V-25L0 0M0 -92L-50 -67M0 -92V-33" stroke="currentColor"/><path d="M0 -33V0" stroke="currentColor" stroke-dasharray="6 8" opacity=".5"/><path d="M50 -67V-25L0 0M0 -92L50 -67" stroke="var(--a)" stroke-dasharray="8 7" opacity=".85"/></g><g fill="var(--a)"><circle cx="25" cy="-9" r="3.6" opacity=".55"/><circle cx="43" cy="-34" r="4.2" opacity=".42"/><circle cx="58" cy="-48" r="3.4" opacity=".3"/><circle cx="63" cy="-16" r="3" opacity=".25"/></g></svg>
+      <span class="w">TenantLess</span><span class="by">Code30 <b>OSS</b></span>
+    </a>
+    <nav class="top" aria-label="Primary">
+      <a href="#who">Who it's for</a>
+      <a href="#scale">What breaks</a>
+      <a href="#training">Training</a>
+      <a href="#start">Quickstart</a>
+      <a class="gh" href="https://github.com/Code30-OSS/TenantLess">GitHub</a>
     </nav>
   </div>
 </header>
 
-<main>
-  <!-- HERO -->
-  <section class="hero" style="border-top:none">
-    <div class="wrap hero-grid">
+<main id="top">
+<section class="hero">
+  <div class="grid" aria-hidden="true"></div>
+  <div class="orb" aria-hidden="true"></div>
+  <div class="wrap">
+    <div class="inner">
+      <span class="pill fade d1"><i></i>v1.5.0 · opt-in ARM writes</span>
+      <h1 class="fade d1">A disposable <span>Azure tenant</span> for testing the code that reads one</h1>
+      <p class="lede fade d2">TenantLess generates statistically realistic Azure estates and serves them over ARM-compatible HTTP. Your unmodified scanner, policy engine or cost tool walks 145,000 resources that were never provisioned. Read by default; ARM writes are opt-in.</p>
+      <div class="btns fade d3">
+        <a class="btn p" href="#start">Run it in one command</a>
+        <a class="btn s" href="https://github.com/Code30-OSS/TenantLess">View on GitHub</a>
+      </div>
+      <div class="oneline fade d3">
+        <span>Docker only</span>
+        <span class="copy"><span id="cmd">cp .env.example .env &amp;&amp; docker compose --profile demo up</span><button type="button" id="copy-cmd" aria-label="Copy the command">copy</button></span>
+      </div>
+      <p class="fine">Apache-2.0 · Rust + Python + PostgreSQL · the same profile, seed and cost date always give the same estate, byte for byte</p>
+    </div>
+
+    <figure class="shot">
+      <div class="frame">
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>localhost:8080/ui · explorer</span></div>
+        <img src="docs/assets/site/console-resource-detail.png" width="1440" height="900" loading="lazy" alt="The TenantLess web console: a synthetic subscription tree on the left, the resources of a resource group in the middle, and the selected virtual network's ARM id, tags and properties on the right.">
+      </div>
+      <figcaption>The built-in web console on a generated tenant: browse subscriptions, resource groups and resources exactly as a scanner sees them.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="s alt" id="who">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Who it's for</span>
+      <h2>The axis isn't company size. It's who owns the estate your code reads.</h2>
+      <p>If the infrastructure your software inspects belongs to someone else, you can't reproduce it, can't borrow it to debug, and can't show it in a demo. That's the problem TenantLess exists for.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <span class="badge yes">Structurally necessary</span>
+        <h3>You read someone else's estate</h3>
+        <p>Scanner vendor, CSPM, FinOps SaaS, governance product, consultancy with its own audit tooling. N clients, N estates, and you can reproduce none of them. You can't ask a client to lend you production to debug.</p>
+        <p>A tenant you can specify isn't a convenience here. It's the only way to reproduce a bug a customer reported.</p>
+      </div>
+      <div class="card">
+        <span class="badge no">Rarely worth it</span>
+        <h3>You read your own estate</h3>
+        <p>Platform team, internal FinOps, in-house governance tooling. Your dev subscription already looks like your production, and it's free to look at.</p>
+        <p>Two exceptions: rehearsing a tooling change before it touches production, and building a synthetic twin of your own estate for <a href="#training">training and simulation</a>.</p>
+      </div>
+    </div>
+    <p class="callout"><b>This includes three-person companies.</b> A studio launching an Azure cost tool has this problem on day one, and harder than a large vendor that can afford sandbox tenants. The vocabulary is enterprise; the need isn't.</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Profile</th><th>Verdict</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Scanner / CSPM / FinOps SaaS vendor on Azure</td><td><span class="v yes">yes, day one</span></td><td>Reproducing a customer's bug is impossible any other way. Company size is irrelevant.</td></tr>
+          <tr><td>Consultancy with Azure audit tooling</td><td><span class="v yes">yes</span></td><td>Same reason, plus sales demos: show 18 violation types without exposing a real client.</td></tr>
+          <tr><td>Enterprise L&amp;D / internal cloud academy</td><td><span class="v yes">yes</span></td><td>Build a synthetic twin from your own tenant's statistics and let 200 trainees break it with zero blast radius.</td></tr>
+          <tr><td>Large enterprise: cost and drift simulation on its own estate</td><td><span class="v yes">yes</span></td><td>Rehearse FinOps scenarios and drift-detection runbooks on a production-shaped twin, without waiting for the real estate to misbehave.</td></tr>
+          <tr><td>University or bootcamp teaching cloud governance</td><td><span class="v yes">yes</span></td><td>A realistic 50K-resource estate as course material, at zero Azure cost. Fixed seeds make labs gradable.</td></tr>
+          <tr><td>Platform team, 50+ subscriptions, internal tooling</td><td><span class="v mid">maybe</span></td><td>Useful for CI and for rehearsing tooling changes before production. Not indispensable.</td></tr>
+          <tr><td>Platform team, a handful of subscriptions</td><td><span class="v no">no</span></td><td>Your dev subscription does the job, for free and more faithfully.</td></tr>
+          <tr><td>AWS-only team</td><td><span class="v no">no</span></td><td>No Azure. For API-call testing, your equivalent is moto.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="s">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Positioning</span>
+      <h2>Not another cloud emulator</h2>
+      <p>moto and LocalStack (AWS, and now Azure in preview) emulate cloud services so you can build and deploy against them. TenantLess answers a different question.</p>
+    </div>
+    <div class="tw" style="margin-top:0">
+      <table>
+        <thead><tr><th></th><th>moto / LocalStack</th><th>TenantLess</th></tr></thead>
+        <tbody>
+          <tr><td>What you get</td><td>An empty room. You furnish it yourself through API calls.</td><td>A furnished building, at the scale you specify.</td></tr>
+          <tr><td>The question tested</td><td>"Does my deployment work?"</td><td>"Does my scanner survive 145K resources it didn't create?"</td></tr>
+          <tr><td>Cost of entry</td><td>You write the setup for every test.</td><td>You describe the estate once, as a statistical profile.</td></tr>
+          <tr><td>What becomes possible</td><td>Testing your write and deploy path.</td><td>Testing your read path at a scale, and with pathologies, you can't hand-build.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="s alt" id="scale">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">What breaks, and at what volume</span>
+      <h2>Several of our own 1.1.x fixes only surfaced at scale</h2>
+      <p>Cost-query exhaustion (1.1.3), generator memory (1.1.4), slow resource-group lookups (1.1.10), unbounded role-assignment listings (1.1.11): invisible at 100 resources, real at 50,000. Pick an estate size to see what tends to break first.</p>
+    </div>
+    <div class="scale">
+      <div class="stops" role="group" aria-label="Estate size">
+        <button type="button" id="stop-0" data-i="0" aria-pressed="false">500</button>
+        <button type="button" id="stop-1" data-i="1" aria-pressed="false">5K</button>
+        <button type="button" id="stop-2" data-i="2" aria-pressed="true">50K</button>
+        <button type="button" id="stop-3" data-i="3" aria-pressed="false">150K</button>
+        <button type="button" id="stop-4" data-i="4" aria-pressed="false">500K</button>
+      </div>
+      <div class="sbody" id="scale-body" aria-live="polite"></div>
+    </div>
+    <p class="small muted" style="margin-top:1.1rem;max-width:46rem">Rule of thumb: under about 1,000 resources, hand-written fixtures are faster. Between 1K and 10K, pagination and cross-references start to matter. Past 50K, you're testing things you can't build any other way.</p>
+  </div>
+</section>
+
+<section class="s">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">What it simulates</span>
+      <h2>Seven planes of a real estate, none of it running</h2>
+      <p>Nothing generated is provisioned. Everything generated is shaped like production, down to pagination and error responses.</p>
+    </div>
+    <div class="planes">
+      <div class="plane"><span class="label">Management</span><p>List, detail and <code>$filter</code> with pagination and arbitrarily nested resource types; ARM-shaped errors. Opt-in <code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> with <code>ETag</code>s.</p></div>
+      <div class="plane"><span class="label">FinOps</span><p>The Cost Management query API over generated cost data, pinned to a date you choose so results repeat.</p></div>
+      <div class="plane"><span class="label">Identity</span><p>Entra-style token issuance, 8 built-in roles, role assignments, and over-privilege you can inject.</p></div>
+      <div class="plane"><span class="label">Drift</span><p>Repeatable configuration drift that a re-scan detects, and a one-step undo that reverses it.</p></div>
+      <div class="plane"><span class="label">Topology</span><p>Hub-and-spoke peering, shared Key Vaults, central logging, private endpoints across subscriptions.</p></div>
+      <div class="plane"><span class="label">Governance</span><p>18 violation types across severities, injected at rates you control, with an answer key for grading.</p></div>
+      <div class="plane"><span class="label">Console</span><p>A browser UI to generate, snapshot, restore and explore estates, plus a guided scanner demo.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="s alt" id="training">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Training and simulation</span>
+      <h2>A production-shaped twin you can break on purpose</h2>
+      <p>The ownership rule has one inversion: a large company wants a copy of its own estate, precisely because nobody can be let loose on the original. TenantLess builds that twin from statistics alone.</p>
+    </div>
+    <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(18rem,1fr))">
+      <div class="card">
+        <h3>Enterprise cloud academies</h3>
+        <p>Profile your production tenant: only statistical distributions leave it, enforced by automated privacy checks and minimum group sizes. Generate a twin shaped like your landing zones and give every trainee access, with zero blast radius and zero data exposure.</p>
+        <div class="lab"><b>Lab:</b> find the storage accounts allowing public blob access across 250 subscriptions. The injected violations are the grader's answer key.</div>
+      </div>
+      <div class="card">
+        <h3>Cost and drift simulation</h3>
+        <p>Rehearse FinOps work against the Cost Management API on the twin: onboard a new cost tool, validate ingestion, replay a billing period. Then apply a repeatable batch of drift, confirm your scanners and runbooks catch exactly that change, undo it, repeat.</p>
+        <div class="lab"><b>Drill:</b> apply a chaos drift batch with a fixed seed, page the on-call team, measure detection time, undo it in one step.</div>
+      </div>
+      <div class="card">
+        <h3>Universities and bootcamps</h3>
+        <p>Teaching cloud governance or FinOps needs an estate with realistic problems, and student credits buy a handful of resources, not 300 subscriptions with hub-and-spoke networking. Fixed seeds give every student the same estate, so labs are gradable.</p>
+        <div class="lab"><b>Lab:</b> find the misconfiguration with a scanner, fix it through the ARM API (writes enabled), then re-scan to prove it's gone.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="s" id="start">
+  <div class="wrap">
+    <div class="split">
       <div>
-        <span class="eyebrow">Synthetic Azure estates · Apache-2.0</span>
-        <h1 class="title">A tenant<br>you can <span class="u">specify.</span></h1>
-        <p class="lede">TenantLess generates a <strong>statistically realistic</strong> Azure estate and serves it over ARM-compatible HTTP — so an unmodified scanner, policy engine or cost tool runs against it as if it were real.</p>
-        <p class="scope-note">Covered surface, read-only by default with opt-in ARM writes. Nothing it generates is running; everything it generates is <em>shaped</em> like production. Reproducible byte-for-byte from (profile, seed, cost-as-of).</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="#start">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-            Run the demo
-          </a>
-          <a class="btn btn-secondary" href="https://github.com/Code30-OSS/TenantLess">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.3c0 4.5 2.9 8.4 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .8.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.6 0 0 .8-.3 2.7 1a9.3 9.3 0 015 0c1.9-1.3 2.7-1 2.7-1 .5 1.3.2 2.3.1 2.6.6.7 1 1.6 1 2.7 0 3.9-2.3 4.7-4.6 5 .4.3.7 1 .7 2v2.9c0 .3.2.6.7.5A10.1 10.1 0 0022 12.3C22 6.6 17.5 2 12 2z"/></svg>
-            View source
-          </a>
-        </div>
+        <span class="label">Quickstart</span>
+        <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);line-height:1.1;margin:.8rem 0 1rem">From nothing to a scannable tenant in about 12 seconds</h2>
+        <p style="color:var(--ink2)">One command, Docker only. No host Python, Node or Rust.</p>
+        <ol class="steps">
+          <li><b>1</b><span>Compose starts PostgreSQL and seeds a fixed demo estate: about 50 subscriptions and 5,000 resources across every plane.</span></li>
+          <li><b>2</b><span>The ARM mock server starts on <code>localhost:8080</code>. Point any ARM client at it.</span></li>
+          <li><b>3</b><span>Open <code>localhost:8080/ui</code> for the web console. Source builds and bring-your-own PostgreSQL are in the <a href="https://github.com/Code30-OSS/TenantLess#readme">README</a>.</span></li>
+        </ol>
       </div>
+      <div class="term">
+        <div class="dots" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#ffbd2e"></i><i style="background:#28c840"></i></div>
+<pre><span class="c"># one-command quickstart</span>
+<span class="k">$</span> cp .env.example .env
+<span class="k">$</span> docker compose --profile demo up
 
-      <!-- Seed receipt -->
-      <div class="receipt" id="receipt" aria-label="Reproducible generation from a seed">
-        <div class="receipt-head">
-          <span class="dot" style="background:var(--crit)"></span>
-          <span class="dot" style="background:var(--warn)"></span>
-          <span class="dot" style="background:var(--good)"></span>
-          <span class="label">generate</span>
-        </div>
-        <div class="receipt-body">
-          <div class="kv"><span class="k">profile</span><span class="v">demo</span></div>
-          <div class="kv"><span class="k">seed</span><span class="v">42</span></div>
-          <div class="kv"><span class="k">cost-as-of</span><span class="v">2026-01-01 <span class="cmt"># pinned</span></span></div>
-          <div class="kv"><span class="k">jobs</span><span class="v">8 <span class="cmt"># ≡ jobs 1, byte-identical</span></span></div>
+<span class="c"># scan it like a real ARM tenant</span>
+<span class="k">$</span> curl -H "Authorization: Bearer anything" \
+    "http://localhost:8080/subscriptions?api-version=2022-12-01"
 
-          <div class="arrow-line">materializes</div>
-
-          <div class="estate">
-            <div><div class="n">50</div><div class="l">subscriptions</div></div>
-            <div><div class="n">5,000</div><div class="l">resources</div></div>
-            <div><div class="n">8</div><div class="l">RBAC roles</div></div>
-            <div><div class="n">18</div><div class="l">violation types</div></div>
-          </div>
-
-          <div class="hash-row">
-            <span class="h">estate&nbsp;<b id="hash">sha256:9f3c1a…e0b74a</b></span>
-            <button id="regen" aria-label="Regenerate the estate from the same seed">
-              <span class="spin" aria-hidden="true"></span><span id="regen-label">regenerate</span>
-            </button>
-          </div>
-          <div class="hash-row" style="border-top:none;padding-top:6px">
-            <span class="h verify" id="verify" hidden>✓ identical — same inputs, same estate</span>
-          </div>
-        </div>
+<span class="c"># web console: http://localhost:8080/ui</span></pre>
+        <span class="src">Commands from the README. About 12 s to the first ARM 200, measured on a pre-built image.</span>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- WHY -->
-  <section id="why">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">The problem</span>
-        <h2>Testing anything that reads an Azure estate leaves you two bad options.</h2>
-        <p>TenantLess is the third: a tenant you specify — then scan it, break it, regenerate it, and get the same thing back tomorrow.</p>
-      </div>
-      <div class="why-grid">
-        <div class="why-card bad">
-          <span class="tag">Option A</span>
-          <h3>Point at a real tenant</h3>
-          <p>Expensive, slow, irreproducible — and it only contains the problems it happens to have.</p>
-        </div>
-        <div class="why-card bad">
-          <span class="tag">Option B</span>
-          <h3>Hand-write fixtures</h3>
-          <p>Reproducible, but they encode only what you already thought of — at a scale that never exposes what scale actually breaks.</p>
-        </div>
-        <div class="why-card good">
-          <span class="tag">TenantLess</span>
-          <h3>A tenant you specify</h3>
-          <p>Ask for 300 subscriptions, hub-and-spoke topology, an 8% rate of public-blob storage, and a long tail of resource types — then generate it, deterministically.</p>
-        </div>
-      </div>
+<section class="s alt" id="releases">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Recent releases</span>
+      <h2>From read-only to stateful, one additive step at a time</h2>
+      <p>Every step is opt-in and off by default: with writes disabled, responses stay byte-identical to the release before.</p>
     </div>
-  </section>
-
-  <!-- AUDIENCE -->
-  <section id="audience">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Who it's for</span>
-        <h2>The axis isn't company size — it's who owns the estate you read.</h2>
-        <p>Not headcount, not cloud spend. The only question that decides it: does the infrastructure your code inspects belong to you, or to someone else?</p>
-      </div>
-      <div class="aud-grid">
-        <div class="aud-card no">
-          <span class="aud-verdict">Rarely worth it</span>
-          <h3>You read your own estate</h3>
-          <p>Platform teams, internal FinOps, in-house governance tooling. Your estate <em>is</em> your test data — your dev subscription already looks like your prod, and it's free to read. TenantLess helps only at the margin: rehearsing a tooling change before you point it at prod.</p>
-        </div>
-        <div class="aud-card yes">
-          <span class="aud-verdict">Structurally necessary</span>
-          <h3>You read someone else's estate</h3>
-          <p>Scanner and CSPM vendors, FinOps SaaS, governance products, consultancies with their own tooling. You have N customers, N estates — and you can reproduce <em>none</em> of them. You can't borrow a client's prod to debug. A tenant you specify is the only way to reproduce a customer-reported bug.</p>
-        </div>
-      </div>
-
-      <div class="aud-callout">
-        <b>Enterprise vocabulary, but not an enterprise-only tool.</b> The project speaks in 300 subscriptions, landing zones and CAF archetypes, so it <em>reads</em> like it's for big companies. But the population that structurally needs it is vendors and consultancies — and that includes three-person studios. A studio shipping an Azure cost tool has this problem on day one, harder than a large vendor who can afford sandbox tenants.
-      </div>
-
-      <div class="verdicts">
-        <div class="vrow"><span class="who">Scanner / CSPM / Azure FinOps SaaS vendor<small>Reproducing a customer's bug is impossible otherwise — company size is irrelevant.</small></span><span class="vpill y">Yes · day one</span></div>
-        <div class="vrow"><span class="who">Consultancy with Azure audit tooling<small>Same reason, plus the sales demo: 18 violation types without exposing a real client.</small></span><span class="vpill y">Yes</span></div>
-        <div class="vrow"><span class="who">University / bootcamp teaching cloud<small>A live, realistic Azure estate to practise on — without an Azure bill or real data.</small></span><span class="vpill y">Yes</span></div>
-        <div class="vrow"><span class="who">Company onboarding FinOps / SRE / DevOps at scale<small>An identical, safe estate per engineer — reset between cohorts, prod never touched.</small></span><span class="vpill y">Yes</span></div>
-        <div class="vrow"><span class="who">Platform team, internal tooling, many subscriptions<small>Useful for CI and rehearsing a change before prod — not indispensable.</small></span><span class="vpill m">Maybe</span></div>
-        <div class="vrow"><span class="who">Platform team, a handful of subscriptions<small>Your dev subscription does the job — free, and more faithful.</small></span><span class="vpill n">No</span></div>
-      </div>
+    <div class="rel">
+      <div><span class="ver">1.3.0</span><h3>Overlay substrate</h3><p>Copy-on-write overlay, tombstones and revisions over the immutable generated baseline.</p></div>
+      <div><span class="ver">1.4.0</span><h3>Stateful overlay goes live</h3><p>One resolver behind every ARM read, and <code>ETag</code>s on detail responses.</p></div>
+      <div><span class="ver">1.5.0</span><h3>Opt-in ARM writes</h3><p><code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> on any resource id, conditional writes, and an atomic nested-delete cascade.</p></div>
     </div>
-  </section>
+    <p class="next">Next: resource-group create and delete, then a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
+  </div>
+</section>
+</main>
 
-  <!-- TRAINING -->
-  <section id="training">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Training &amp; enablement</span>
-        <h2>Every trainee, the same realistic estate.</h2>
-        <p>Teaching FinOps, SRE and DevOps means practising on infrastructure — but prod is risky, and no two people can safely share it. TenantLess hands everyone a byte-identical estate, reset in seconds between cohorts, with no real identifiers anywhere.</p>
+<footer class="site">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h3>TenantLess</h3>
+        <p>Local synthetic Azure tenant for scanner, governance, FinOps, drift and cross-subscription risk testing. An open-source project by <a href="https://code30.io">Code30</a>.</p>
       </div>
-      <div class="training">
-        <div class="t-lead">
-          <h3>A live Azure estate — without an Azure bill.</h3>
-          <p>The same 145K-resource tenant, the same 18 violation types, the same cost story — for 5 engineers or 500. Universities and bootcamps get a real estate to teach on; teams onboarding at scale get a safe range where breaking things has no blast radius.</p>
-        </div>
+      <div>
+        <h3>Project</h3>
         <ul>
-          <li><b>FinOps</b>Cost allocation, anomaly hunting and chargeback against a real cost fact table.</li>
-          <li><b>SRE &amp; DevOps</b>Find and remediate violations, then practise drift detection and revert on a tenant that resets.</li>
-          <li><b>Governance</b>18 injectable violation types across severities — a graded range for audit and policy training.</li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess">Repository</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/architecture.md">Architecture</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/demo.md">Guided demo</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/releases">Releases</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Contribute</h3>
+        <ul>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/issues">Issues</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/blob/main/SECURITY.md">Security</a></li>
+          <li><a href="https://github.com/Code30-OSS/TenantLess/blob/main/LICENSE">Apache-2.0</a></li>
         </ul>
       </div>
     </div>
-  </section>
-
-  <!-- SCALE -->
-  <section id="scale">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Scale</span>
-        <h2>At what scale does it earn its place?</h2>
-        <p>Drag the cursor. Almost every hard problem in reading an estate only appears past a certain size — the ladder shows what breaks, and when.</p>
-      </div>
-
-      <div class="ladder">
-        <div class="ladder-head">
-          <label class="lh-label" for="scale-range">Estate size — drag to explore</label>
-          <input type="range" id="scale-range" class="scale-range" min="0" max="4" step="1" value="2" aria-describedby="lb-body">
-          <div class="ticks" id="ticks">
-            <span data-i="0">500</span><span data-i="1">5,000</span><span data-i="2">50,000</span><span data-i="3">145,000</span><span data-i="4">500,000</span>
-          </div>
-        </div>
-        <div class="ladder-body" id="lb-body" aria-live="polite"></div>
-      </div>
-
-      <p class="bench-note" style="margin-top:16px">// Under ~1,000 resources, nothing here helps — hand-write fixtures. Between 1K and 10K, pagination and references start to matter. Past 50K, you're testing things you can't build by hand.</p>
-
-      <p class="eyebrow" style="margin:44px 0 20px">The committed benchmark</p>
-      <div class="bench">
-        <div class="tile"><div class="big">145<u>K</u></div><div class="cap">resources served across the benchmark estate</div></div>
-        <div class="tile"><div class="big">300</div><div class="cap">subscriptions in a single generated tenant</div></div>
-        <div class="tile"><div class="big">1.7–5.6<u>ms</u></div><div class="cap">ARM list/detail p95 latency</div></div>
-        <div class="tile"><div class="big">~1,970<u>/s</u></div><div class="cap">resources generated per second</div></div>
-      </div>
-      <p class="bench-note">// Latency is machine-dependent — treat it as a shape, not a promise about your hardware.</p>
-    </div>
-  </section>
-
-  <!-- PLANES -->
-  <section id="planes">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">What it serves</span>
-        <h2>Seven planes of a real estate — over the covered ARM surface.</h2>
-        <p>List, detail and <span class="mono">$filter</span> with pagination and ARM <span class="mono">CloudError</span> shapes — the surface a discovery scan actually exercises, not all of Azure ARM.</p>
-      </div>
-      <div class="planes">
-        <div class="plane"><div class="pn">01 / management</div><h3><span class="mk"></span>ARM</h3><p>List / detail / <span class="mono">$filter</span> with pagination and arbitrary-depth nested resource types.</p></div>
-        <div class="plane"><div class="pn">02 / finops</div><h3><span class="mk"></span>Cost Management</h3><p>Cost Management Query API served over a generated cost fact table.</p></div>
-        <div class="plane"><div class="pn">03 / identity</div><h3><span class="mk"></span>AAD / Entra</h3><p>Token issuance (RS256/JWKS), 8 built-in RBAC roles, assignments, injectable over-privilege.</p></div>
-        <div class="plane"><div class="pn">04 / drift</div><h3><span class="mk"></span>Configuration drift</h3><p>Deterministic drift a re-scan detects — and can revert.</p></div>
-        <div class="plane"><div class="pn">05 / topology</div><h3><span class="mk"></span>Cross-subscription</h3><p>Hub-spoke peering, shared Key Vaults, centralized logging, shared registries, private endpoints.</p></div>
-        <div class="plane"><div class="pn">06 / governance</div><h3><span class="mk"></span>Violations</h3><p>18 injectable violation types across severities, at rates you control.</p></div>
-        <div class="plane"><div class="pn">07 / console</div><h3><span class="mk"></span>Web UI</h3><p>Generate, snapshot, restore and inspect estates in the browser, plus a scanner demo.</p></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ARCHITECTURE -->
-  <section id="architecture">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Architecture</span>
-        <h2>A profile in. A synthetic tenant out. Served over REST.</h2>
-        <p>The data boundary is enforced end-to-end: the analyzer distills distributions, never raw identifiers — held to a denylist scan, minimum-aggregation thresholds and per-extractor leak tests.</p>
-      </div>
-      <div class="pipe">
-        <div class="stage">
-          <div class="st-lang">Python</div>
-          <h3>Seed Analyzer</h3>
-          <p>Distills a scan into a statistical profile — distributions, archetypes, co-occurrence. Never raw identifiers.</p>
-        </div>
-        <div class="conn"><span>→</span></div>
-        <div class="stage">
-          <div class="st-lang">Python</div>
-          <h3>Generator</h3>
-          <p>Inverts a profile into a full synthetic tenant, written to PostgreSQL via binary <span class="mono">COPY</span>.</p>
-        </div>
-        <div class="conn"><span>→</span></div>
-        <div class="stage">
-          <div class="st-lang">Rust</div>
-          <h3>ARM Mock Server</h3>
-          <p>Serves it over ARM-compatible REST so an existing scanner walks it unmodified — plus the web console.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- QUICKSTART -->
-  <section id="start">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Quickstart · one command</span>
-        <h2>A populated tenant in about 12 seconds.</h2>
-        <p>Requires only Docker — no host Python, Node or Rust. Compose brings up PostgreSQL, seeds a fixed <span class="mono">demo</span> estate, and starts the ARM mock server on it.</p>
-      </div>
-      <div class="qs-grid">
-        <div class="code">
-          <div class="code-head"><span class="t">bring it up</span><button class="copy" data-copy="cp .env.example .env&#10;docker compose --profile demo up">copy</button></div>
-          <pre><span class="c"># PostgreSQL + generator + ARM server</span>
-cp .env.example .env
-docker compose <span class="p">--profile demo</span> up</pre>
-        </div>
-        <div class="code">
-          <div class="code-head"><span class="t">scan it like a real tenant</span><button class="copy" data-copy='curl -H &quot;Authorization: Bearer anything&quot; &quot;http://localhost:8080/subscriptions?api-version=2022-12-01&quot;'>copy</button></div>
-          <pre><span class="c"># presence-only Bearer auth by default</span>
-curl -H <span class="s">"Authorization: Bearer anything"</span> \
-  <span class="s">"http://localhost:8080/subscriptions?api-version=2022-12-01"</span></pre>
-        </div>
-      </div>
-      <p class="bench-note">// Then open <a href="#" onclick="return false" class="mono">http://localhost:8080/ui</a> for the web console. Your estate is safe on restart — the generator inspects the whole estate under an advisory lock and skips if any of it is already populated.</p>
-    </div>
-  </section>
-
-  <!-- ROADMAP -->
-  <section id="roadmap">
-    <div class="wrap">
-      <div class="sec-head">
-        <span class="eyebrow">Roadmap</span>
-        <h2>Readable from day one. Writable, opt-in, since 1.5.</h2>
-      </div>
-      <div class="road">
-        <div class="road-card">
-          <span class="status-pill shipped"><span class="d"></span>Shipped · v1.0</span>
-          <h3>Read-only estates</h3>
-          <p>The full covered ARM read surface, seven planes, deterministic drift, and the web console — all byte-reproducible from a seed.</p>
-          <ul>
-            <li>List / detail / <span class="mono">$filter</span>, Cost Management, RBAC</li>
-            <li>Deterministic drift, cross-sub topology, 18 violation types</li>
-            <li>Snapshot / restore, scanner demo</li>
-          </ul>
-        </div>
-        <div class="road-card next">
-          <span class="status-pill planned"><span class="d"></span>In progress · 1.3 → 1.5</span>
-          <h3>Stateful ARM Lifecycle</h3>
-          <p>A persistent, mutable management plane, landing step by step — opt-in and off by default.</p>
-          <ul>
-            <li>Shipped: durable overlay state over the immutable baseline, <span class="mono">ETag</span>s on detail reads</li>
-            <li>Shipped: <span class="mono">PUT / PATCH / DELETE</span> on any resource id, <span class="mono">If-Match</span>, nested-delete cascade</li>
-            <li>Next: resource-group create/delete, then <span class="mono">plan → apply → refresh → destroy</span> converging against the mock</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </section>
-</main>
-
-<footer>
-  <div class="wrap">
-    <div class="foot-grid">
-      <div class="brand">Tenant<b>Less</b></div>
-      <div class="foot-links">
-        <a href="https://github.com/Code30-OSS/TenantLess">GitHub</a>
-        <a href="https://github.com/Code30-OSS/TenantLess/releases">Releases</a>
-        <a href="https://github.com/Code30-OSS/TenantLess/issues/32">Roadmap</a>
-        <a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/architecture.md">Architecture</a>
-      </div>
-    </div>
-    <div class="foot-meta">
-      <span>Apache-2.0</span><span class="sep">·</span>
-      <span>Python 3.11+ · Rust 2024</span><span class="sep">·</span>
-      <span>PostgreSQL-backed</span><span class="sep">·</span>
-      <span>ARM management-plane mock</span>
-    </div>
+    <p class="notice">TenantLess is not affiliated with, endorsed by, or sponsored by Microsoft. Azure and Microsoft are trademarks of Microsoft Corporation; ARM resource-type names and API shapes appear descriptively, to identify the surface this project emulates. TenantLess does not connect to, proxy, or replace any Microsoft service. It serves synthetic data from your own machine.</p>
   </div>
 </footer>
 
 <script>
-  // Theme toggle — respects the three-state model.
-  (function () {
-    var root = document.documentElement;
-    var btn = document.getElementById('theme-toggle');
-    var stored = null;
-    try { stored = localStorage.getItem('tl-theme'); } catch (e) {}
-    if (stored === 'light' || stored === 'dark') root.setAttribute('data-theme', stored);
-    btn.addEventListener('click', function () {
-      var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      var current = root.getAttribute('data-theme') || (isDark ? 'dark' : 'light');
-      var next = current === 'dark' ? 'light' : 'dark';
-      root.setAttribute('data-theme', next);
-      try { localStorage.setItem('tl-theme', next); } catch (e) {}
-    });
-  })();
+(function(){
+  var STOPS=[
+    {n:"500",sub:"resources · a handful of subscriptions",tag:["no","hand-write it"],like:"A small shop or a single workload. A dev subscription covers this for free.",breaks:"Nothing. Every naive implementation works at this size, which is exactly why it teaches you nothing.",verdict:"Skip the simulator. Hand-written fixtures are faster and clearer."},
+    {n:"5,000",sub:"resources · about 50 subscriptions · demo profile",tag:["mid","starts to matter"],like:"A mid-size company, or one business unit of a large one. The one-command demo estate is this shape.",breaks:"The first pagination bugs: code that assumes one page of results, nextLink handling that drops the token, filters applied after fetching instead of in the query.",verdict:"Useful. Twenty minutes with the demo estate answers questions your fixtures can't."},
+    {n:"50,000",sub:"resources · 250 subscriptions · enterprise profile",tag:["yes","impossible otherwise"],like:"A large account with landing zones. The enterprise profile: 250 subscriptions, 4,037 resource groups, 57,207 resources, 8,026 role assignments.",breaks:"Unpaginated endpoints fall over. Our own 1.1.11 fix is a textbook case: a role-assignment listing loaded every assignment of a subscription in one unbounded response. Invisible at 100 assignments; a problem at 8,026.",verdict:"You can't buy 57K real Azure resources for CI, and a sandbox this size drifts: someone deletes things and your tests go flaky."},
+    {n:"150,000",sub:"resources · 300 subscriptions · committed benchmark",tag:["yes","the committed benchmark"],like:"A multinational estate. The repository's reproducible benchmark: 145K resources at p95 latencies of 1.7 to 5.6 ms.",breaks:"Memory ceilings in scanners that load the whole estate before processing it; timeouts in tools that scan subscriptions one after another.",verdict:"The scale where scanner architecture decisions become visible. Reproducible from the bundled profile in one command."},
+    {n:"500,000",sub:"resources · stress territory",tag:["yes","stress territory"],like:"Hyperscale, or a managed-service provider's combined estate.",breaks:"Anything that doesn't stream. Generation itself becomes the bottleneck (about 1,970 resources per second on the recorded machine).",verdict:"For the handful of teams operating here, there is no other reproducible option at any price."}
+  ];
+  var body=document.getElementById("scale-body");
+  var btns=[].slice.call(document.querySelectorAll(".stops button"));
+  function esc(s){return s.replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+  function render(i){
+    var s=STOPS[i];
+    body.innerHTML='<div class="shead"><span class="n">'+esc(s.n)+'</span><span class="small muted">'+esc(s.sub)+'</span><span class="tag '+s.tag[0]+'">'+esc(s.tag[1])+'</span></div>'
+      +'<div class="srow"><span class="k">Looks like</span><span>'+esc(s.like)+'</span></div>'
+      +'<div class="srow"><span class="k">What breaks</span><span>'+esc(s.breaks)+'</span></div>'
+      +'<div class="srow"><span class="k">Verdict</span><span>'+esc(s.verdict)+'</span></div>';
+    btns.forEach(function(b,j){b.setAttribute("aria-pressed",String(j===i));});
+  }
+  btns.forEach(function(b){b.addEventListener("click",function(){render(+b.dataset.i);});});
+  render(2);
 
-  // Copy buttons.
-  document.querySelectorAll('.copy').forEach(function (b) {
-    b.addEventListener('click', function () {
-      var text = b.getAttribute('data-copy');
-      var done = function () { b.textContent = 'copied'; b.classList.add('done'); setTimeout(function () { b.textContent = 'copy'; b.classList.remove('done'); }, 1400); };
-      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done).catch(done); }
-      else { done(); }
-    });
+  var cb=document.getElementById("copy-cmd");
+  cb.addEventListener("click",function(){
+    var t=document.getElementById("cmd").textContent;
+    function done(){cb.textContent="copied";setTimeout(function(){cb.textContent="copy";},1600);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){sel();});}else{sel();}
+    function sel(){var r=document.createRange();r.selectNodeContents(document.getElementById("cmd"));var s=window.getSelection();s.removeAllRanges();s.addRange(r);}
   });
-
-  // Determinism demo: regenerate always lands on the identical estate + hash.
-  (function () {
-    var btn = document.getElementById('regen');
-    var label = document.getElementById('regen-label');
-    var verify = document.getElementById('verify');
-    var receipt = document.getElementById('receipt');
-    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!btn) return;
-    btn.addEventListener('click', function () {
-      if (btn.classList.contains('busy')) return;
-      verify.hidden = true;
-      var settle = function () {
-        btn.classList.remove('busy');
-        label.textContent = 'regenerate';
-        verify.hidden = false;
-      };
-      if (reduce) { verify.hidden = false; return; }
-      btn.classList.add('busy');
-      label.textContent = 'generating';
-      receipt.classList.add('pulse');
-      var nums = receipt.querySelectorAll('.estate .n');
-      nums.forEach(function (n) { n.style.opacity = '0.28'; });
-      setTimeout(function () {
-        nums.forEach(function (n) { n.style.opacity = '1'; });
-        receipt.classList.remove('pulse');
-        settle();
-      }, 720);
-    });
-  })();
-
-  // Scale ladder — the "cursor" (curseur / slider) mechanic.
-  (function () {
-    var STEPS = [
-      { n: "500", sub: "resources · ~5 subscriptions",
-        real: "A startup, or a single product. Two or three subscriptions, a few dozen resource groups.",
-        breaks: "Nothing. One page of results, no pagination, a handful of resource types in total.",
-        v: ["vt-no", "hand-write your fixtures"],
-        why: "Thirty JSON files cover it and you read them at a glance. Standing up PostgreSQL and a generator for this is over-tooling." },
-      { n: "5,000", sub: "resources · 50 subscriptions · profile small",
-        real: "An SMB with a real Azure footprint, or a mature SaaS. This is the shipped <code>small</code> profile.",
-        breaks: "Pagination becomes mandatory. Cross-resource references start to matter — fixtures with VM→NIC→subnet links that point nowhere pass your tests and fail in prod.",
-        v: ["vt-mid", "the tipping point"],
-        why: "Here the cost of hand-writing overtakes the cost of standing up the tool. Nobody hand-writes three pages of <code>nextLink</code>, or keeps 5,000 objects referentially consistent." },
-      { n: "50,000", sub: "resources · 250 subscriptions · profile enterprise",
-        real: "A large account with landing zones. The shipped <code>enterprise</code> profile: 250 subscriptions, ~4,000 resource groups, ~57K resources, ~8K role assignments.",
-        breaks: "Unpaginated endpoints die — loading every role assignment in a subscription into memory in one response. Invisible at 100 assignments; <em>fatal</em> at 8,000.",
-        v: ["vt-yes", "impossible any other way"],
-        why: "You cannot stand up 57,000 real Azure resources for CI. And a sandbox subscription that size drifts — someone deletes things and your tests go flaky." },
-      { n: "145,000", sub: "resources · 300 subscriptions · committed benchmark",
-        real: "The project's reference benchmark: ~145K resources, ~4,700 resource groups, ~38K violations, generated at ~1,970 resources/sec.",
-        breaks: "Indexes. A resource-group name compared with <code>lower()</code> can't use the plain index, so a scoped listing scans the whole subscription. Invisible at 500 resources; decisive here.",
-        v: ["vt-yes", "the nominal regime"],
-        why: "This is the scale the tool is built for, where the measured low-single-digit-millisecond latencies mean something — and where a scanner reveals its real performance faults." },
-      { n: "500,000", sub: "resources · ~2,000 subscriptions · scale marker",
-        real: "The <code>scale</code> test marker, deselected by default. The server ceiling is 500,000 resources and 5,000 subscriptions per generation.",
-        breaks: "The generator's own memory — cost records spool to a bounded disk buffer instead of all being resident, and the cost-query fold is O(n), not O(M²).",
-        v: ["vt-yes", "research territory"],
-        why: "Very few organizations are this big. The point is finding your own tool's breaking point before a customer finds it for you." }
-    ];
-    var body = document.getElementById('lb-body');
-    var ticksEl = document.getElementById('ticks');
-    var slider = document.getElementById('scale-range');
-    if (!body || !slider || !ticksEl) return;
-    var ticks = ticksEl.children;
-    function esc(s) { return s; }
-    function render(i) {
-      var s = STEPS[i];
-      body.innerHTML =
-        '<div class="lb-top">' +
-          '<span class="lb-n">' + s.n + '</span>' +
-          '<span class="lb-sub">' + s.sub + '</span>' +
-          '<span class="lb-verdict ' + s.v[0] + '">' + s.v[1] + '</span>' +
-        '</div>' +
-        '<div class="lb-row"><span class="lb-k">Looks like</span><span class="lb-v">' + s.real + '</span></div>' +
-        '<div class="lb-row"><span class="lb-k">What breaks</span><span class="lb-v">' + s.breaks + '</span></div>' +
-        '<div class="lb-row"><span class="lb-k">Verdict</span><span class="lb-v">' + s.why + '</span></div>';
-      for (var k = 0; k < ticks.length; k++) ticks[k].classList.toggle('on', k === i);
-    }
-    slider.addEventListener('input', function () { render(Number(slider.value)); });
-    for (var k = 0; k < ticks.length; k++) {
-      (function (idx) {
-        ticks[idx].addEventListener('click', function () { slider.value = idx; render(idx); });
-      })(k);
-    }
-    render(Number(slider.value));
-  })();
+})();
 </script>
 </body>
 </html>

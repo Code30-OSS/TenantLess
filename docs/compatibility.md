@@ -20,7 +20,7 @@
 
 ## Azure API versions
 
-Tenantless implements the **covered ARM endpoints and JSON shapes** a discovery scan
+TenantLess implements the **covered ARM endpoints and JSON shapes** a discovery scan
 exercises — not the whole Azure ARM surface — and the management plane is **read-only by
 default** (opt-in `PUT` / `PATCH` / `DELETE` since 1.5.0 via `--enable-arm-writes`; no
 live-resource behavior). Within that covered surface, the mock

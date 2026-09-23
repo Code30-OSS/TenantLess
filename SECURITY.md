@@ -30,9 +30,9 @@ You can expect an acknowledgement within 5 working days and an assessment within
 fix is warranted we will agree a disclosure timeline with you; credit is offered by default
 and declined only if you ask.
 
-## Threat model — what Tenantless is and is not
+## Threat model — what TenantLess is and is not
 
-Tenantless is a **local simulator**. Understanding its posture avoids reporting design
+TenantLess is a **local simulator**. Understanding its posture avoids reporting design
 decisions as vulnerabilities, and helps you spot the things that genuinely are.
 
 **By design, not vulnerabilities:**

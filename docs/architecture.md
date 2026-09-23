@@ -1,6 +1,6 @@
 # Architecture
 
-Tenantless is three programs and one database. Each stage has a narrow contract with the
+TenantLess is three programs and one database. Each stage has a narrow contract with the
 next, which is what makes the pieces independently useful and independently testable.
 
 ```
