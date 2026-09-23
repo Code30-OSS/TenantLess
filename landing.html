@@ -86,7 +86,36 @@ nav.top a:hover{color:var(--a);text-decoration:none}
   background-image:repeating-linear-gradient(0deg,transparent,transparent 59px,var(--line) 59px,var(--line) 60px),repeating-linear-gradient(90deg,transparent,transparent 59px,var(--line) 59px,var(--line) 60px);
   -webkit-mask-image:radial-gradient(ellipse 80% 50% at 50% 50%,#000 20%,transparent 100%);mask-image:radial-gradient(ellipse 80% 50% at 50% 50%,#000 20%,transparent 100%)}
 .hero .orb{position:absolute;width:500px;height:500px;border-radius:50%;right:-240px;top:6rem;pointer-events:none;background:radial-gradient(circle,var(--a-dim) 0%,transparent 70%);filter:blur(40px)}
-.hero .inner{position:relative;text-align:center;padding-block:5.5rem 3rem;max-width:58rem;margin-inline:auto}
+.hero .inner{position:relative;display:grid;grid-template-columns:1.08fr .92fr;gap:3.2rem;align-items:center;padding-block:5rem 3.5rem}
+@media (max-width:980px){.hero .inner{grid-template-columns:1fr;gap:2.4rem;padding-block:3.5rem 2.5rem}}
+.hero .lede{margin-inline:0}
+.hero .btns,.hero .oneline{justify-content:flex-start}
+.rcpt{background:var(--code);border-radius:6px;padding:1.1rem;box-shadow:0 30px 60px -30px rgba(0,0,0,.55);font-family:var(--mono);color:var(--code-ink)}
+.rcpt .top{display:flex;align-items:center;gap:.45rem;margin-bottom:.9rem}
+.rcpt .top i{width:11px;height:11px;border-radius:50%;display:block}
+.rcpt .top span{margin-left:auto;font-size:.64rem;letter-spacing:.12em;text-transform:uppercase;color:var(--code-mut)}
+.rcpt .body{background:var(--code2);border-radius:3px;padding:1.1rem 1.15rem;font-size:.8rem;line-height:1.7}
+.rcpt .cmd{color:#e8e6e1;word-break:break-word}
+.rcpt .cmd .k{color:var(--code-a)}
+.rcpt .kv{display:grid;grid-template-columns:7.5rem 1fr;gap:.1rem .8rem;margin-top:.8rem}
+.rcpt .kv .k{color:var(--code-mut)}
+.rcpt .kv .val{color:#e8e6e1}
+.rcpt .kv .val em{font-style:normal;color:#7fbf8f}
+.rcpt .arrow{display:flex;align-items:center;gap:.8rem;color:var(--code-mut);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;margin:1rem 0 .9rem}
+.rcpt .arrow::before,.rcpt .arrow::after{content:"";flex:1;height:1px;background:#2a2a2a}
+.rcpt .estate{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#2a2a2a;border:1px solid #2a2a2a;border-radius:3px;overflow:hidden}
+.rcpt .estate div{background:var(--code2);padding:.75rem .85rem}
+.rcpt .estate .n{display:block;font-size:1.35rem;font-weight:700;color:var(--code-a);letter-spacing:-.02em;font-variant-numeric:tabular-nums;transition:opacity .15s}
+.rcpt .estate .l{display:block;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--code-mut)}
+.rcpt .hash{display:flex;align-items:center;justify-content:space-between;gap:.8rem;margin-top:1rem;padding-top:.85rem;border-top:1px dashed #333;font-size:.74rem;flex-wrap:wrap}
+.rcpt .hash b{color:#e8e6e1;font-weight:400}
+#regen{appearance:none;font:400 .72rem var(--mono);border:1px solid #3a3a3a;background:transparent;color:#e8e6e1;padding:.35rem .7rem;border-radius:2px;cursor:pointer;display:inline-flex;align-items:center;gap:.45rem}
+#regen:hover{border-color:var(--code-a);color:var(--code-a)}
+#regen .spin{width:10px;height:10px;border:1.5px solid currentColor;border-top-color:transparent;border-radius:50%;display:none}
+#regen.busy .spin{display:inline-block;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.rcpt .ok{margin-top:.55rem;font-size:.74rem;color:#7fbf8f;min-height:1.2em}
+.rcpt .src{display:block;margin-top:.7rem;font-size:.6rem;color:var(--code-mut);letter-spacing:.04em}
 .pill{display:inline-flex;align-items:center;gap:.55rem;padding:.45rem 1rem;border:1px solid var(--line);border-radius:999px;background:var(--bg);font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
 .pill i{width:8px;height:8px;border-radius:50%;background:var(--a);display:block}
 @media (prefers-reduced-motion:no-preference){.pill i{animation:pulse 2s ease infinite}.fade{animation:up .6s ease both}.d1{animation-delay:.1s}.d2{animation-delay:.2s}.d3{animation-delay:.3s}}
@@ -257,6 +286,7 @@ footer p{color:var(--ink2)}
   <div class="orb" aria-hidden="true"></div>
   <div class="wrap">
     <div class="inner">
+      <div>
       <span class="pill fade d1"><i></i>v1.5.0 · opt-in ARM writes</span>
       <h1 class="fade d1">A disposable <span>Azure tenant</span> for testing the code that reads one</h1>
       <p class="lede fade d2">TenantLess generates statistically realistic Azure estates and serves them over ARM-compatible HTTP. Your unmodified scanner, policy engine or cost tool, or a whole class of trainees, walks 145,000 resources that were never provisioned. Read by default; ARM writes are opt-in.</p>
@@ -268,7 +298,34 @@ footer p{color:var(--ink2)}
         <span>Docker only</span>
         <span class="copy"><span id="cmd">cp .env.example .env &amp;&amp; docker compose --profile demo up</span><button type="button" id="copy-cmd" aria-label="Copy the command">copy</button></span>
       </div>
-      <p class="fine">Apache-2.0 · Rust + Python + PostgreSQL · the same profile, seed and cost date always give the same estate, byte for byte</p>
+      <p class="fine">Apache-2.0 · Rust + Python + PostgreSQL</p>
+      </div>
+
+      <div class="rcpt fade d2" id="receipt" aria-label="Generating an estate from a seed is reproducible">
+        <div class="top" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#ffbd2e"></i><i style="background:#28c840"></i><span>generate</span></div>
+        <div class="body">
+          <div class="cmd"><span class="k">$</span> tenantless generate --profile demo --seed 42 --cost-as-of 2026-01-01 --jobs 8</div>
+          <div class="kv">
+            <span class="k">profile</span><span class="val">demo</span>
+            <span class="k">seed</span><span class="val">42</span>
+            <span class="k">cost date</span><span class="val">2026-01-01 <em># pinned</em></span>
+            <span class="k">jobs</span><span class="val">8 <em># same bytes as --jobs 1</em></span>
+          </div>
+          <div class="arrow">materializes</div>
+          <div class="estate">
+            <div><span class="n">~50</span><span class="l">subscriptions</span></div>
+            <div><span class="n">~5,000</span><span class="l">resources</span></div>
+            <div><span class="n">8</span><span class="l">RBAC roles</span></div>
+            <div><span class="n">18</span><span class="l">violation types</span></div>
+          </div>
+          <div class="hash">
+            <span>estate <b>byte-identical on every run</b></span>
+            <button type="button" id="regen" aria-label="Regenerate the estate from the same inputs"><span class="spin" aria-hidden="true"></span><span id="regen-label">regenerate</span></button>
+          </div>
+          <div class="ok" id="verify" aria-live="polite"></div>
+        </div>
+        <span class="src">Demo profile as in the README (about 50 subscriptions, 5,000 resources). The regenerate button illustrates the guarantee.</span>
+      </div>
     </div>
 
     <figure class="shot">
@@ -526,6 +583,19 @@ footer p{color:var(--ink2)}
   range.addEventListener("input",function(){render(+range.value);});
   ticks.forEach(function(b){b.addEventListener("click",function(){render(+b.dataset.i);range.focus();});});
   render(2);
+
+  var regen=document.getElementById("regen"),rl=document.getElementById("regen-label"),ver=document.getElementById("verify");
+  var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  regen.addEventListener("click",function(){
+    if(regen.classList.contains("busy"))return;
+    ver.textContent="";
+    var nums=[].slice.call(document.querySelectorAll("#receipt .estate .n"));
+    function settle(){nums.forEach(function(n){n.style.opacity="1";});regen.classList.remove("busy");rl.textContent="regenerate";ver.textContent="✓ identical: same inputs, same estate";}
+    if(reduce){settle();return;}
+    regen.classList.add("busy");rl.textContent="generating";
+    nums.forEach(function(n){n.style.opacity=".25";});
+    setTimeout(settle,750);
+  });
 
   var cb=document.getElementById("copy-cmd");
   cb.addEventListener("click",function(){
