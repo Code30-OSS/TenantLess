@@ -261,9 +261,11 @@ def test_ensure_base_schema_partial_after_dropped_index_raises(fresh_db_conn):
     conn.rollback()
 
 
-def test_all_migration_sql_files_lists_ten(monkeypatch):
-    """``_all_migration_sql_files`` returns the 3 base + 7 twin migration paths (the
-    pre-flight file gate init-db checks before opening any transaction)."""
+def test_all_migration_sql_files_lists_eleven(monkeypatch):
+    """``_all_migration_sql_files`` returns the 3 base + 8 twin migration paths (the
+    pre-flight file gate init-db checks before opening any transaction). The identity
+    fold functions (011) are listed BEFORE the resolver (010) — the boot-safety
+    ordering so the functions exist before any future 010 referencing arm_id_key."""
     files = writer_mod._all_migration_sql_files()
     names = [p.name for p in files]
     assert names == [
@@ -276,5 +278,6 @@ def test_all_migration_sql_files_lists_ten(monkeypatch):
         "007_web_metadata.sql",
         "008_rg_lower_index.sql",
         "009_arm_overlay.sql",
+        "011_arm_id_key.sql",
         "010_arm_resolver.sql",
     ], names

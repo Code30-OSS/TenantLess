@@ -1,0 +1,57 @@
+[
+  {
+    "note": "ordinary deep ARM id, mixed casing -> ASCII A-Z folded to a-z, nothing else",
+    "input": "/subscriptions/AB/resourceGroups/RG1/providers/Microsoft.Storage/storageAccounts/MyAcct",
+    "key": "/subscriptions/ab/resourcegroups/rg1/providers/microsoft.storage/storageaccounts/myacct"
+  },
+  {
+    "note": "doubled and trailing slashes stay DISTINCT (never collapsed)",
+    "input": "/a//b/",
+    "key": "/a//b/"
+  },
+  {
+    "note": "bare root slash is unchanged",
+    "input": "/",
+    "key": "/"
+  },
+  {
+    "note": "shallow mixed casing",
+    "input": "/A/B/C",
+    "key": "/a/b/c"
+  },
+  {
+    "note": "already-lowercase id is idempotent under the fold",
+    "input": "/subscriptions/ab/resourcegroups/rg1",
+    "key": "/subscriptions/ab/resourcegroups/rg1"
+  },
+  {
+    "note": "Turkish dotted capital I (U+0130) is non-ASCII: passes through UNCHANGED (NOT i-dot). Proves divergence from str.lower()/locale lower().",
+    "input": "/İSTANBUL",
+    "key": "/İstanbul"
+  },
+  {
+    "note": "German sharp-s (U+00DF) passes through unchanged (str.lower keeps it, Unicode casefold would expand to ss). Proves ASCII-only fold.",
+    "input": "/Straße",
+    "key": "/straße"
+  },
+  {
+    "note": "accented e (U+00E9) is non-ASCII and preserved; the ASCII C is folded",
+    "input": "/Café",
+    "key": "/café"
+  },
+  {
+    "note": "percent-encoded bytes are ASCII-folded ONLY, never percent-decoded (%C3%A9 -> %c3%a9)",
+    "input": "/caf%C3%A9",
+    "key": "/caf%c3%a9"
+  },
+  {
+    "note": "percent-encoded space (%20) hex digits unchanged; surrounding ASCII folded",
+    "input": "/a%20B",
+    "key": "/a%20b"
+  },
+  {
+    "note": "digits, dots, dashes and underscores are untouched; only A-Z folds",
+    "input": "/Sub_1.Group-2/Res_3",
+    "key": "/sub_1.group-2/res_3"
+  }
+]

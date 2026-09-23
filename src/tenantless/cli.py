@@ -781,6 +781,17 @@ def generate(
             # UNCONDITIONAL (idempotent twin) so a pre-v1.1.10 volume gains it here,
             # committing before the CPU phase so no DDL lock crosses the fork.
             writer.ensure_rg_index_schema(prov_conn)
+            # The additive ARM-ID identity fold functions (sql/011) — UNCONDITIONAL
+            # (idempotent CREATE OR REPLACE FUNCTION twin). Provisioned here so the
+            # functions exist before the post-generation CONCURRENT expression index
+            # build + the D-04 fold audit. Behaviour-neutral in this unit: no seam,
+            # CHECK, view, or predicate consumes them yet (D-22a additive-only).
+            writer.ensure_arm_id_key_schema(prov_conn)
+            # D-04 fail-loud pre-cutover audit — run right after the fold functions are
+            # provisioned. On the current all-ASCII estate all three checks return 0
+            # rows (behaviour-neutral); a non-ASCII divergence or fold-collision RAISES,
+            # naming the offending ARM ids, and open_writer rolls the provisioning back.
+            writer.audit_arm_id_identity(prov_conn)
 
         # Emptiness / destructive-confirm gate (gate-before-generate preserved) in
         # its OWN short transaction, under the session lock. --only-if-empty inspects
@@ -851,8 +862,24 @@ def generate(
                         role_assignments=result.role_assignments,
                     )
 
+        # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a
+        # dedicated autocommit connection. Runs on BOTH paths — a fresh generation
+        # AND the --only-if-empty populated SKIP (FIX 2): the sql/011 fold functions
+        # were provisioned above (prov seam, before the skip decision), so an existing
+        # demo volume hitting the skip is the NORMAL upgrade path that must still gain
+        # the indexes. On the write path this runs AFTER the write transaction has
+        # committed (CONCURRENTLY cannot run inside a transaction; it needs the
+        # just-committed fold functions + populated rows); on the skip path nothing was
+        # written and CONCURRENTLY IF NOT EXISTS is idempotent, so the repeat is a
+        # no-op. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout, avoiding
+        # the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes (idx_res_lower_id / idx_res_rg_lower)
+        # are RETAINED; the drops + predicate cutover are deferred to a later step (D-22a).
+        writer.build_arm_id_key_indexes_concurrently()
+
         # Release the session lock explicitly (belt-and-suspenders; the autocommit
-        # lock connection close on __exit__ also releases it).
+        # lock connection close on __exit__ also releases it). Reached on BOTH the
+        # generation and the populated-skip paths, so the session lock is acquired and
+        # released exactly once per invocation (never leaked, never double-released).
         writer.release_generate_lock_session(lock_conn, GENERATE_LOCK_KEY)
 
     if skipped:
@@ -1126,6 +1153,10 @@ def apply_drift(
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1552,6 +1583,10 @@ def reset(dry_run, database_url):
         # idempotent; a no-op on an already-provisioned tenant.
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1662,6 +1697,10 @@ def revert_drift(batch_id_raw, dry_run, database_url):
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
+        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
+        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
+        # Behaviour-neutral in this unit: nothing consumes them yet.
+        writer.ensure_arm_id_key_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1875,7 +1914,9 @@ def init_db(database_url):
     ``ensure_*`` seams — no new SQL — applying, IN ORDER:
     base (sql/001..003) -> cost (004) -> identity (005) -> drift (006) ->
     web_metadata (007) -> rg_index (008) -> arm_overlay (009) ->
-    arm_resolver (010).
+    arm_id_key (011) -> arm_resolver (010). The identity fold functions (011) are
+    applied BEFORE the resolver (010) so they exist before any future 010 that
+    references arm_id_key (the later cutover) — the boot-safety ordering.
 
     Provisioning belongs to the write path (``generate``) or to this explicit
     ``init-db``; the server does not create the base schema at boot, so a
@@ -1933,6 +1974,9 @@ def init_db(database_url):
             ("007_web_metadata", writer.ensure_web_metadata_schema),
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
             ("009_arm_overlay", writer.ensure_arm_overlay_schema),
+            # 011 (identity fold functions) applied BEFORE 010 so the functions exist
+            # before any future 010 referencing arm_id_key (the later cutover) — boot-safety order.
+            ("011_arm_id_key", writer.ensure_arm_id_key_schema),
             ("010_arm_resolver", writer.ensure_arm_resolver_schema),
         ):
             if not ensure(conn):
@@ -1941,6 +1985,20 @@ def init_db(database_url):
                     "unavailable during apply (bundled sql/ missing). Nothing was "
                     "committed; the database is unchanged."
                 )
+        # D-04 fail-loud pre-cutover ARM-ID identity audit — after the full chain
+        # (base + overlay + fold functions) is applied so both synthetic.resources and
+        # synthetic.arm_overlay exist. On the current all-ASCII estate all checks return
+        # 0 rows (behaviour-neutral); any divergence / fold-collision RAISES (naming the
+        # offending ARM ids) INSIDE the with, so open_writer rolls the whole apply back.
+        writer.audit_arm_id_identity(conn)
+
+    # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a dedicated
+    # autocommit connection AFTER the migration transaction has COMMITTED (CONCURRENTLY
+    # cannot run inside a transaction, and the index expression needs the just-committed
+    # fold functions). Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout,
+    # avoiding the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes are RETAINED; drops are deferred to
+    # a later step. Idempotent (IF NOT EXISTS), so a re-run of init-db is a no-op.
+    writer.build_arm_id_key_indexes_concurrently(db_url)
 
     # Status line: prints ONLY after a clean commit. Never echo the full
     # database_url — host only.
@@ -1951,7 +2009,7 @@ def init_db(database_url):
     # the deep structural inventory the mock-server runs at boot (arm_overlay_inventory). Say so
     # rather than imply a verification this path did not do.
     click.echo(
-        f"Applied migrations 001..010 against {host}. "
+        f"Applied migrations 001..011 against {host}. "
         "The mock-server enforces structural verification of the overlay + resolver "
         "substrate at boot."
     )

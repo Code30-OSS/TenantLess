@@ -154,6 +154,10 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "007_web_metadata.sql"),
         resource_path("sql", "008_rg_lower_index.sql"),
         resource_path("sql", "009_arm_overlay.sql"),
+        # 011 (the identity fold functions) is applied BEFORE 010 so the functions
+        # exist before any future sql/010 that references arm_id_key (the later cutover) — the
+        # boot-safety ordering that mirrors the Rust boot preflight.
+        resource_path("sql", "011_arm_id_key.sql"),
         resource_path("sql", "010_arm_resolver.sql"),
     ]
 
@@ -398,6 +402,303 @@ def ensure_arm_overlay_schema(conn: psycopg.Connection) -> bool:
         conn.execute("SET LOCAL lock_timeout = '3s'")
         conn.execute("SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_overlay:009'))")
         conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+def ensure_arm_id_key_schema(conn: psycopg.Connection) -> bool:
+    """Apply the idempotent ``sql/011_arm_id_key.sql`` migration — the ARM-ID identity
+    fold functions (``synthetic.ascii_fold`` primitive + ``synthetic.arm_id_key``
+    whole-ID wrapper, both IMMUTABLE STRICT ``translate()`` functions; INV-01, D-01/D-02/D-28).
+
+    Verbatim twin of :func:`ensure_arm_overlay_schema`, swapping ``009_arm_overlay.sql`` for
+    ``011_arm_id_key.sql``. Applied UNCONDITIONALLY by ``generate`` / ``init-db`` so a database
+    provisioned before the fold existed gains the functions automatically on the next run.
+    ``sql/011`` is ``CREATE OR REPLACE FUNCTION`` only — a no-op-equivalent re-definition on an
+    already-migrated schema, taking NO table lock — so applying it here is safe to repeat and
+    needs no advisory-lock preamble (unlike 009/010, function redefinition does not contend).
+
+    ADDITIVE + behaviour-neutral (D-22a): this ONLY defines the two functions. It changes NO
+    CHECK, builds NO index, edits NO view, and cuts over NO predicate. In THIS unit NOTHING
+    consumes the functions (``sql/010`` still references ``lower(...)`` and is UNCHANGED); it is
+    applied BEFORE ``ensure_arm_resolver_schema`` (010) only so the functions EXIST before any
+    future 010 that references ``arm_id_key`` (the later predicate cutover) — the boot-safety ordering.
+
+    The statement text is a STATIC project file, never user/profile input — no injection
+    surface. Returns True if applied, False if the file was not found (installed package with
+    no bundled ``sql/`` — those deployments apply the schema via docker initdb).
+    """
+    sql_path = resource_path("sql", "011_arm_id_key.sql")
+    if not sql_path.is_file():
+        return False
+    conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+class ArmIdIdentityAuditError(click.ClickException):
+    """Raised when the pre-cutover ARM-ID identity audit (D-04) finds divergence/collision.
+
+    Subclasses :class:`click.ClickException` so an UNCAUGHT raise is formatted cleanly
+    (non-zero exit, no traceback) by BOTH callers — ``generate`` and ``init-db`` — with
+    zero per-caller handling, exactly like :class:`PartialBaseSchemaError`. ``open_writer``
+    already rolls back on any exception, so a tripped audit leaves the DB untouched and NO
+    identity is silently changed / merged.
+
+    The message NAMES the offending ARM ids ONLY — never tags / properties / bodies /
+    tokens (T-24ai-04) — honouring the project no-request-body logging rule.
+    """
+
+
+def audit_arm_id_identity(conn: psycopg.Connection) -> None:
+    """Fail-loud pre-cutover ARM-ID identity audit (D-04) — a PRODUCTION migration helper.
+
+    Runs THREE read-only checks against live PG (requires ``synthetic.arm_id_key`` to
+    exist — call AFTER :func:`ensure_arm_id_key_schema`):
+
+    1. **Baseline divergence** — any ``synthetic.resources`` id whose legacy ``lower(id)``
+       differs from the new ``synthetic.arm_id_key(id)`` (a non-ASCII id that a
+       locale-aware ``lower()`` would fold differently than the ASCII-only key).
+    2. **Overlay divergence** — the same check on the ``synthetic.arm_overlay`` stored
+       ``id_lower`` derivation (skipped when the overlay table is absent, e.g. a bare
+       ``generate`` provisioning path that never provisions the overlay).
+    3. **Fold collision** — two DISTINCT baseline ids that fold to the SAME
+       ``arm_id_key`` (a case-only duplicate the identity contract would silently merge).
+
+    Each check must return 0 rows; ANY hit raises :class:`ArmIdIdentityAuditError`
+    naming the offending ARM ids ONLY (bounded to the first 50 per check; never emits
+    tag / property / body / token values — T-24ai-04). This is the gate the later cutover MUST pass
+    BEFORE it converts the ``arm_overlay`` CHECK, drops the retained ``lower()`` indexes,
+    or cuts over any predicate. It is ADDITIVE + behaviour-neutral on the current
+    all-ASCII estate (it only trips on real divergence / collision) and changes NO
+    identity itself. All values bind as ``%s``; relation/column names are static.
+    """
+    _CAP = 50
+    problems: list[str] = []
+    with conn.cursor() as cur:
+        # (1) baseline resources: lower(id) <> arm_id_key(id)
+        cur.execute(
+            "SELECT id FROM synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect id-fold divergence
+            "WHERE lower(id) <> synthetic.arm_id_key(id) "
+            "ORDER BY id LIMIT %s",
+            (_CAP,),
+        )
+        div = [r[0] for r in cur.fetchall()]
+        if div:
+            problems.append(
+                f"{len(div)} baseline id(s) whose lower(id) <> arm_id_key(id): "
+                + ", ".join(div)
+            )
+
+        # (2) overlay stored id_lower derivation — only if the overlay table exists.
+        cur.execute("SELECT to_regclass('synthetic.arm_overlay')")
+        if cur.fetchone()[0] is not None:
+            cur.execute(
+                "SELECT id FROM synthetic.arm_overlay "
+                "WHERE id_lower <> synthetic.arm_id_key(id) "
+                "ORDER BY id LIMIT %s",
+                (_CAP,),
+            )
+            odiv = [r[0] for r in cur.fetchall()]
+            if odiv:
+                problems.append(
+                    f"{len(odiv)} overlay id(s) whose id_lower <> arm_id_key(id): "
+                    + ", ".join(odiv)
+                )
+
+        # (3) fold collision: two DISTINCT baseline ids folding to one key.
+        cur.execute(
+            "SELECT array_agg(id ORDER BY id) FROM synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect fold collisions
+            "GROUP BY synthetic.arm_id_key(id) HAVING count(DISTINCT id) > 1 "
+            "ORDER BY 1 LIMIT %s",
+            (_CAP,),
+        )
+        collisions = ["{" + ", ".join(row[0]) + "}" for row in cur.fetchall()]
+        if collisions:
+            problems.append(
+                f"{len(collisions)} fold-collision group(s) (distinct ids sharing one "
+                "arm_id_key): " + "; ".join(collisions)
+            )
+
+    if problems:
+        raise ArmIdIdentityAuditError(
+            "ARM-ID identity audit FAILED before cutover — refusing to change identity "
+            "or merge collisions (D-04). Offending ARM ids: "
+            + " | ".join(problems)
+            + ". Resolve the divergence/collision (rename the non-ASCII id, or de-dup the "
+            "case-only collision) before migrating identity to arm_id_key."
+        )
+
+
+# Advisory-lock key serializing concurrent additive-index builders (a session lock,
+# NOT a transaction lock — CONCURRENTLY cannot run inside a transaction).
+_ARM_ID_KEY_INDEX_LOCK = "synthetic.arm_id_key_indexes:011"
+
+# The additive ARM-ID fold expression indexes, as
+# ``(index_name, ON-clause, ordered pg_get_indexdef fragments)`` — a STATIC project
+# constant (never user/profile input), so interpolating any of these into DDL below
+# introduces NO injection surface. The ``fragments`` are the substrings that MUST
+# appear, in left-to-right column order, in ``pg_get_indexdef`` for the built index to
+# be considered the CORRECT (non-stale) shape (FIX 3 catalog validation).
+_ARM_ID_KEY_INDEX_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "idx_res_arm_id_key",
+        "ON synthetic.resources (synthetic.arm_id_key(id))",
+        ("arm_id_key(id)",),
+    ),
+    (
+        "idx_res_rg_ascii_fold",
+        "ON synthetic.resources "  # SYNRES-ALLOW[schema/provisioning]: additive fold-index DDL on the baseline table (retained lower() index untouched)
+        "(subscription_id, synthetic.ascii_fold(resource_group_name), id)",
+        ("subscription_id", "ascii_fold(resource_group_name)", "id)"),
+    ),
+)
+
+
+class ArmIdIndexBuildError(click.ClickException):
+    """Raised when an additive ARM-ID fold index cannot be built VALID even after a
+    repair attempt (FIX 3).
+
+    Subclasses :class:`click.ClickException` so an uncaught raise exits non-zero
+    with a clean, actionable message (no traceback) from both callers — ``generate``
+    and ``init-db`` — exactly like :class:`ArmIdIdentityAuditError`. This is the
+    fail-loud half of the leftover-index guard: a ``CREATE INDEX CONCURRENTLY
+    IF NOT EXISTS`` that got FALSELY skipped by an interrupted-build INVALID index (or
+    a stale-shaped same-named index) must never be reported as success.
+    """
+
+
+def _validate_arm_id_index(
+    conn: psycopg.Connection, name: str, fragments: tuple[str, ...]
+) -> tuple[bool, str]:
+    """Catalog-validate the just-built index ``name`` (FIX 3).
+
+    Reads ``pg_index.indisvalid`` / ``indisready`` + ``pg_get_indexdef`` (the same
+    trusted catalog infra :func:`_dropped_secondary_indexes` uses). Returns
+    ``(ok, detail)`` where ``ok`` is True only when the index is PRESENT, VALID,
+    READY, and its definition contains ``fragments`` in the given column order — so a
+    leftover INVALID (interrupted-build) index OR a stale-shaped same-named index
+    (which ``IF NOT EXISTS`` would silently keep) is reported as NOT-ok. ``name`` is
+    bound as ``%s``; the fold-schema qualifier is a static literal.
+    """
+    row = conn.execute(
+        "SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid) "
+        "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'synthetic' AND c.relname = %s",
+        (name,),
+    ).fetchone()
+    if row is None:
+        return False, f"{name} is absent after the build"
+    valid, ready, indexdef = row
+    if not valid or not ready:
+        return False, (
+            f"{name} is INVALID/not-ready (indisvalid={valid}, indisready={ready}) — "
+            "a leftover from an interrupted CONCURRENTLY build"
+        )
+    pos = 0
+    for frag in fragments:
+        found = indexdef.find(frag, pos)
+        if found < 0:
+            return False, (
+                f"{name} definition is stale/unexpected (missing {frag!r} in expected "
+                f"column order): {indexdef}"
+            )
+        pos = found + len(frag)
+    return True, indexdef
+
+
+def _build_and_validate_arm_id_index(
+    conn: psycopg.Connection, name: str, on_clause: str, fragments: tuple[str, ...]
+) -> None:
+    """Build ONE additive fold index CONCURRENTLY, then catalog-validate + repair it
+    (FIX 3).
+
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` can FALSELY succeed on a leftover
+    same-named index that is INVALID (an interrupted prior build) or stale-shaped: the
+    ``IF NOT EXISTS`` skips it and this function would otherwise report success on a
+    broken/wrong index. So after the build we validate ``indisvalid``/``indisready`` +
+    the def; on failure we REPAIR ONCE (``DROP INDEX CONCURRENTLY`` the leftover +
+    rebuild) and re-validate. If it STILL cannot be made valid we FAIL LOUD
+    (:class:`ArmIdIndexBuildError`). ``name`` / ``on_clause`` come from the STATIC
+    :data:`_ARM_ID_KEY_INDEX_SPECS` — no injection surface.
+    """
+    conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {on_clause}")
+    ok, detail = _validate_arm_id_index(conn, name, fragments)
+    if ok:
+        return
+    # Repair: the IF NOT EXISTS FALSELY skipped a leftover INVALID / stale-shaped
+    # index. Drop it CONCURRENTLY (deadlock-safe like the build) and rebuild once.
+    conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS synthetic.{name}")
+    conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {on_clause}")
+    ok, detail = _validate_arm_id_index(conn, name, fragments)
+    if not ok:
+        raise ArmIdIndexBuildError(
+            f"additive ARM-ID index {name} could not be built valid after a repair "
+            f"attempt: {detail}. Manually drop the leftover index "
+            f"(DROP INDEX CONCURRENTLY IF EXISTS synthetic.{name}) and re-run the "
+            "provisioning (init-db / generate)."
+        )
+
+
+def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
+    """Build the TWO additive ARM-ID fold expression indexes CONCURRENTLY (INV-01, D-28).
+
+    Creates, on a DEDICATED autocommit connection (``CREATE INDEX CONCURRENTLY`` CANNOT
+    run inside a transaction, so it must NOT ride the boot-time ``apply_schema_batch``
+    path nor the init-db/generate writer transaction):
+
+    * ``idx_res_arm_id_key`` ON ``synthetic.resources (synthetic.arm_id_key(id))`` — the
+      identity index the later predicate cutover will hit (single-column, mirroring
+      sql/003's single-column ``lower(id)`` identity index);
+    * ``idx_res_rg_ascii_fold`` ON
+      ``synthetic.resources (subscription_id, synthetic.ascii_fold(resource_group_name), id)``
+      — the fold-backed RG-name index (D-28) the later RG-predicate cutover will use. It
+      MIRRORS the RETAINED sql/008 ``idx_res_rg_lower``
+      ``(subscription_id, lower(resource_group_name), id)`` shape EXACTLY so the cutover
+      keeps the same scoped (``subscription_id`` prefix) + keyset-pagination (trailing
+      ``id``) plan — a single-column fold index could serve neither.
+
+    ADDITIVE (D-22a): both are created ALONGSIDE the RETAINED ``idx_res_lower_id`` (sql/003)
+    and ``idx_res_rg_lower`` (sql/008) ``lower()`` indexes — this unit drops NOTHING and cuts
+    over NO predicate; the old-index drops + predicate cutover are deferred to a later step after
+    the D-04 audit passes.
+
+    Deadlock-safe (the known server-boot ALTER-lock deadlock hazard):
+    ``CONCURRENTLY`` takes only ``SHARE UPDATE EXCLUSIVE`` (never the ACCESS EXCLUSIVE that
+    a plain ``CREATE INDEX`` on a populated resources heap would take at boot), a bounded
+    session ``lock_timeout`` caps the brief locks it still needs, and a SESSION advisory lock
+    serializes racing builders. ``IF NOT EXISTS`` makes a re-run a no-op. Requires
+    ``synthetic.arm_id_key`` / ``synthetic.ascii_fold`` to already exist (call AFTER
+    :func:`ensure_arm_id_key_schema` has COMMITTED). The relation / column / index names are
+    STATIC — no injection surface.
+
+    FIX 3 — leftover-index guard: ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` can
+    FALSELY succeed on a leftover same-named index that is INVALID (an interrupted
+    prior build) or stale-shaped — ``IF NOT EXISTS`` skips it and a naive builder
+    returns True on a broken/wrong index. After EACH build this validates
+    ``indisvalid``/``indisready`` + the definition via the catalog and REPAIRS
+    (drop-concurrently + rebuild) a leftover, or FAILS LOUD
+    (:class:`ArmIdIndexBuildError`) if a valid index still cannot be produced.
+
+    Returns True once BOTH indexes are confirmed present, valid, ready, and correctly
+    shaped.
+    """
+    conn = psycopg.connect(conn_str or DATABASE_URL, autocommit=True)
+    try:
+        # Bounded session lock_timeout: a brief ACCESS SHARE UPDATE wait cannot hang the
+        # provisioning path (autocommit -> session-scoped, reverted on close).
+        conn.execute("SET lock_timeout = '3s'")
+        # Serialize concurrent builders (a SESSION advisory lock — a transaction/xact lock
+        # is impossible here since CONCURRENTLY forbids a transaction). Released in finally.
+        conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,))
+        try:
+            for name, on_clause, fragments in _ARM_ID_KEY_INDEX_SPECS:
+                _build_and_validate_arm_id_index(conn, name, on_clause, fragments)
+        finally:
+            conn.execute(
+                "SELECT pg_advisory_unlock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,)
+            )
+    finally:
+        conn.close()
     return True
 
 
@@ -665,7 +966,7 @@ def _dropped_secondary_indexes(
     ``table`` as a ``%s::regclass`` parameter; the DROP/CREATE then replay trusted
     catalog strings (an identifier/DDL cannot be a bound ``$N`` literal), so this
     introduces NO profile-derived SQL and NO injection surface — the COPY column
-    contract below is untouched (project memory "mock-server SQL injection bar").
+    contract below is untouched (matching the established mock-server SQL-injection safety bar).
 
     Unique / primary-key indexes are NEVER dropped: the PK index backs the
     ``fk_violations_resource`` / ``fk_cost_resource`` foreign keys and the id
@@ -835,8 +1136,8 @@ def copy_violations(
 
     ``None``/empty is a clean no-op (matches :func:`copy_dependencies`). The
     column literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     rows = list(rows or [])
     if not rows:
@@ -880,8 +1181,8 @@ def copy_cost_records(
 
     ``None``/empty is a clean no-op (matches :func:`copy_violations`). The column
     literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     # iterate the source rows DIRECTLY — GenerationResult.cost_records
     # is a frozen tuple, and materializing it into a fresh list here re-copied (at
@@ -929,8 +1230,8 @@ def copy_principals(
 
     ``None``/empty is a clean no-op (matches :func:`copy_cost_records`). The column
     literal is STATIC (never profile-derived); every value passes through
-    parameterized binary encoding — no string-concatenated SQL (project memory
-    "mock-server SQL injection bar").
+    parameterized binary encoding — no string-concatenated SQL (matching the
+    established mock-server SQL-injection safety bar).
     """
     rows = list(rows or [])
     if not rows:

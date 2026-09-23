@@ -142,6 +142,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         })?;
 
+    // Startup schema preflight: idempotently provision the ARM-ID identity fold
+    // functions (`synthetic.ascii_fold` / `synthetic.arm_id_key`, both IMMUTABLE STRICT
+    // translate() functions) by applying sql/011. ADDITIVE + behaviour-neutral (D-22a):
+    // this ONLY defines the two functions — no CHECK change, no index, no view edit, no
+    // predicate cutover. It runs AFTER `ensure_arm_overlay_schema` (sql/009) and BEFORE
+    // `ensure_arm_resolver_schema` (sql/010) purely so the functions EXIST before any future
+    // sql/010 that references `arm_id_key` (the later predicate cutover) is applied against an upgraded volume —
+    // the boot-safety guarantee. In THIS unit sql/010 is UNCHANGED (still `lower(...)`) and
+    // no `011 -> audit -> 012 -> 010` cutover ordering is wired. No reader consults these
+    // functions yet.
+    tenantless_server::ensure_arm_id_key_schema(&pool)
+        .await
+        .map_err(|e| {
+            format!(
+                "arm id-key schema preflight (sql/011_arm_id_key.sql) failed: {e}. The \
+             database is reachable and has a tenant, but the `synthetic.ascii_fold` / \
+             `synthetic.arm_id_key` fold functions could not be provisioned. Check the DB \
+             role's CREATE privilege on schema `synthetic`, or run `tenantless init-db` to \
+             (re)provision."
+            )
+        })?;
+
     // Startup schema preflight: idempotently provision the resolver substrate
     // (`synthetic.drift_batches.storage_mode` + the two resolved views
     // `synthetic.arm_resolved_resources` / `synthetic.arm_resolved_resource_groups` + the
