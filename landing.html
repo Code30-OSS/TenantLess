@@ -166,6 +166,13 @@ td:first-child{color:var(--ink)}
 .v{font-family:var(--mono);font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap;font-weight:700}
 .v.yes{color:var(--ok)}.v.no{color:var(--bad)}.v.mid{color:var(--warn)}
 
+.more{margin-top:2rem}
+.more summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:.6rem;font-family:var(--mono);font-size:.78rem;letter-spacing:.06em;color:var(--a-dk);border:1px solid var(--line2);border-radius:2px;padding:.55rem .9rem;background:var(--bg)}
+.more summary::-webkit-details-marker{display:none}
+.more summary::before{content:"+";font-weight:700;color:var(--a)}
+.more[open] summary::before{content:"2"}
+.more summary:hover{border-color:var(--a)}
+.more .tw{margin-top:1rem}
 /* scale ladder */
 .scale{border:1px solid var(--line);background:var(--bg)}
 .shead-ctl{padding:1.3rem 1.6rem 1rem;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:.7rem}
@@ -255,8 +262,8 @@ footer p{color:var(--ink2)}
       <span class="w">TenantLess</span><span class="by">Code30 <b>OSS</b></span>
     </a>
     <nav class="top" aria-label="Primary">
-      <a href="#who">Who it's for</a>
       <a href="#scale">What breaks</a>
+      <a href="#who">Who it's for</a>
       <a href="#training">Training</a>
       <a href="#start">Quickstart</a>
       <a class="gh" href="https://github.com/Code30-OSS/TenantLess">GitHub</a>
@@ -319,47 +326,6 @@ footer p{color:var(--ink2)}
   </div>
 </section>
 
-<section class="s alt" id="who">
-  <div class="wrap">
-    <div class="head">
-      <span class="label">Who it's for</span>
-      <h2>The axis isn't company size. It's who owns the estate your code reads.</h2>
-      <p>If the infrastructure your software inspects belongs to someone else, you can't reproduce it, can't borrow it to debug, and can't show it in a demo. That's the problem TenantLess exists for.</p>
-    </div>
-    <div class="cards">
-      <div class="card">
-        <span class="badge yes">Structurally necessary</span>
-        <h3>You read someone else's estate</h3>
-        <p>Scanner vendor, CSPM, FinOps SaaS, governance product, consultancy with its own audit tooling. N clients, N estates, and you can reproduce none of them. You can't ask a client to lend you production to debug.</p>
-        <p>A tenant you can specify isn't a convenience here. It's the only way to reproduce a bug a customer reported.</p>
-      </div>
-      <div class="card">
-        <span class="badge no">Rarely worth it</span>
-        <h3>You read your own estate</h3>
-        <p>Platform team, internal FinOps, in-house governance tooling. Your dev subscription already looks like your production, and it's free to look at.</p>
-        <p>Two exceptions: rehearsing a tooling change before it touches production, and a synthetic twin of your own estate for <a href="#training">training new joiners</a>.</p>
-      </div>
-    </div>
-    <p class="callout"><b>This includes three-person companies.</b> A studio launching an Azure cost tool has this problem on day one, and harder than a large vendor that can afford sandbox tenants. The vocabulary is enterprise; the need isn't.</p>
-    <div class="tw">
-      <table>
-        <thead><tr><th>Profile</th><th>Verdict</th><th>Why</th></tr></thead>
-        <tbody>
-          <tr><td>Scanner / CSPM / FinOps SaaS vendor on Azure</td><td><span class="v yes">yes, day one</span></td><td>Reproducing a customer's bug is impossible any other way. Company size is irrelevant.</td></tr>
-          <tr><td>Consultancy with Azure audit tooling</td><td><span class="v yes">yes</span></td><td>Same reason, plus sales demos: show 18 violation types without exposing a real client.</td></tr>
-          <tr><td>Multinational onboarding cloud, FinOps or SRE joiners</td><td><span class="v yes">yes</span></td><td>A twin generated from your own tenant's statistics: joiners practise on it before they get production access.</td></tr>
-          <tr><td>Training or certification provider</td><td><span class="v yes">yes</span></td><td>The same scenario for 5 learners or 5,000, reset between sessions, with no tenant per seat.</td></tr>
-          <tr><td>Large enterprise: cost and drift simulation on its own estate</td><td><span class="v yes">yes</span></td><td>Rehearse FinOps scenarios and drift-detection runbooks on a production-shaped twin, without waiting for the real estate to misbehave.</td></tr>
-          <tr><td>University or bootcamp teaching cloud</td><td><span class="v yes">yes</span></td><td>A realistic 50K-resource estate as course material, at zero Azure cost. Fixed seeds make labs gradable.</td></tr>
-          <tr><td>Platform team, 50+ subscriptions, internal tooling</td><td><span class="v mid">maybe</span></td><td>Useful for CI and for rehearsing tooling changes before production. Not indispensable.</td></tr>
-          <tr><td>Platform team, a handful of subscriptions</td><td><span class="v no">no</span></td><td>Your dev subscription does the job, for free and more faithfully.</td></tr>
-          <tr><td>AWS-only team</td><td><span class="v no">no</span></td><td>No Azure. For API-call testing, your equivalent is moto.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
 <section class="s">
   <div class="wrap">
     <div class="head">
@@ -406,7 +372,51 @@ footer p{color:var(--ink2)}
   </div>
 </section>
 
-<section class="s">
+<section class="s" id="who">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Who it's for</span>
+      <h2>The axis isn't company size. It's who owns the estate your code reads.</h2>
+      <p>If the infrastructure your software inspects belongs to someone else, you can't reproduce it, can't borrow it to debug, and can't show it in a demo. That's the problem TenantLess exists for.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <span class="badge yes">Structurally necessary</span>
+        <h3>You read someone else's estate</h3>
+        <p>Scanner vendor, CSPM, FinOps SaaS, governance product, consultancy with its own audit tooling. N clients, N estates, and you can reproduce none of them. You can't ask a client to lend you production to debug.</p>
+        <p>A tenant you can specify isn't a convenience here. It's the only way to reproduce a bug a customer reported.</p>
+      </div>
+      <div class="card">
+        <span class="badge no">Rarely worth it</span>
+        <h3>You read your own estate</h3>
+        <p>Platform team, internal FinOps, in-house governance tooling. Your dev subscription already looks like your production, and it's free to look at.</p>
+        <p>Two exceptions: rehearsing a tooling change before it touches production, and a synthetic twin of your own estate for <a href="#training">training new joiners</a>.</p>
+      </div>
+    </div>
+    <p class="callout"><b>This includes three-person companies.</b> A studio launching an Azure cost tool has this problem on day one, and harder than a large vendor that can afford sandbox tenants. The vocabulary is enterprise; the need isn't.</p>
+    <details class="more">
+      <summary>See every profile, from vendors to AWS-only teams</summary>
+      <div class="tw">
+      <table>
+        <thead><tr><th>Profile</th><th>Verdict</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Scanner / CSPM / FinOps SaaS vendor on Azure</td><td><span class="v yes">yes, day one</span></td><td>Reproducing a customer's bug is impossible any other way. Company size is irrelevant.</td></tr>
+          <tr><td>Consultancy with Azure audit tooling</td><td><span class="v yes">yes</span></td><td>Same reason, plus sales demos: show 18 violation types without exposing a real client.</td></tr>
+          <tr><td>Multinational onboarding cloud, FinOps or SRE joiners</td><td><span class="v yes">yes</span></td><td>A twin generated from your own tenant's statistics: joiners practise on it before they get production access.</td></tr>
+          <tr><td>Training or certification provider</td><td><span class="v yes">yes</span></td><td>The same scenario for 5 learners or 5,000, reset between sessions, with no tenant per seat.</td></tr>
+          <tr><td>Large enterprise: cost and drift simulation on its own estate</td><td><span class="v yes">yes</span></td><td>Rehearse FinOps scenarios and drift-detection runbooks on a production-shaped twin, without waiting for the real estate to misbehave.</td></tr>
+          <tr><td>University or bootcamp teaching cloud</td><td><span class="v yes">yes</span></td><td>A realistic 50K-resource estate as course material, at zero Azure cost. Fixed seeds make labs gradable.</td></tr>
+          <tr><td>Platform team, 50+ subscriptions, internal tooling</td><td><span class="v mid">maybe</span></td><td>Useful for CI and for rehearsing tooling changes before production. Not indispensable.</td></tr>
+          <tr><td>Platform team, a handful of subscriptions</td><td><span class="v no">no</span></td><td>Your dev subscription does the job, for free and more faithfully.</td></tr>
+          <tr><td>AWS-only team</td><td><span class="v no">no</span></td><td>No Azure. For API-call testing, your equivalent is moto.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    </details>
+  </div>
+</section>
+
+<section class="s alt">
   <div class="wrap">
     <div class="head">
       <span class="label">What it simulates</span>
@@ -425,7 +435,7 @@ footer p{color:var(--ink2)}
   </div>
 </section>
 
-<section class="s alt" id="training">
+<section class="s" id="training">
   <div class="wrap">
     <div class="head">
       <span class="label">Training and enablement</span>
@@ -460,6 +470,22 @@ footer p{color:var(--ink2)}
   </div>
 </section>
 
+<section class="s alt" id="releases">
+  <div class="wrap">
+    <div class="head">
+      <span class="label">Recent releases</span>
+      <h2>From read-only to stateful, one additive step at a time</h2>
+      <p>Every step is opt-in and off by default: with writes disabled, responses stay byte-identical to the release before.</p>
+    </div>
+    <div class="rel">
+      <div><span class="ver">1.3.0</span><h3>Overlay substrate</h3><p>Copy-on-write overlay, tombstones and revisions over the immutable generated baseline.</p></div>
+      <div><span class="ver">1.4.0</span><h3>Stateful overlay goes live</h3><p>One resolver behind every ARM read, and <code>ETag</code>s on detail responses.</p></div>
+      <div><span class="ver">1.5.0</span><h3>Opt-in ARM writes</h3><p><code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> on any resource id, conditional writes, and an atomic nested-delete cascade.</p></div>
+    </div>
+    <p class="next">Next: resource-group create and delete, then a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
+  </div>
+</section>
+
 <section class="s" id="start">
   <div class="wrap">
     <div class="split">
@@ -487,22 +513,6 @@ footer p{color:var(--ink2)}
         <span class="src">Commands from the README. About 12 s to the first ARM 200, measured on a pre-built image.</span>
       </div>
     </div>
-  </div>
-</section>
-
-<section class="s alt" id="releases">
-  <div class="wrap">
-    <div class="head">
-      <span class="label">Recent releases</span>
-      <h2>From read-only to stateful, one additive step at a time</h2>
-      <p>Every step is opt-in and off by default: with writes disabled, responses stay byte-identical to the release before.</p>
-    </div>
-    <div class="rel">
-      <div><span class="ver">1.3.0</span><h3>Overlay substrate</h3><p>Copy-on-write overlay, tombstones and revisions over the immutable generated baseline.</p></div>
-      <div><span class="ver">1.4.0</span><h3>Stateful overlay goes live</h3><p>One resolver behind every ARM read, and <code>ETag</code>s on detail responses.</p></div>
-      <div><span class="ver">1.5.0</span><h3>Opt-in ARM writes</h3><p><code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> on any resource id, conditional writes, and an atomic nested-delete cascade.</p></div>
-    </div>
-    <p class="next">Next: resource-group create and delete, then a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
   </div>
 </section>
 </main>
