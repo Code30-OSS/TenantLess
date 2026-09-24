@@ -201,11 +201,11 @@ jobs:
           # registered op never executed).
           passed=$(grep -oE '[0-9]+ passed' /tmp/conformance.log | tail -1 | grep -oE '[0-9]+')
           passed=${passed:-0}
-          if [ "$passed" -lt 1 ] || ! grep -q '^conformance run: ' /tmp/conformance.log; then
+          if [ "$passed" -lt 1 ] || ! grep -q 'conformance run: ' /tmp/conformance.log; then
             echo "::error::the conformance machine did not actually run (passed=$passed) — server binary or Postgres missing?"
             exit 1
           fi
-          grep '^conformance run: ' /tmp/conformance.log
+          grep -o 'conformance run: .*' /tmp/conformance.log
 
   privacy-gates:
     name: Privacy gates
