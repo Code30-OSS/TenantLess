@@ -295,11 +295,26 @@ table.surface td:first-child{min-width:10rem}
 .relband p{font-size:.93rem;color:var(--ink2);max-width:62rem}
 .relband b{color:var(--ink)}
 
-.duo{display:grid;grid-template-columns:1fr 1.05fr;gap:3rem;align-items:center}
-@media (max-width:980px){.duo{grid-template-columns:1fr;gap:2.4rem}}
+.wrap.duo{max-width:108rem;display:grid;grid-template-columns:1fr 1.15fr;gap:3.5rem;align-items:center}
+@media (max-width:1200px){.wrap.duo{grid-template-columns:1fr;gap:2.6rem;max-width:72rem}}
+.wrap.duo>*{min-width:0}
 .duo table{min-width:0}
 .duo .shot{margin:0;padding-bottom:0}
 .duo .head{margin-bottom:1.6rem}
+
+/* tables stack into labelled blocks on phones */
+@media (max-width:640px){
+  table.stack{min-width:0}
+  table.stack thead{display:none}
+  table.stack tr{display:block;padding:1rem 1.1rem;border-bottom:1px solid var(--line)}
+  table.stack tr:last-child{border-bottom:0}
+  table.stack td{display:block;padding:.2rem 0;border:0}
+  table.stack td:first-child{font-weight:700;margin-bottom:.35rem;min-width:0}
+  table.cmp td:nth-child(2)::before,table.cmp td:nth-child(3)::before{display:block;font-family:var(--mono);font-size:.64rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:.4rem}
+  table.cmp td:nth-child(2)::before{content:"moto / LocalStack"}
+  table.cmp td:nth-child(3)::before{content:"TenantLess";color:var(--a)}
+  table.surface td:nth-child(2){margin-bottom:.4rem}
+}
 
 /* footer */
 footer.site{border-top:1px solid var(--line);padding-block:3rem;font-size:.88rem;color:var(--muted)}
@@ -374,7 +389,7 @@ footer p{color:var(--ink2)}
     <span class="c">…49 more subscriptions</span>
   ]
 }</pre>
-        <span class="src">Captured from the published v1.5.0 images, lightly trimmed. The demo profile is the small starter estate; the same seed gives the same estate on every run.</span>
+        <span class="src">Output captured from the published v1.5.0 images and lightly trimmed. This is the demo profile, the smallest bundled estate, and seed 42 reproduces it exactly on every run.</span>
       </div>
     </div>
 
@@ -387,16 +402,16 @@ footer p{color:var(--ink2)}
     <div class="head">
       <span class="label">Positioning</span>
       <h2>Not another cloud emulator</h2>
-      <p>moto and LocalStack emulate cloud services so you can build and deploy against them. LocalStack has announced an Azure edition. TenantLess answers a different question.</p>
+      <p>moto and LocalStack emulate cloud services so that you can build and deploy against them, and LocalStack has announced an Azure edition. TenantLess is built for a different question: whether code that reads an existing estate copes with it.</p>
     </div>
     <div class="tw" style="margin-top:0">
-      <table>
+      <table class="stack cmp">
         <thead><tr><th></th><th>moto / LocalStack</th><th>TenantLess</th></tr></thead>
         <tbody>
-          <tr><td>What you get</td><td>An empty room. You furnish it yourself through API calls.</td><td>A furnished building, at the scale you specify.</td></tr>
+          <tr><td>What you get</td><td>An empty room that you furnish yourself through API calls.</td><td>A building that is already furnished, at the scale you specify.</td></tr>
           <tr><td>The question tested</td><td>"Does my deployment work?"</td><td>"Does my scanner survive an estate it didn't create?"</td></tr>
           <tr><td>Cost of entry</td><td>You write the setup for every test.</td><td>You describe the estate once, as a statistical profile.</td></tr>
-          <tr><td>What becomes possible</td><td>Testing your write and deploy path.</td><td>Testing your read path at a scale, and with pathologies, you can't hand-build.</td></tr>
+          <tr><td>What becomes possible</td><td>Testing your write and deploy path.</td><td>Testing your read path against a scale and a set of misconfigurations you couldn't build by hand.</td></tr>
         </tbody>
       </table>
     </div>
@@ -415,8 +430,8 @@ footer p{color:var(--ink2)}
   <div class="wrap">
     <div class="head">
       <span class="label">Who it's for</span>
-      <h2>The axis isn't company size. It's who owns the estate your code reads.</h2>
-      <p>If the infrastructure your software inspects belongs to someone else, you can't reproduce it, can't borrow it to debug, and can't show it in a demo. Three jobs run into that wall. Pick yours.</p>
+      <h2>What matters is who owns the estate your code reads, not the size of your company</h2>
+      <p>When the infrastructure your software inspects belongs to someone else, you can't reproduce it, borrow it to debug, or show it in a demo. Three kinds of work run into this problem, and each has its own section below.</p>
     </div>
     <div class="paths">
       <a class="path" href="#build">
@@ -429,19 +444,19 @@ footer p{color:var(--ink2)}
       <a class="path" href="#clients">
         <span class="pn">02</span>
         <h3>Client-facing teams</h3>
-        <p>Reproduce a client's issue, demo and rehearse audits, without their tenant.</p>
+        <p>Reproduce a client's issue, run demos and prepare audits without access to their tenant.</p>
         <span class="who">Consultancies · auditors · vendor sales and solutions engineers</span>
         <span class="go">Reproduce, demo, rehearse →</span>
       </a>
       <a class="path" href="#teach">
         <span class="pn">03</span>
         <h3>Trainers and educators</h3>
-        <p>Teach on a realistic estate every learner gets identically.</p>
+        <p>Teach on a realistic estate that every learner receives in exactly the same state.</p>
         <span class="who">Universities · bootcamps · certification providers · internal onboarding</span>
         <span class="go">Gradable labs, onboarding twins →</span>
       </a>
     </div>
-    <p class="callout"><b>This includes three-person companies.</b> A studio launching an Azure cost tool has this problem on day one, and harder than a large vendor that can afford sandbox tenants. The vocabulary is enterprise; the need isn't.</p>
+    <p class="callout">Small companies need this as much as large ones. A three-person studio building an Azure cost tool meets the problem with its first customer, and it can afford sandbox tenants even less than a large vendor can.</p>
   </div>
 </section>
 
@@ -451,11 +466,11 @@ footer p{color:var(--ink2)}
     <div class="head">
       <span class="label">01 · For tool builders</span>
       <h2>Test the code that reads Azure, at the scale it will meet</h2>
-      <p>Vendor engineering teams, open-source tool authors and internal platform teams: run your unmodified scanner, policy engine or cost tool against an estate you specify, then check what it supports before you wire it in.</p>
+      <p>This section is for vendor engineering teams, open-source tool authors and internal platform teams. You can run your unmodified scanner, policy engine or cost tool against an estate you specify, and the table further down shows which Azure APIs are covered.</p>
     </div>
 
     <h3 class="sub" id="scale">What breaks, and at what volume</h3>
-    <p class="subp">Building TenantLess itself surfaced cost-query exhaustion (fixed in 1.1.3), generator memory (1.1.4), slow resource-group lookups (1.1.10) and an unbounded role-assignment listing (1.1.11). None showed at 100 resources; all were real at 50,000. Code that reads the same ARM shapes meets the same class of bug. Drag the slider to see what tends to break first.</p>
+    <p class="subp">While building TenantLess we hit four bugs that only appeared at scale: cost-query exhaustion (fixed in 1.1.3), generator memory use (1.1.4), slow resource-group lookups (1.1.10) and an unbounded role-assignment listing (1.1.11). None of them showed up with 100 resources, and all of them did with 50,000. Any code that reads the same ARM responses is exposed to the same kinds of bug. Move the slider to see what tends to break at each size.</p>
     <div class="scale">
       <div class="shead-ctl">
         <label for="scale-range">Drag to set the estate size</label>
@@ -470,37 +485,37 @@ footer p{color:var(--ink2)}
       </div>
       <div class="sbody" id="scale-body" aria-live="polite"></div>
     </div>
-    <p class="small muted" style="margin-top:1.1rem;max-width:46rem">Rule of thumb: under about 1,000 resources, hand-written fixtures are faster. Between 1K and 10K, pagination and cross-references start to matter. Past 50K, you're testing things you can't build any other way.</p>
+    <p class="small muted" style="margin-top:1.1rem;max-width:46rem">As a rough guide, hand-written fixtures are quicker below about 1,000 resources. Between 1,000 and 10,000, pagination and cross-references start to matter, and beyond 50,000 you are testing conditions you could not set up any other way.</p>
 
     <h3 class="sub" id="surface">Supported surface</h3>
-    <p class="subp">TenantLess covers the ARM calls a discovery scan makes, not the whole of Azure. Check this table against the calls your tool makes.</p>
+    <p class="subp">TenantLess covers the ARM calls that a discovery scan makes rather than the whole of Azure, so compare this table with the calls your tool relies on.</p>
     <div class="tw">
-      <table class="surface">
+      <table class="surface stack">
         <thead><tr><th>Surface</th><th>Status</th><th>What's there</th></tr></thead>
         <tbody>
           <tr><td>Subscriptions, resource groups, resources</td><td><span class="st ok">served</span></td><td>List and detail, arbitrarily nested resource types, <code>$filter</code> on type, location and tags, <code>$top</code> / <code>$skiptoken</code> paging with <code>nextLink</code>, ARM error shapes. <code>api-version</code> 2022-12-01.</td></tr>
-          <tr><td>Resource writes</td><td><span class="st part">opt-in</span></td><td><code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> on any resource id with <code>ETag</code>s, behind <code>--enable-arm-writes</code>. Off by default. Resource-group create and delete are not there yet.</td></tr>
+          <tr><td>Resource writes</td><td><span class="st part">opt-in</span></td><td><code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> on any resource id with <code>ETag</code>s, behind <code>--enable-arm-writes</code>. It is off by default, and resource-group create and delete are not available yet.</td></tr>
           <tr><td>Cost Management</td><td><span class="st ok">served</span></td><td>The query API at subscription and resource-group scope, over generated cost data pinned to a date you choose. <code>api-version</code> 2023-03-01.</td></tr>
           <tr><td>Authorization</td><td><span class="st ok">served</span></td><td>Role definitions (list and detail) and role assignments. <code>api-version</code> 2022-04-01.</td></tr>
-          <tr><td>Tokens</td><td><span class="st ok">served</span></td><td>An Entra-style <code>/{tenant}/oauth2/v2.0/token</code> endpoint and JWKS. Any bearer token is accepted by default; <code>--enforce-auth</code> validates RS256 JWTs.</td></tr>
+          <tr><td>Tokens</td><td><span class="st ok">served</span></td><td>An Entra-style <code>/{tenant}/oauth2/v2.0/token</code> endpoint and JWKS. Any bearer token is accepted by default, and <code>--enforce-auth</code> switches to validating RS256 JWTs.</td></tr>
           <tr><td>HTTPS</td><td><span class="st ok">served</span></td><td><code>--tls</code> adds a listener on <code>:8443</code> with an ephemeral self-signed certificate, next to plain HTTP on <code>:8080</code>.</td></tr>
-          <tr><td>Azure Resource Graph (KQL)</td><td><span class="st no">not served</span></td><td>No <code>Microsoft.ResourceGraph</code> endpoint. Scanners that enumerate through KQL need an ARM-list mode.</td></tr>
-          <tr><td>Microsoft Graph</td><td><span class="st no">not served</span></td><td>No users, groups or app registrations. Role assignments reference synthetic principal ids only.</td></tr>
-          <tr><td>Azure Policy</td><td><span class="st no">not served</span></td><td>No policy definitions, assignments or compliance states. Governance violations live in resource properties, where a scanner reads them.</td></tr>
-          <tr><td>Data planes</td><td><span class="st no">not served</span></td><td>No blob, Key Vault secret or database traffic. Management plane only.</td></tr>
+          <tr><td>Azure Resource Graph (KQL)</td><td><span class="st no">not served</span></td><td>There is no <code>Microsoft.ResourceGraph</code> endpoint, so scanners that enumerate through KQL need to fall back to ARM list calls.</td></tr>
+          <tr><td>Microsoft Graph</td><td><span class="st no">not served</span></td><td>There are no users, groups or app registrations, and role assignments point to synthetic principal ids.</td></tr>
+          <tr><td>Azure Policy</td><td><span class="st no">not served</span></td><td>There are no policy definitions, assignments or compliance states. Governance violations are written into resource properties, which is where a scanner reads them.</td></tr>
+          <tr><td>Data planes</td><td><span class="st no">not served</span></td><td>Only the management plane is served, so there is no blob, Key Vault secret or database traffic.</td></tr>
         </tbody>
       </table>
     </div>
     <ul class="limits">
-      <li>Any <code>api-version</code> is accepted, but it doesn't switch the response shape: you get the versions listed above.</li>
-      <li>Generated estates are static until you apply drift or, with writes on, change them yourself. Nothing runs, so there are no live metrics or activity logs.</li>
-      <li>Full matrix in <a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</li>
+      <li>Any <code>api-version</code> is accepted, but it doesn't change the response shape, which always follows the versions listed above.</li>
+      <li>A generated estate stays unchanged until you apply drift or, with writes enabled, modify it yourself. Nothing is actually running, so there are no live metrics or activity logs.</li>
+      <li>The full matrix is in <a href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</li>
     </ul>
 
     <h3 class="sub" id="sdk">Point a client at it</h3>
     <div class="split top sdk">
       <div>
-        <p class="subp" style="margin-top:0">The Azure SDKs refuse to send a bearer token over plain HTTP, so give the mock server its HTTPS listener: set <code>TLS=true</code> and <code>BASE_URL=https://localhost:8443</code> on the <code>mock-server</code> service and publish port 8443 (from source: <code>tenantless serve --tls</code>). Then override the endpoint, hand the client any token, and accept the self-signed certificate.</p><p class="subp">No login, no tenant id, no Entra app. Pagination follows <code>nextLink</code> like it does against Azure.</p><ul class="limits"><li><strong>az CLI:</strong> <code>az rest</code> works with <code>--skip-authorization-header</code> and your own <code>Authorization</code> header. <code>az cloud register</code> and <code>az login</code> don't, because the mock has no <code>/metadata/endpoints</code>.</li><li><strong>Terraform:</strong> not supported yet. A converging <code>plan → apply → refresh → destroy</code> is on the roadmap.</li></ul>
+        <p class="subp" style="margin-top:0">The Azure SDKs refuse to send a bearer token over plain HTTP, so give the mock server its HTTPS listener: set <code>TLS=true</code> and <code>BASE_URL=https://localhost:8443</code> on the <code>mock-server</code> service and publish port 8443 (from source: <code>tenantless serve --tls</code>). Then override the endpoint, hand the client any token, and accept the self-signed certificate.</p><p class="subp">You don't need a login, a tenant id or an Entra app registration, and the SDK follows <code>nextLink</code> pagination as it would against Azure.</p><ul class="limits"><li>With the az CLI, <code>az rest</code> works with <code>--skip-authorization-header</code> and your own <code>Authorization</code> header, but <code>az cloud register</code> and <code>az login</code> don't, because the mock has no <code>/metadata/endpoints</code>.</li><li>Terraform isn't supported yet. A <code>plan → apply → refresh → destroy</code> workflow that converges against the mock is on the roadmap.</li></ul>
       </div>
       <div class="term">
         <div class="dots" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#ffbd2e"></i><i style="background:#28c840"></i></div>
@@ -532,7 +547,7 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
     </div>
 
     <h3 class="sub">What it simulates</h3>
-    <p class="subp">Seven planes of a real estate, none of it running. Nothing generated is provisioned; everything generated is shaped like production, down to pagination and error responses.</p>
+    <p class="subp">TenantLess simulates seven planes of a real estate. Nothing it generates is provisioned, but everything is shaped like production, including pagination and error responses.</p>
     <div class="planes">
       <div class="plane"><span class="label">Management</span><p>List, detail and <code>$filter</code> with pagination and arbitrarily nested resource types; ARM-shaped errors. Opt-in <code>PUT</code> / <code>PATCH</code> / <code>DELETE</code> with <code>ETag</code>s.</p></div>
       <div class="plane"><span class="label">FinOps</span><p>The Cost Management query API over generated cost data, pinned to a date you choose so results repeat.</p></div>
@@ -546,7 +561,7 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
     <div class="own">
       <span class="badge no">Rarely worth it</span>
       <h3>Reading only your own estate?</h3>
-      <p>If your team's tooling reads only your own tenant, your dev subscription already looks like production and costs nothing to look at. TenantLess earns its place in two cases: CI that needs a stable, large estate, and rehearsing a tooling change before it touches production. With a handful of subscriptions, skip it.</p>
+      <p>If your tooling only reads your own tenant, your dev subscription already resembles production and costs nothing to inspect. TenantLess is still useful in two situations: CI that needs a large, stable estate, and rehearsing a tooling change before it reaches production. With only a handful of subscriptions, you probably don't need it.</p>
     </div>
   </div>
 </section>
@@ -557,11 +572,11 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
       <div>
         <span class="label">Quickstart</span>
         <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);line-height:1.1;margin:.8rem 0 1rem">From nothing to a scannable tenant in about 12 seconds</h2>
-        <p style="color:var(--ink2)">One command, Docker only. No host Python, Node or Rust.</p>
+        <p style="color:var(--ink2)">It takes one command and needs only Docker, with no Python, Node or Rust on the host.</p>
         <ol class="steps">
-          <li><b>1</b><span>Compose starts PostgreSQL and seeds the demo estate, the small starter: 50 subscriptions, 828 resource groups, 4,960 resources.</span></li>
-          <li><b>2</b><span>The ARM mock server starts on <code>localhost:8080</code>. Point your client at it (see <a href="#sdk">above</a> for the SDK).</span></li>
-          <li><b>3</b><span>Open <code>localhost:8080/ui</code> for the web console. Larger profiles, source builds and bring-your-own PostgreSQL are in the <a href="https://github.com/Code30-OSS/TenantLess#readme">README</a>.</span></li>
+          <li><b>1</b><span>Compose starts PostgreSQL and seeds the demo estate, the smallest bundled profile, with 50 subscriptions, 828 resource groups and 4,960 resources.</span></li>
+          <li><b>2</b><span>The ARM mock server starts on <code>localhost:8080</code>. You can point your client at it; the SDK setup is described <a href="#sdk">above</a>.</span></li>
+          <li><b>3</b><span>The web console is at <code>localhost:8080/ui</code>. Larger profiles, source builds and bring-your-own PostgreSQL are in the <a href="https://github.com/Code30-OSS/TenantLess#readme">README</a>.</span></li>
         </ol>
       </div>
       <div class="term">
@@ -587,17 +602,17 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
     <div class="head">
       <span class="label">02 · For client-facing teams</span>
       <h2>Work on a client's estate without their tenant</h2>
-      <p>Consultancies, auditors, and vendor sales and solutions engineers: you can't ask a client to lend you production. You can ask for a statistics file.</p>
+      <p>This section is for consultancies, auditors, and vendor sales and solutions engineers. A client won't lend you their production tenant, but they can send you a statistics file.</p>
     </div>
 
     <div class="split top">
       <div>
         <h3 class="sub" style="margin-top:0">Reproduce a client's issue</h3>
-        <p class="subp">The analyzer runs on the client's side, read-only, and exports only distributions. You regenerate a matching estate locally and debug against that.</p>
+        <p class="subp">The analyzer runs read-only on the client's side and exports only distributions, which you use to regenerate a matching estate locally and debug against it.</p>
         <ol class="steps">
-          <li><b>1</b><span><strong>Client side:</strong> the analyzer reads their subscriptions through Azure Resource Graph with their own credentials and writes a statistical profile. A denylist of their real names fails the run if any appears in the output.</span></li>
-          <li><b>2</b><span><strong>They send you one JSON file.</strong> It holds distributions (type mix, counts per subscription, co-occurrence, naming shapes, cost curves), never a name, id or tag value.</span></li>
-          <li><b>3</b><span><strong>Your side:</strong> generate from their profile. Same shape, same scale, nothing real in it. Fix the seed and every colleague gets the identical estate.</span></li>
+          <li><b>1</b><span>On the client's side, the analyzer reads their subscriptions through Azure Resource Graph using their own credentials and writes a statistical profile. If any name from their denylist appears in the output, the run fails.</span></li>
+          <li><b>2</b><span>They send you the resulting JSON file. It contains distributions such as the type mix, counts per subscription, co-occurrence, naming patterns and cost curves, but never a name, id or tag value.</span></li>
+          <li><b>3</b><span>On your side, you generate an estate from their profile. It has the same shape and scale with nothing real in it, and with a fixed seed every colleague gets the identical estate.</span></li>
         </ol>
       </div>
       <div class="term">
@@ -619,15 +634,15 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
     <div class="cards three">
       <div class="card">
         <h3>Demo without client data</h3>
-        <p>A fixed seed, the violation mix you choose from 18 types, and the guided scanner demo. The same findings on every run, so a sales demo never surprises you and never shows a real client.</p>
+        <p>Combine a fixed seed, a violation mix chosen from 18 types and the guided scanner demo. Every run produces the same findings, so a sales demo holds no surprises and never exposes a real client.</p>
       </div>
       <div class="card">
         <h3>Rehearse an audit</h3>
-        <p>Run your scripts and checklists on an estate shaped like the client's before you get access. Arrive knowing where your tooling slows down and which findings it will raise.</p>
+        <p>Run your scripts and checklists on an estate shaped like the client's before you get access, so you already know where your tooling slows down and which findings it will raise.</p>
       </div>
       <div class="card">
         <h3>What leaves the client, and what never does</h3>
-        <p>Leaves: aggregate distributions. Never: names, ids, tag values. Two automated controls enforce it: any bucket seen fewer than 5 times is dropped, and the output is scanned against the denylist and fails closed on a match.</p>
+        <p>Only aggregate distributions leave the client's environment; names, ids and tag values never do. Two automated controls enforce this: any value seen fewer than 5 times is dropped, and the output is checked against the denylist, which stops the run on any match.</p>
       </div>
     </div>
     <div class="btns left">
@@ -643,19 +658,19 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
     <div class="head">
       <span class="label">03 · For trainers and educators</span>
       <h2>Every learner, the same realistic estate</h2>
-      <p>Teaching FinOps, SRE, DevOps and cloud governance means practising on infrastructure. Production is off limits, sandboxes are small and expensive, and no two people can safely share one. TenantLess gives every learner the same production-shaped Azure estate, with no Azure bill, no real data and no blast radius.</p>
+      <p>Teaching FinOps, SRE, DevOps and cloud governance means practising on infrastructure. Production is off limits, sandboxes are small and expensive, and no two people can safely share one. TenantLess gives every learner the same production-shaped Azure estate without an Azure bill, real data or any risk to live systems.</p>
     </div>
     <div class="train-grid">
       <div class="card">
         <span class="badge yes">Universities and bootcamps</span>
         <h3>A real estate to teach on</h3>
-        <p>Student credits buy a handful of resources, not 250 subscriptions with hub-and-spoke networking, cost history and misconfigurations to find. A fixed seed gives every student the identical estate, so labs are gradable and cohorts comparable, year after year.</p>
+        <p>Student credits pay for a handful of resources, not 250 subscriptions with hub-and-spoke networking, cost history and misconfigurations to find. A fixed seed gives every student the identical estate, so labs are gradable and cohorts comparable, year after year.</p>
         <div class="lab"><b>Example lab:</b> find the storage accounts allowing public blob access across 250 subscriptions. The injected violations are the grader's answer key.</div>
       </div>
       <div class="card">
         <span class="badge yes">Training and certification providers</span>
         <h3>A lab range that never runs out</h3>
-        <p>Cloud academies, certification programmes and the platform vendors' own learning teams can run the same scenario for 5 learners or 5,000, without provisioning a tenant per seat or cleaning up after each class. Reset between sessions and the estate is exactly as it was.</p>
+        <p>Cloud academies, certification programmes and the platform vendors' own learning teams can run the same scenario for 5 learners or 5,000, without provisioning a tenant per seat or cleaning up after each class. After a reset between sessions, the estate is back exactly as it was.</p>
         <div class="lab"><b>Example exercise:</b> allocate a month of cost to business units, find the anomaly, then fix the tagging through the ARM API and re-run the report.</div>
       </div>
       <div class="card">
@@ -666,11 +681,11 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
       </div>
     </div>
     <div class="skills">
-      <div><span class="label">A lab is three things</span><p>A profile, a seed and a task. The seed makes the estate identical for everyone; the injected violations and drift batches are the answer key.</p></div>
-      <div><span class="label">FinOps and SRE</span><p>Cost allocation against the Cost Management API pinned to a date, then drift detection and one-step undo on an estate that resets.</p></div>
-      <div><span class="label">Governance</span><p>18 violation types across severities, injected at rates you choose: a graded range for audit and policy training.</p></div>
+      <div><span class="label">What makes a lab</span><p>A lab combines a profile, a seed and a task. The seed makes the estate identical for everyone, and the injected violations and drift batches serve as the answer key.</p></div>
+      <div><span class="label">FinOps and SRE</span><p>Learners can practise cost allocation against the Cost Management API with results pinned to a date, then drift detection and one-step undo on an estate that resets.</p></div>
+      <div><span class="label">Governance</span><p>Eighteen violation types across severities, injected at rates you choose, give audit and policy training a range that can be graded.</p></div>
     </div>
-    <p class="callout">There is no shared scenario library yet: today you write the task, TenantLess supplies an estate that makes it gradable. If you build labs on it, <a href="https://github.com/Code30-OSS/TenantLess/issues">open an issue</a>. We'd like to collect them.</p>
+    <p class="callout">There is no shared scenario library yet. For now you write the task and TenantLess provides an estate that makes it gradable. If you build labs on it, please <a href="https://github.com/Code30-OSS/TenantLess/issues">open an issue</a> so we can collect them.</p>
     <div class="btns left">
       <a class="btn p" href="#start">Run the demo estate</a>
       <a class="btn s" href="https://github.com/Code30-OSS/TenantLess/blob/main/docs/profiles.md">Profiles and seeds</a>
@@ -680,7 +695,7 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
 
 <section class="relband">
   <div class="wrap">
-    <p><b>Latest: 1.5.0, opt-in ARM writes.</b> Every step so far is additive and off by default: with writes disabled, responses stay byte-identical to the release before. Next: resource-group create and delete, then a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
+    <p>The latest release, 1.5.0, adds opt-in ARM writes. Each new capability so far has been additive and off by default, and with writes disabled the responses are byte-identical to the previous release. Resource-group create and delete come next, followed by a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
   </div>
 </section>
 </main>
@@ -719,11 +734,11 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
 <script>
 (function(){
   var STOPS=[
-    {n:"500",sub:"resources · a handful of subscriptions",tag:["no","hand-write it"],like:"A small shop or a single workload. A dev subscription covers this for free.",breaks:"Nothing. Every naive implementation works at this size, which is exactly why it teaches you nothing.",verdict:"Skip the simulator. Hand-written fixtures are faster and clearer."},
-    {n:"4,960",sub:"resources · 50 subscriptions · demo profile, seed 42",tag:["mid","starts to matter"],like:"A mid-size company, or one business unit of a large one. The one-command demo estate is this shape.",breaks:"The first pagination bugs: code that assumes one page of results, nextLink handling that drops the token, filters applied after fetching instead of in the query.",verdict:"Useful. Twenty minutes with the demo estate answers questions your fixtures can't."},
-    {n:"57,207",sub:"resources · 250 subscriptions · enterprise profile, seed 42",tag:["yes","impossible otherwise"],like:"A large account with landing zones. The bundled enterprise profile: 250 subscriptions, 4,037 resource groups, 57,207 resources, 8,026 role assignments.",breaks:"Unpaginated endpoints fall over. Our own 1.1.11 fix is a textbook case: a role-assignment listing loaded every assignment of a subscription in one unbounded response. Invisible at 100 assignments; a problem at 8,026.",verdict:"You can't buy 57K real Azure resources for CI, and a sandbox this size drifts: someone deletes things and your tests go flaky."},
-    {n:"145,101",sub:"resources · 300 subscriptions · enterprise profile scaled up, seed 7",tag:["yes","the committed benchmark"],like:"A multinational estate. The repository's committed benchmark: 4,742 resource groups, served at p95 latencies of 1.7 to 5.6 ms on the recorded machine.",breaks:"Memory ceilings in scanners that load the whole estate before processing it; timeouts in tools that scan subscriptions one after another.",verdict:"The scale where scanner architecture decisions become visible. Reproducible from the bundled profile in one command."},
-    {n:"500,000",sub:"resources · stress territory, generated on request",tag:["yes","stress territory"],like:"Hyperscale, or a managed-service provider's combined estate.",breaks:"Anything that doesn't stream. Generation itself becomes the bottleneck (about 1,970 resources per second on the recorded machine).",verdict:"For the handful of teams operating here, there is no other reproducible option at any price."}
+    {n:"500",sub:"resources · a handful of subscriptions",tag:["no","hand-write it"],like:"A small company or a single workload, which a dev subscription covers for free.",breaks:"Very little. Even a naive implementation works at this size, so a test here tells you almost nothing.",verdict:"Hand-written fixtures are faster and clearer at this size, so you don't need the simulator."},
+    {n:"4,960",sub:"resources · 50 subscriptions · demo profile, seed 42",tag:["mid","starts to matter"],like:"A mid-size company, or one business unit of a large one. The one-command demo estate has this shape.",breaks:"The first pagination bugs appear, such as code that assumes one page of results, nextLink handling that drops the token, or filters applied after fetching instead of in the query.",verdict:"Worth trying. Twenty minutes with the demo estate answers questions your fixtures can't."},
+    {n:"57,207",sub:"resources · 250 subscriptions · enterprise profile, seed 42",tag:["yes","impossible otherwise"],like:"A large account with landing zones. The bundled enterprise profile has 250 subscriptions, 4,037 resource groups, 57,207 resources and 8,026 role assignments.",breaks:"Endpoints without pagination fall over. Our own 1.1.11 fix is a typical case: a role-assignment listing returned every assignment in a subscription in one unbounded response, which went unnoticed at 100 assignments and became a problem at 8,026.",verdict:"You can't buy 57,000 real Azure resources for CI, and a sandbox this size drifts as people delete things, which makes your tests flaky."},
+    {n:"145,101",sub:"resources · 300 subscriptions · enterprise profile scaled up, seed 7",tag:["yes","the committed benchmark"],like:"A multinational estate. This is the repository's committed benchmark, with 4,742 resource groups served at p95 latencies of 1.7 to 5.6 ms on the recorded machine.",breaks:"Scanners that load the whole estate before processing it hit memory limits, and tools that scan subscriptions one after another start timing out.",verdict:"At this scale, a scanner's architecture decisions become visible. The benchmark is reproducible with scripts/bench_arm_latency.py."},
+    {n:"500,000",sub:"resources · stress territory, generated on request",tag:["yes","stress territory"],like:"Hyperscale, or a managed-service provider's combined estate.",breaks:"Anything that doesn't stream breaks. Generation itself becomes the bottleneck, at about 1,970 resources per second on the recorded machine.",verdict:"For the few teams working at this scale, there is no other way to get a reproducible estate of this size."}
   ];
   var body=document.getElementById("scale-body");
   var range=document.getElementById("scale-range");
