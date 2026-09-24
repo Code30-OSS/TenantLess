@@ -295,6 +295,12 @@ table.surface td:first-child{min-width:10rem}
 .relband p{font-size:.93rem;color:var(--ink2);max-width:62rem}
 .relband b{color:var(--ink)}
 
+.duo{display:grid;grid-template-columns:1fr 1.05fr;gap:3rem;align-items:center}
+@media (max-width:980px){.duo{grid-template-columns:1fr;gap:2.4rem}}
+.duo table{min-width:0}
+.duo .shot{margin:0;padding-bottom:0}
+.duo .head{margin-bottom:1.6rem}
+
 /* footer */
 footer.site{border-top:1px solid var(--line);padding-block:3rem;font-size:.88rem;color:var(--muted)}
 .cols{display:grid;grid-template-columns:2fr 1fr 1fr;gap:2rem}
@@ -372,18 +378,12 @@ footer p{color:var(--ink2)}
       </div>
     </div>
 
-    <figure class="shot">
-      <div class="frame">
-        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>localhost:8080/ui · explorer</span></div>
-        <img src="docs/assets/site/console-resource-detail.png" width="1440" height="900" loading="lazy" alt="The TenantLess web console: a synthetic subscription tree on the left, the resources of a resource group in the middle, and the selected virtual network's ARM id, tags and properties on the right.">
-      </div>
-      <figcaption>The built-in web console on a generated tenant: browse subscriptions, resource groups and resources exactly as a scanner sees them.</figcaption>
-    </figure>
   </div>
 </section>
 
 <section class="s">
-  <div class="wrap">
+  <div class="wrap duo">
+    <div>
     <div class="head">
       <span class="label">Positioning</span>
       <h2>Not another cloud emulator</h2>
@@ -400,6 +400,14 @@ footer p{color:var(--ink2)}
         </tbody>
       </table>
     </div>
+    </div>
+    <figure class="shot">
+      <div class="frame">
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>localhost:8080/ui · explorer</span></div>
+        <img src="docs/assets/site/console-resource-detail.png" width="1440" height="900" loading="lazy" alt="The TenantLess web console: a synthetic subscription tree on the left, the resources of a resource group in the middle, and the selected virtual network's ARM id, tags and properties on the right.">
+      </div>
+      <figcaption>The built-in web console on a generated tenant: browse subscriptions, resource groups and resources exactly as a scanner sees them.</figcaption>
+    </figure>
   </div>
 </section>
 
