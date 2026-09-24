@@ -69,7 +69,7 @@ a{color:var(--a-dk);text-decoration:none}
 a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--a);outline-offset:3px;border-radius:2px}
 code{font-family:var(--mono);font-size:.84em;background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:.05em .35em}
-h1,h2,h3{letter-spacing:-.03em;text-wrap:balance;font-weight:700}
+h1,h2,h3{letter-spacing:-.03em;font-weight:700}
 .label{font-family:var(--mono);font-size:.72rem;letter-spacing:.15em;text-transform:uppercase;color:var(--a);display:inline-flex;align-items:center;gap:.5rem}
 .label::before{content:"\25C6";font-size:.58rem}
 .muted{color:var(--muted)}
@@ -123,7 +123,7 @@ nav.top a:hover{color:var(--a);text-decoration:none}
 @keyframes up{from{opacity:.001;transform:translateY(14px)}to{opacity:1;transform:none}}
 h1{font-size:clamp(2.4rem,6.4vw,4.6rem);line-height:1.04;margin:1.6rem 0 1.3rem}
 h1 span{color:var(--a)}
-.lede{font-size:clamp(1.05rem,2vw,1.3rem);color:var(--ink2);max-width:42rem;margin-inline:auto}
+.lede{font-size:clamp(1.05rem,2vw,1.3rem);color:var(--ink2);margin-inline:auto}
 .btns{display:flex;flex-wrap:wrap;gap:1rem;justify-content:center;margin-top:2.2rem}
 .btn{font-size:.92rem;font-weight:500;padding:.8rem 1.5rem;border-radius:2px;border:1px solid transparent;display:inline-block;cursor:pointer;font-family:var(--sans)}
 .btn:hover{text-decoration:none}
@@ -150,7 +150,7 @@ h1 span{color:var(--a)}
 /* sections */
 section.s{padding-block:5rem;border-top:1px solid var(--line)}
 section.alt{background-color:color-mix(in srgb,var(--bg3) 38%,transparent)}
-.head{max-width:46rem;margin-bottom:2.4rem}
+.head{margin-bottom:2.4rem}
 .head h2{font-size:clamp(1.8rem,4vw,2.8rem);line-height:1.1;margin:.8rem 0 1rem}
 .head p{color:var(--ink2)}
 
@@ -167,7 +167,7 @@ section.alt{background-color:color-mix(in srgb,var(--bg3) 38%,transparent)}
 .badge{display:inline-flex;font-family:var(--mono);font-size:10px;letter-spacing:1.2px;text-transform:uppercase;padding:4px 10px;border-radius:3px;font-weight:700;margin-bottom:1rem;border:1px solid}
 .badge.yes{background:var(--ok-dim);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
 .badge.no{background:var(--bg3);color:var(--muted);border-color:var(--line)}
-.callout{border-left:2px solid var(--a);padding:.5rem 0 .5rem 1.2rem;margin-top:2rem;color:var(--ink2);max-width:48rem}
+.callout{border-left:2px solid var(--a);padding:.5rem 0 .5rem 1.2rem;margin-top:2rem;color:var(--ink2)}
 .callout b{color:var(--ink)}
 
 /* tables */
@@ -277,13 +277,13 @@ td:first-child{color:var(--ink)}
 section.path-s,#start{scroll-margin-top:4rem}
 h3.sub{font-size:clamp(1.3rem,2.6vw,1.65rem);letter-spacing:-.02em;margin:3.4rem 0 .6rem;scroll-margin-top:5rem}
 .head+h3.sub{margin-top:0}
-.subp{color:var(--ink2);max-width:46rem;margin-bottom:1.4rem}
+.subp{color:var(--ink2);margin-bottom:1.4rem}
 .st{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;font-weight:700;padding:.15rem .5rem;border-radius:2px;border:1px solid currentColor}
 .st.ok{color:var(--ok)}.st.part{color:var(--warn)}.st.no{color:var(--muted)}
 table.surface td:first-child{min-width:10rem}
-.limits{margin-top:1.1rem;padding-left:1.2rem;display:flex;flex-direction:column;gap:.35rem;color:var(--ink2);font-size:.93rem;max-width:52rem}
+.limits{margin-top:1.1rem;padding-left:1.2rem;display:flex;flex-direction:column;gap:.35rem;color:var(--ink2);font-size:.93rem}
 .split.top{align-items:start}
-.own{margin-top:3rem;border-left:2px solid var(--line2);padding:.4rem 0 .4rem 1.4rem;max-width:48rem}
+.own{margin-top:3rem;border-left:2px solid var(--line2);padding:.4rem 0 .4rem 1.4rem}
 .own h3{font-size:1.15rem;margin-bottom:.4rem}
 .own p{color:var(--ink2);font-size:.96rem}
 .own .badge{margin-bottom:.7rem}
@@ -292,7 +292,7 @@ table.surface td:first-child{min-width:10rem}
 .btns.left{justify-content:flex-start}
 .steps strong{color:var(--ink);font-weight:600}
 .relband{border-top:1px solid var(--line);padding-block:1.8rem;background:var(--bg2)}
-.relband p{font-size:.93rem;color:var(--ink2);max-width:62rem}
+.relband p{font-size:.93rem;color:var(--ink2)}
 .relband b{color:var(--ink)}
 
 .wrap.duo{max-width:108rem;display:grid;grid-template-columns:1fr 1.15fr;gap:3.5rem;align-items:center}
@@ -485,7 +485,7 @@ footer p{color:var(--ink2)}
       </div>
       <div class="sbody" id="scale-body" aria-live="polite"></div>
     </div>
-    <p class="small muted" style="margin-top:1.1rem;max-width:46rem">As a rough guide, hand-written fixtures are quicker below about 1,000 resources. Between 1,000 and 10,000, pagination and cross-references start to matter, and beyond 50,000 you are testing conditions you could not set up any other way.</p>
+    <p class="small muted" style="margin-top:1.1rem">As a rough guide, hand-written fixtures are quicker below about 1,000 resources. Between 1,000 and 10,000, pagination and cross-references start to matter, and beyond 50,000 you are testing conditions you could not set up any other way.</p>
 
     <h3 class="sub" id="surface">Supported surface</h3>
     <p class="subp">TenantLess covers the ARM calls that a discovery scan makes rather than the whole of Azure, so compare this table with the calls your tool relies on.</p>
