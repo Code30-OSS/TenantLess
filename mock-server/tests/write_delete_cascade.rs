@@ -501,3 +501,82 @@ async fn concurrent_delete_and_child_create_leave_a_consistent_tree() {
         );
     }
 }
+
+// --------------------------------------------------------------------------------------- //
+// LIKE metacharacters in a parent name: the descendant prefilter must match them literally.
+// A backslash (`%5C` on the wire) is LIKE's default escape character, so an unescaped
+// prefix silently drops real descendants; `%` / `_` must not widen the survivors either.
+// --------------------------------------------------------------------------------------- //
+
+#[tokio::test]
+async fn cascade_matches_like_metacharacters_in_the_parent_name_literally() {
+    let (pool, _c) = start_pg().await;
+    seed_reads_first_boot(&pool).await;
+    seed_scope(&pool, "rg-1").await;
+    let app = writes_enabled_router(pool.clone());
+
+    for (wire, raw) in [("a%5Cb", r"a\b"), ("a_c", "a_c"), ("p%25q", "p%q")] {
+        // Given a parent whose name holds a LIKE metacharacter, an overlay child, a baseline
+        // child, and a sibling (with its own child) that a metacharacter could match
+        let parent_uri = id_for("rg-1", &format!("Microsoft.Sql/servers/{wire}"));
+        let child_uri = id_for(
+            "rg-1",
+            &format!("Microsoft.Sql/servers/{wire}/databases/d1"),
+        );
+        let base_child = id_for("rg-1", &format!("Microsoft.Sql/servers/{raw}/databases/b1"));
+        let sibling = id_for("rg-1", "Microsoft.Sql/servers/abc");
+        let sibling_child = id_for("rg-1", "Microsoft.Sql/servers/abc/databases/d2");
+        seed_baseline_resource(
+            &pool,
+            "rg-1",
+            &base_child,
+            &format!("{raw}/b1"),
+            "Microsoft.Sql/servers/databases",
+        )
+        .await;
+        assert_eq!(
+            put_overlay(&app, &parent_uri).await.0,
+            StatusCode::CREATED,
+            "{raw}"
+        );
+        assert_eq!(
+            put_overlay(&app, &child_uri).await.0,
+            StatusCode::CREATED,
+            "{raw}"
+        );
+        let _ = put_overlay(&app, &sibling).await;
+        let _ = put_overlay(&app, &sibling_child).await;
+
+        // When the parent is deleted
+        let (ds, _dh, _db) = delete(&app, &parent_uri, &[]).await;
+        assert_eq!(ds, StatusCode::NO_CONTENT, "{raw}");
+
+        // Then every real descendant is tombstoned and nothing else is
+        let raw_child = id_for("rg-1", &format!("Microsoft.Sql/servers/{raw}/databases/d1"));
+        assert_eq!(
+            overlay_state(&pool, &raw_child).await,
+            Some((false, "user".to_string())),
+            "overlay child of {raw} must be tombstoned"
+        );
+        assert_eq!(
+            overlay_state(&pool, &base_child).await,
+            Some((false, "user".to_string())),
+            "baseline child of {raw} must be tombstoned"
+        );
+        assert_eq!(
+            get(&app, &child_uri).await.0,
+            StatusCode::NOT_FOUND,
+            "{raw}"
+        );
+        assert_eq!(
+            get(&app, &sibling).await.0,
+            StatusCode::OK,
+            "sibling of {raw}"
+        );
+        assert_eq!(
+            get(&app, &sibling_child).await.0,
+            StatusCode::OK,
+            "sibling child of {raw}"
+        );
+    }
+}

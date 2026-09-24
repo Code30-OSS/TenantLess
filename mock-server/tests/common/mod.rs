@@ -129,6 +129,29 @@ pub async fn seed_overlay_first_boot(pool: &PgPool) {
     tenantless_server::ensure_arm_overlay_schema(pool)
         .await
         .expect("idempotent re-apply of ensure_arm_overlay_schema");
+    boot_identity_cutover(pool).await;
+}
+
+/// Model the boot identity cutover exactly as `main` runs it after the overlay substrate:
+/// the fold functions (sql/011), the fail-loud identity audit while the cutover is pending,
+/// then the pg_constraint-conditional CHECK re-derivation (sql/012). Idempotent (a second
+/// call is a no-op), schema-only: no fixture row is inserted or mutated, so every existing
+/// count / pagination assertion is unchanged.
+pub async fn boot_identity_cutover(pool: &PgPool) {
+    tenantless_server::ensure_arm_id_key_schema(pool)
+        .await
+        .expect("boot: ensure_arm_id_key_schema");
+    if tenantless_server::arm_id_identity_cutover_pending(pool)
+        .await
+        .expect("boot: cutover pending probe")
+    {
+        tenantless_server::audit_arm_id_identity(pool)
+            .await
+            .expect("boot: identity audit");
+    }
+    tenantless_server::ensure_arm_id_identity_cutover_schema(pool)
+        .await
+        .expect("boot: ensure_arm_id_identity_cutover_schema");
 }
 
 /// Insert ONE `present=true` `synthetic.arm_overlay` resource row (the copy-on-write
@@ -278,6 +301,7 @@ pub async fn seed_fixture(pool: &PgPool) -> FixtureCounts {
         tenantless_server::ensure_arm_overlay_schema(pool)
             .await
             .expect("seed_fixture: ensure_arm_overlay_schema");
+        boot_identity_cutover(pool).await;
         tenantless_server::ensure_arm_resolver_schema(pool)
             .await
             .expect("seed_fixture: ensure_arm_resolver_schema");

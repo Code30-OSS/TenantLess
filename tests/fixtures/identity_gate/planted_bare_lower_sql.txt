@@ -1,0 +1,12 @@
+-- Positive-control fixture for tests/test_identity_gate.py (SQL).
+--
+-- Line 9 is an UNMARKED locale lower() identity join; line 10 is the same shape carrying a
+-- sanctioned IDENTITY-ALLOW marker; the comment on line 11 mentions lower(id) but is a
+-- comment. The scanner, fed this file as SQL, MUST flag exactly one hit (line 9). A .txt
+-- under tests/ is outside the enforced scan set, so it can never turn the real-tree gate red.
+SELECT 1
+FROM synthetic.arm_overlay o, synthetic.resources b
+WHERE o.id_lower = lower(b.id)
+  AND lower(split_part(o.id, '/', 2)) = 'subscriptions'  -- IDENTITY-ALLOW[structural: split_part segment keyword]
+  -- a comment that says lower(id) is ignored
+  AND o.id_lower = synthetic.arm_id_key(b.id);

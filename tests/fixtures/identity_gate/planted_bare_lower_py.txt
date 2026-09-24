@@ -1,0 +1,12 @@
+# Positive-control fixture for tests/test_identity_gate.py (Python).
+#
+# Two UNMARKED identity normalizations (a runtime SQL string with lower(%s) on line 7 and a
+# str.lower() key on line 8) MUST be flagged; the arm_id_key calls and this comment's
+# mention of .lower() must not be.
+def upsert(cur, rid, keys):
+    cur.execute("DELETE FROM synthetic.arm_overlay WHERE id_lower = lower(%s)", (rid,))
+    return rid.lower() in keys or arm_id_key(rid) in keys
+
+
+def fine(cur, rid):
+    cur.execute("DELETE FROM synthetic.arm_overlay WHERE id_lower = synthetic.arm_id_key(%s)", (rid,))

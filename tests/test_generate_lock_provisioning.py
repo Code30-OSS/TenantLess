@@ -86,6 +86,9 @@ def event_log(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover", lambda conn, **k: False
+    )
     monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
     monkeypatch.setattr(
         writer_mod, "schema_is_empty",
@@ -216,3 +219,33 @@ def test_empty_cost_skips_ensure_cost_schema(event_log, monkeypatch):
     assert not _idx(log, ("ensure_cost",)), (
         "ensure_cost_schema must be skipped for an empty-cost (empty-spool) profile"
     )
+
+
+def test_identity_audit_runs_outside_the_provisioning_ddl_transaction(event_log, monkeypatch):
+    """The switchover-gated identity audit runs in its OWN short read-only transaction,
+    AFTER the provisioning DDL transaction committed and BEFORE any truncate — so a live
+    server's reads never queue behind the audit's full scans under the DDL locks."""
+    _spy_generate(monkeypatch, event_log)
+    monkeypatch.setattr(
+        writer_mod, "ensure_arm_id_key_schema",
+        lambda conn: event_log.append(("ddl", "arm_id_key")) or True,
+    )
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover",
+        lambda conn, **k: event_log.append(("audit", k.get("read_only"))) or False,
+    )
+    result = CliRunner().invoke(
+        main, ["generate", "--profile", "small", "--seed", "7", "--force"]
+    )
+    assert result.exit_code == 0, result.output + (result.stderr or "")
+    log = event_log
+    audits = _idx(log, ("audit", True))
+    assert len(audits) == 1, f"expected one read-only switchover audit, got {log}"
+    ddl_i = _idx(log, ("ddl", "arm_id_key"))[0]
+    # A provisioning transaction closes between the DDL and the audit, and a fresh one
+    # opens for the audit alone.
+    between = log[ddl_i:audits[0]]
+    assert ("open_writer", "exit") in between and ("open_writer", "enter") in between, (
+        f"the audit must not ride the provisioning DDL transaction: {log}"
+    )
+    assert audits[0] < _idx(log, ("truncate",))[0], "audit must run before the truncate"

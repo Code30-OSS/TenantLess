@@ -1,8 +1,8 @@
 """D-04 fail-loud pre-cutover ARM-ID identity audit (INV-01).
 
 The audit is a PRODUCTION migration helper (``writer.audit_arm_id_identity``)
-invoked by the init-db / generate seam right after the fold functions are
-provisioned. It asserts, against live PG, that for EVERY persisted id the legacy
+invoked by the init-db / generate seam (while the identity switchover is still in
+progress) and before the overlay CHECK conversion / legacy index drop. It asserts, against live PG, that for EVERY persisted id the legacy
 ``lower(id)`` equals the new ``synthetic.arm_id_key(id)`` (no non-ASCII divergence)
 and that no two DISTINCT baseline ids fold to the SAME key (no collision). On any
 divergence / collision it RAISES non-zero, NAMING the offending ARM ids ONLY (never

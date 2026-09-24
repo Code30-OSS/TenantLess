@@ -60,6 +60,9 @@ def db_free_writer(monkeypatch):
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover", lambda conn, **k: False
+    )
 
     def _count_build(*a, **k):
         counter["build"] += 1

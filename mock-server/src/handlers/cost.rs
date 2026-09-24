@@ -599,6 +599,7 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
+        // IDENTITY-ALLOW[protocol: Content-Type media type is case-insensitive, not an ARM id]
         .map(|v| v.trim().to_ascii_lowercase())
     else {
         return false;
@@ -750,12 +751,14 @@ async fn run_cost_query(
     } else {
         format!(" ORDER BY {}", bounded_keys.join(", "))
     };
-    // The RG-name match is case-insensitive (`lower()=lower()`) so an RG-scoped cost
+    // The RG-name match folds ASCII case (`synthetic.ascii_fold()`, the canonical
+    // identity-component fold, backed by `idx_res_rg_ascii_fold`) so an RG-scoped cost
     // query resolves a differently-cased `{rg}` to the same group the resource-detail
     // and resource-listing endpoints do — otherwise the same ARM path could bill under
     // one endpoint and read empty under another.
     let scope_pred = if rg.is_some() {
-        " AND c.subscription_id = $3 AND lower(r.resource_group_name) = lower($4)"
+        " AND c.subscription_id = $3 \
+         AND synthetic.ascii_fold(r.resource_group_name) = synthetic.ascii_fold($4)"
     } else {
         " AND c.subscription_id = $3"
     };

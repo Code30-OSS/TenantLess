@@ -37,7 +37,8 @@ def ascii_fold(text: str) -> str:
     """Fold ASCII ``A-Z`` to ``a-z``; leave every other character unchanged.
 
     The low-level identity primitive (D-01/D-28). Byte-identical to Rust
-    ``str::to_ascii_lowercase`` and PostgreSQL ``translate($1, 'A..Z', 'a..z')``.
+    ``str::to_ascii_lowercase`` and PostgreSQL ``lower($1 COLLATE "C")`` (ASCII-only
+    under the explicit C collation).
     """
     return text.translate(_ASCII_FOLD_TABLE)
 

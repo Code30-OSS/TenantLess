@@ -15,9 +15,9 @@ Two operator-review findings are pinned here against a live PG16 (``:5433``):
   The builder must catalog-validate ``indisvalid``/``indisready`` + the def AFTER
   each build and REPAIR (drop+rebuild) a leftover, or FAIL LOUD.
 
-These are ADDITIVE-only: they touch only the NEW ``idx_res_arm_id_key`` /
-``idx_res_rg_ascii_fold`` indexes — never the retained ``idx_res_lower_id`` /
-``idx_res_rg_lower`` ``lower()`` indexes (D-22a). DB-backed, marked ``integration``.
+Once both fold indexes validate, the same builder RETIRES the legacy ``lower()``
+indexes (``idx_res_lower_id`` / ``idx_res_rg_lower``) with ``DROP INDEX CONCURRENTLY``,
+gated on a fresh identity audit. DB-backed, marked ``integration``.
 """
 
 from __future__ import annotations
@@ -42,10 +42,8 @@ def pg_conn():
 
     ``autocommit=True`` is REQUIRED (SP-5) — ``CREATE/DROP INDEX CONCURRENTLY``
     and the schema-ensure DDL cannot run inside a transaction. Self-provisions the
-    base synthetic schema (so ``synthetic.resources`` exists), the retained
-    sql/008 ``idx_res_rg_lower`` twin (NOT part of base schema — required by
-    ``test_retained_lower_indexes_untouched`` and absent on a fresh CI database),
-    and the sql/011 fold functions (so the expression indexes are buildable).
+    base synthetic schema (so ``synthetic.resources`` exists) and the sql/011 fold
+    functions (so the expression indexes are buildable).
     """
     psycopg = pytest.importorskip("psycopg")
     try:
@@ -54,7 +52,6 @@ def pg_conn():
         pytest.skip(f"Postgres on 5433 unavailable: {exc}")
     try:
         writer.ensure_base_schema(conn)
-        writer.ensure_rg_index_schema(conn)
         writer.ensure_arm_id_key_schema(conn)
         yield conn
     finally:
@@ -106,16 +103,24 @@ def test_rg_ascii_fold_index_has_scoped_pagination_shape(pg_conn):
     )
 
 
-def test_retained_lower_indexes_untouched(pg_conn):
-    """The additive builder must NOT touch the retained ``lower()`` indexes (D-22a)."""
-    writer.build_arm_id_key_indexes_concurrently(DATABASE_URL)
-    for name, expected in (
-        ("idx_res_lower_id", "lower(id)"),
-        ("idx_res_rg_lower", "lower(resource_group_name)"),
-    ):
+def test_legacy_lower_indexes_retired_after_build(pg_conn):
+    """Once both fold indexes are valid the builder drops the legacy ``lower()`` indexes."""
+    # Given a volume still carrying both legacy lower() identity indexes
+    pg_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_res_lower_id ON synthetic.resources (lower(id))"
+    )
+    pg_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_res_rg_lower "
+        "ON synthetic.resources (subscription_id, lower(resource_group_name), id)"
+    )
+    # When the builder runs
+    assert writer.build_arm_id_key_indexes_concurrently(DATABASE_URL) is True
+    # Then the fold indexes are valid and the legacy indexes are gone
+    for name in ("idx_res_arm_id_key", "idx_res_rg_ascii_fold"):
         row = _index_row(pg_conn, name)
-        assert row is not None, f"retained index {name} must still exist"
-        assert expected in row[2], f"{name} def changed: {row[2]!r}"
+        assert row is not None and row[0] and row[1], f"{name} must be valid+ready: {row!r}"
+    for name in ("idx_res_lower_id", "idx_res_rg_lower"):
+        assert _index_row(pg_conn, name) is None, f"legacy index {name} must be dropped"
 
 
 # --------------------------------------------------------------------------- #

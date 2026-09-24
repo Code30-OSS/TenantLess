@@ -22,11 +22,15 @@
 //! versions. This is pure identity: NO structural parsing / validation (segment
 //! parsing lives in `write_merge::parse_segments`).
 //!
-//! BOUNDARY (this unit is additive, behaviour-neutral, D-22a): this module is DEFINED
-//! but consumed by NO handler yet. The five stateful seams migrate onto it in
-//! a later cutover step. The in-memory [`audit_fold`] helper below is likewise AVAILABLE but not
-//! wired into any boot path — the fail-loud pre-cutover migration audit that gates
-//! the later cutover is the DB-backed Python helper (`writer.audit_arm_id_identity`).
+//! CONSUMERS: the write seam's segment parsing and descendant dedup
+//! (`write_merge::parse_segments` / `write_merge::dedupe_by_key`) fold with these free
+//! functions. The handlers themselves compare identities in SQL through the PostgreSQL
+//! twins (`synthetic.arm_id_key` / `synthetic.ascii_fold`), which the shared KAT corpus
+//! keeps byte-identical to this module. [`ArmId`] and the in-memory [`audit_fold`] helper
+//! are currently exercised only by tests; the fail-loud identity audit that gates an
+//! upgraded volume's cutover is DB-backed (`audit_arm_id_identity` in this crate at boot,
+//! `writer.audit_arm_id_identity` in the CLI), and it runs only while that cutover is still
+//! in progress.
 
 /// Fold ASCII `A-Z` to `a-z`; leave every other byte unchanged (D-01/D-28).
 ///

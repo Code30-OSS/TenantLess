@@ -5,6 +5,11 @@ import click
 # because the IntRange minimum is bound at decorator-evaluation (import) time.
 from tenantless.analyzer.privacy import MIN_BUCKET_FLOOR
 
+# The canonical ARM-ID identity fold (ASCII A-Z -> a-z only), byte-identical to
+# PostgreSQL synthetic.arm_id_key and the mock-server's arm_id::arm_id_key. Every drift
+# identity comparison (overlay key, user-owned latch detection) goes through it.
+from tenantless.identity import arm_id_key
+
 # --------------------------------------------------------------------------- #
 # apply-drift read-modify-write helpers.
 #
@@ -158,7 +163,7 @@ def _resource_column_value(robj, col: str):
 _OVERLAY_UPSERT_SQL = (
     "INSERT INTO synthetic.arm_overlay "
     "(id_lower, id, target_kind, source, present, body) "
-    "VALUES (lower(%s), %s, 'resource', 'drift', %s, %s) "
+    "VALUES (synthetic.arm_id_key(%s), %s, 'resource', 'drift', %s, %s) "
     "ON CONFLICT (id_lower) DO UPDATE SET "
     "id = EXCLUDED.id, "
     "target_kind = EXCLUDED.target_kind, "
@@ -206,6 +211,161 @@ def _overlay_upsert_present(cur, robj, Jsonb) -> None:
 def _overlay_upsert_tombstone(cur, rid: str) -> None:
     """UPSERT a present=false overlay tombstone (body NULL) for ``rid``."""
     cur.execute(_OVERLAY_UPSERT_SQL, (rid, rid, False, None))
+
+
+# --------------------------------------------------------------------------- #
+# Authoritative persisted-state fingerprint (drift-apply ledger path only).
+#
+# The apply writes its overlay rows FIRST, then re-reads the SAME scoped resolved
+# view through the SAME `_build_scoped_read_sql` builder + `_fingerprint_row`
+# projection inside the same transaction, and fingerprints what was actually
+# persisted. Only that authoritative value ever enters drift_batches; a mismatch
+# with the in-memory prediction raises `DriftFingerprintMismatch`, which
+# `open_writer` turns into a rollback of the overlay writes AND the (not yet
+# written) ledger. There is deliberately no switch to skip the re-read.
+# --------------------------------------------------------------------------- #
+
+# Mismatch diagnostics list at most this many divergent resources (by canonical key).
+_FP_DIAG_LIMIT = 20
+
+_FP_CAT_MISSING = "predicted-present/persisted-absent"
+_FP_CAT_EXTRA = "predicted-absent/persisted-present"
+_FP_CAT_CASING = "canonical-id-casing-mismatch"
+_FP_CAT_FIELD = "field-differs"
+_FP_CAT_OWNERSHIP = "ownership/tombstone-discrepancy"
+_FP_CATEGORIES = (
+    _FP_CAT_MISSING,
+    _FP_CAT_EXTRA,
+    _FP_CAT_CASING,
+    _FP_CAT_FIELD,
+    _FP_CAT_OWNERSHIP,
+)
+_FP_FIELDS = ("tags", "properties", "sku", "kind")
+
+
+class DriftFingerprintMismatch(click.ClickException):
+    """The persisted post-apply resolved state does not match the predicted one.
+
+    Raised INSIDE the apply transaction so ``open_writer`` rolls everything back
+    (fail closed); a ClickException so the CLI exits non-zero with a clear message.
+    """
+
+
+def _fingerprint_row(db_row) -> dict:
+    """Project one ``_build_scoped_read_sql`` row onto the fingerprint shape.
+
+    The ONE projection shared by the parent read and the post-write re-read, so
+    both fingerprints hash exactly the same fields. The resolved view excludes
+    tombstones, so every read row is live (``drift_deleted_at`` is always None)."""
+    rid, _sub, _type, tags, sku, kind, props = db_row[:7]
+    return {
+        "id": rid,
+        "tags": tags,
+        "sku": sku,
+        "kind": kind,
+        "properties": props,
+        "drift_deleted_at": None,
+    }
+
+
+def _value_sha256(value) -> str:
+    """sha256 of the canonical JSON encoding of ``value`` (never the value itself)."""
+    import hashlib
+
+    import orjson
+
+    return hashlib.sha256(orjson.dumps(value, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
+def _value_shape(side: str, value) -> str:
+    """Structural metadata only: key/item counts or the JSON type, never content."""
+    if isinstance(value, dict):
+        return f"{side}_keys={len(value)}"
+    if isinstance(value, list):
+        return f"{side}_items={len(value)}"
+    if value is None:
+        return f"{side}_type=null"
+    return f"{side}_type={type(value).__name__}"
+
+
+def _fingerprint_mismatch_diagnostics(
+    *,
+    batch_id,
+    predicted_fp: str,
+    persisted_fp: str,
+    predicted_rows: list[dict],
+    persisted_rows: list[dict],
+    disappeared_ids=(),
+    user_owned_keys=(),
+) -> list[str]:
+    """Build value-safe, bounded diagnostics for a predicted/persisted mismatch.
+
+    Reports the batch UUID, both fingerprints, both row counts, per-category
+    divergence counts, then the FIRST ``_FP_DIAG_LIMIT`` divergent resources in
+    canonical-key order (each with its category) and how many were omitted. A
+    differing field is reported ONLY as ``sha256`` of its canonical encoding plus
+    structural metadata (key counts / JSON type) — never raw tag, property, sku or
+    kind values, which may carry customer data or secrets."""
+    disappeared_keys = {arm_id_key(r) for r in disappeared_ids}
+    owned_keys = set(user_owned_keys)
+    pred_by_key = {arm_id_key(r["id"]): r for r in predicted_rows}
+    pers_by_key = {arm_id_key(r["id"]): r for r in persisted_rows}
+
+    divergent: list[tuple[str, str, str, list[str]]] = []
+    for key in set(pred_by_key) | set(pers_by_key):
+        pred = pred_by_key.get(key)
+        pers = pers_by_key.get(key)
+        details: list[str] = []
+        if pers is None:
+            shown = pred["id"]
+            cat = _FP_CAT_OWNERSHIP if key in owned_keys else _FP_CAT_MISSING
+        elif pred is None:
+            shown = pers["id"]
+            cat = (
+                _FP_CAT_OWNERSHIP
+                if key in disappeared_keys or key in owned_keys
+                else _FP_CAT_EXTRA
+            )
+        else:
+            shown = pred["id"]
+            for field in _FP_FIELDS:
+                pv, qv = pred.get(field), pers.get(field)
+                if pv != qv:
+                    details.append(
+                        f"    {field} differ: "
+                        f"predicted_sha256={_value_sha256(pv)} "
+                        f"persisted_sha256={_value_sha256(qv)} "
+                        f"{_value_shape('predicted', pv)} "
+                        f"{_value_shape('persisted', qv)}"
+                    )
+            if pred["id"] != pers["id"]:
+                cat = _FP_CAT_CASING
+            elif not details:
+                continue  # identical row: not a divergence
+            elif key in owned_keys:
+                cat = _FP_CAT_OWNERSHIP
+            else:
+                cat = _FP_CAT_FIELD
+        divergent.append((key, shown, cat, details))
+
+    divergent.sort(key=lambda d: (d[0], d[1]))
+    listed = divergent[:_FP_DIAG_LIMIT]
+    counts = {c: 0 for c in _FP_CATEGORIES}
+    for _key, _shown, cat, _details in divergent:
+        counts[cat] += 1
+
+    lines = [
+        "drift fingerprint mismatch: "
+        f"batch={batch_id} predicted_fp={predicted_fp} persisted_fp={persisted_fp} "
+        f"predicted_rows={len(predicted_rows)} persisted_rows={len(persisted_rows)} "
+        f"divergent={len(divergent)} listed={len(listed)} "
+        f"omitted={len(divergent) - len(listed)}",
+        "  categories: " + " ".join(f"{c}={counts[c]}" for c in _FP_CATEGORIES),
+    ]
+    for _key, shown, cat, details in listed:
+        lines.append(f"  {shown}: {cat}")
+        lines.extend(details)
+    return lines
 
 
 def _overlay_body_from_replay(body: dict) -> dict:
@@ -777,21 +937,25 @@ def generate(
             # the profile_name column — UNCONDITIONAL so
             # copy_tenant never fails on an older volume.
             writer.ensure_web_metadata_schema(prov_conn)
-            # v1.1.10: the case-insensitive resource-group functional index —
-            # UNCONDITIONAL (idempotent twin) so a pre-v1.1.10 volume gains it here,
-            # committing before the CPU phase so no DDL lock crosses the fork.
+            # The resource-group-name index seam: it no longer recreates the legacy
+            # lower() index — the fold-backed idx_res_rg_ascii_fold is built CONCURRENTLY
+            # after the write (build_arm_id_key_indexes_concurrently below).
             writer.ensure_rg_index_schema(prov_conn)
-            # The additive ARM-ID identity fold functions (sql/011) — UNCONDITIONAL
-            # (idempotent CREATE OR REPLACE FUNCTION twin). Provisioned here so the
-            # functions exist before the post-generation CONCURRENT expression index
-            # build + the D-04 fold audit. Behaviour-neutral in this unit: no seam,
-            # CHECK, view, or predicate consumes them yet (D-22a additive-only).
+            # The ARM-ID identity fold functions (sql/011) — UNCONDITIONAL (idempotent
+            # CREATE OR REPLACE FUNCTION twin). Provisioned here so the functions exist
+            # before the post-generation CONCURRENT expression index build + the
+            # identity audit.
             writer.ensure_arm_id_key_schema(prov_conn)
-            # D-04 fail-loud pre-cutover audit — run right after the fold functions are
-            # provisioned. On the current all-ASCII estate all three checks return 0
-            # rows (behaviour-neutral); a non-ASCII divergence or fold-collision RAISES,
-            # naming the offending ARM ids, and open_writer rolls the provisioning back.
-            writer.audit_arm_id_identity(prov_conn)
+
+        # Fail-loud identity audit, ONLY while the identity switchover is still in
+        # progress on this volume (overlay CHECK cutover pending or a legacy lower()
+        # index present): after the cutover a non-ASCII id is a legitimate identity and
+        # must not be refused. Its own short READ ONLY transaction AFTER the provisioning
+        # DDL committed (the audit's full scans never run under the DDL locks) and BEFORE
+        # the gate/truncate (a divergent estate is refused before it is replaced). A
+        # divergence or fold-collision RAISES, naming the offending ARM ids.
+        with writer.open_writer() as audit_conn:
+            writer.audit_arm_id_identity_during_switchover(audit_conn, read_only=True)
 
         # Emptiness / destructive-confirm gate (gate-before-generate preserved) in
         # its OWN short transaction, under the session lock. --only-if-empty inspects
@@ -872,8 +1036,9 @@ def generate(
         # just-committed fold functions + populated rows); on the skip path nothing was
         # written and CONCURRENTLY IF NOT EXISTS is idempotent, so the repeat is a
         # no-op. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout, avoiding
-        # the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes (idx_res_lower_id / idx_res_rg_lower)
-        # are RETAINED; the drops + predicate cutover are deferred to a later step (D-22a).
+        # the boot-time concurrent-index lock hazard). Once both fold indexes are valid the
+        # legacy lower() indexes (idx_res_lower_id / idx_res_rg_lower) are dropped
+        # CONCURRENTLY, gated on a fresh identity audit.
         writer.build_arm_id_key_indexes_concurrently()
 
         # Release the session lock explicitly (belt-and-suspenders; the autocommit
@@ -1102,10 +1267,12 @@ def apply_drift(
 ):
     """Apply seeded configuration drift to the live tenant.
 
-    The read-modify-write seam: in ONE transaction, read the scoped live state
-    ($N-bound), compute seeded mutations via ``tenantless.generator.drift``, UPDATE
-    the served resource columns and INSERT the per-field ``drift_records`` plus a
-    ``drift_batches`` row carrying the parent + result state fingerprints. Each run
+    The read-modify-write seam: in ONE transaction, read the scoped resolved state
+    ($N-bound), compute seeded mutations via ``tenantless.generator.drift``, write
+    the copy-on-write overlay rows, RE-READ the same scope to fingerprint what was
+    actually persisted (failing closed + rolling back if it differs from the
+    prediction), then INSERT a ``drift_batches`` row carrying the parent + that
+    authoritative result fingerprint and the per-field ``drift_records``. Each run
     STACKS a new batch from the CURRENT state, so ``before`` captures the value at
     application time (the per-batch delta), not the original generated value.
     """
@@ -1153,10 +1320,11 @@ def apply_drift(
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
-        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
-        # Behaviour-neutral in this unit: nothing consumes them yet.
+        # Identity cutover order 011 -> audit -> 012 -> 010: the fold functions, then the
+        # audit-gated overlay CHECK re-derivation onto arm_id_key (a no-op once applied),
+        # then the resolver whose shadow joins compare arm_id_key.
         writer.ensure_arm_id_key_schema(conn)
+        writer.ensure_arm_id_identity_cutover_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1178,23 +1346,16 @@ def apply_drift(
         parent_rows: list[dict] = []
         res_objs: list = []
         ddel_map: dict = {}
-        for (
-            rid, sub_id, rtype, tags, sku, kind, props,
-            rg_name, loc, name, prov, managed,
-        ) in db_rows:
+        for db_row in db_rows:
+            (
+                rid, sub_id, rtype, tags, sku, kind, props,
+                rg_name, loc, name, prov, managed,
+            ) = db_row
             # The resolved view excludes tombstones, so a read row is always
             # LIVE — drift_deleted_at is retired and treated as NULL throughout.
+            # The SAME projection feeds the post-write authoritative re-read.
             ddel = None
-            parent_rows.append(
-                {
-                    "id": rid,
-                    "tags": tags,
-                    "sku": sku,
-                    "kind": kind,
-                    "properties": props,
-                    "drift_deleted_at": ddel,
-                }
-            )
+            parent_rows.append(_fingerprint_row(db_row))
             ddel_map[rid] = ddel
             res_objs.append(
                 _resources.Resource(
@@ -1287,6 +1448,7 @@ def apply_drift(
                 disappear_count=disappear_count,
                 appear_count=appear_count,
                 seen_ids=seen,
+                eligible=eligible,
             )
             disappeared_ids = {
                 d["resource_id"]
@@ -1319,20 +1481,22 @@ def apply_drift(
         # drift_record is written, and (b) fingerprint their pre-drift (persisted) values.
         affected_ids = {d["resource_id"] for d in deltas}
         affected_ids |= {d["resource_id"] for d in life_deltas}
-        user_owned_lower: set = set()
+        # Matched on the canonical identity key (the overlay's id_lower), never a locale
+        # lowercase — a non-ASCII id's key keeps its non-ASCII letters verbatim.
+        user_owned_keys: set = set()
         if affected_ids:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id FROM synthetic.arm_overlay "
                     "WHERE source = 'user' AND id_lower = ANY(%s)",
-                    ([a.lower() for a in affected_ids],),
+                    ([arm_id_key(a) for a in affected_ids],),
                 )
-                user_owned_lower = {row[0].lower() for row in cur.fetchall()}
+                user_owned_keys = {arm_id_key(row[0]) for row in cur.fetchall()}
 
-        if user_owned_lower:
-            deltas = [d for d in deltas if d["resource_id"].lower() not in user_owned_lower]
+        if user_owned_keys:
+            deltas = [d for d in deltas if arm_id_key(d["resource_id"]) not in user_owned_keys]
             life_deltas = [
-                d for d in life_deltas if d["resource_id"].lower() not in user_owned_lower
+                d for d in life_deltas if arm_id_key(d["resource_id"]) not in user_owned_keys
             ]
             # Recompute the disappear set from the FILTERED life_deltas so a user-owned row
             # drift wanted to disappear is NOT dropped from the active-set digest.
@@ -1344,8 +1508,10 @@ def apply_drift(
             # The persisted-record count is what the applied echo should report.
             planned = len(deltas) + len(life_deltas)
 
-        # Result fingerprint over the post-mutation ACTIVE state so it CHAINS to the
-        # next apply's parent fingerprint. The parent read is the
+        # PREDICTED result fingerprint over the post-mutation ACTIVE state. It is a
+        # prediction only: the value the ledger records is the AUTHORITATIVE one,
+        # re-read from the persisted resolved view after the overlay writes below,
+        # and the two must agree or the apply fails closed. The parent read is the
         # scoped `WHERE drift_deleted_at IS NULL` view, so the result_fp must cover
         # the SAME active-set convention: rows disappeared in THIS batch leave the
         # served/active view and are dropped from the digest (they would otherwise
@@ -1358,7 +1524,7 @@ def apply_drift(
         for r in res_objs:
             if r.id in disappeared_ids:
                 continue
-            if r.id.lower() in user_owned_lower:
+            if arm_id_key(r.id) in user_owned_keys:
                 src = parent_by_id[r.id]
                 post_rows.append(
                     {
@@ -1392,7 +1558,7 @@ def apply_drift(
             }
             for leaf in minted_leaves
         )
-        result_fp = drift.state_fingerprint(post_rows)
+        predicted_fp = drift.state_fingerprint(post_rows)
 
         options = {
             "intensity": intensity,
@@ -1401,28 +1567,13 @@ def apply_drift(
             "subscription": str(sub_uuid) if sub_uuid is not None else None,
         }
 
+        # Insert-after-verify. The drift_records payloads are STAGED here and written
+        # only after the persisted state has been verified and the batch row (their
+        # FK parent) inserted, so no ledger row can exist for an unverified apply.
+        staged_records: list[tuple] = []
+
         with conn.cursor() as cur:
-            # Batch row FIRST (drift_records.batch_id FK → drift_batches).
-            # Stamp storage_mode='overlay' (sql/010 provenance marker):
-            # this batch writes the overlay, not synthetic.* in place, so the
-            # fail-closed boot guard (which trips on an ACTIVE
-            # storage_mode='synthetic' batch) lets a migrated tenant boot.
-            cur.execute(
-                "INSERT INTO synthetic.drift_batches "
-                "(batch_id, drift_type, seed, options, parent_fingerprint, "
-                "result_fingerprint, applied_at, storage_mode) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'overlay')",
-                (
-                    batch_id,
-                    drift_type,
-                    seed,
-                    Jsonb(options),
-                    parent_fp,
-                    result_fp,
-                    applied_at,
-                ),
-            )
-            # Copy-on-write onto arm_overlay: each affected
+            # (1) Copy-on-write onto arm_overlay: each affected
             # resource gets ONE full-body snapshot (compute_drift already applied
             # ALL its field mutations to the in-memory Resource, so a single upsert
             # per id captures the complete post-drift served state). The BEFORE
@@ -1443,11 +1594,7 @@ def apply_drift(
                         _overlay_upsert_present(cur, robj, Jsonb)
                     overlaid_ids.add(rid)
                 code = d["drift_code"]
-                cur.execute(
-                    "INSERT INTO synthetic.drift_records "
-                    "(batch_id, resource_id, subscription_id, field_path, before, "
-                    "after, drift_code, metadata) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                staged_records.append(
                     (
                         batch_id,
                         rid,
@@ -1457,13 +1604,13 @@ def apply_drift(
                         Jsonb(d["after"]),
                         code,
                         Jsonb({"drift_code": code, "drift_type": drift_type}),
-                    ),
+                    )
                 )
 
             # Lifecycle persistence — disappear writes an overlay
             # TOMBSTONE (present=false, source='drift'; NEVER an in-place soft-delete
             # of synthetic.resources), appear writes an overlay PRESENT row for the
-            # minted leaf (baseline never gains it). Each records a drift_record so a
+            # minted leaf (baseline never gains it). Each stages a drift_record so a
             # revert can recompute-from-ledger.
             minted_by_id = {leaf.id: leaf for leaf in minted_leaves}
             for d in life_deltas:
@@ -1472,11 +1619,7 @@ def apply_drift(
                 if fpath == "drift_deleted_at":  # disappear → overlay tombstone
                     _overlay_upsert_tombstone(cur, rid)
                     code = d["drift_code"]  # CODE_DISAPPEAR
-                    cur.execute(
-                        "INSERT INTO synthetic.drift_records "
-                        "(batch_id, resource_id, subscription_id, field_path, "
-                        "before, after, drift_code, metadata) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    staged_records.append(
                         (
                             batch_id,
                             rid,
@@ -1486,7 +1629,7 @@ def apply_drift(
                             Jsonb(d["after"]),
                             code,
                             Jsonb({"drift_code": code, "drift_type": drift_type}),
-                        ),
+                        )
                     )
                 elif fpath == "@appear":  # appear → overlay present row
                     leaf = minted_by_id[rid]
@@ -1504,11 +1647,7 @@ def apply_drift(
                     # the @appear drift_record under metadata['appear_body'] — a
                     # revert replay reconstructs the overlay row from
                     # the ledger ALONE, byte-equal to this stored body.
-                    cur.execute(
-                        "INSERT INTO synthetic.drift_records "
-                        "(batch_id, resource_id, subscription_id, field_path, "
-                        "before, after, drift_code, metadata) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    staged_records.append(
                         (
                             batch_id,
                             rid,
@@ -1524,8 +1663,68 @@ def apply_drift(
                                     "appear_body": appear_body,
                                 }
                             ),
-                        ),
+                        )
                     )
+
+            # (2) AUTHORITATIVE re-read: the SAME scoped resolved view, through the
+            # SAME builder, bound with the SAME scope, projected by the SAME row
+            # shape, inside this transaction (it sees its own overlay writes). One
+            # set-based read — never per-row — and never skipped, even for a no-op.
+            sql, params = _build_scoped_read_sql(sub_uuid, resource_types)
+            cur.execute(sql, params)
+            persisted_rows = [_fingerprint_row(row) for row in cur.fetchall()]
+            result_fp = drift.state_fingerprint(persisted_rows)
+
+            # (3) Fail closed: a persisted state that differs from the prediction
+            # raises inside open_writer, which rolls back the overlay writes; the
+            # ledger has not been written yet, so nothing of this apply survives.
+            if result_fp != predicted_fp:
+                for line in _fingerprint_mismatch_diagnostics(
+                    batch_id=batch_id,
+                    predicted_fp=predicted_fp,
+                    persisted_fp=result_fp,
+                    predicted_rows=post_rows,
+                    persisted_rows=persisted_rows,
+                    disappeared_ids=disappeared_ids,
+                    user_owned_keys=user_owned_keys,
+                ):
+                    click.echo(line, err=True)
+                raise DriftFingerprintMismatch(
+                    f"drift fingerprint mismatch for batch {batch_id}: the persisted "
+                    "resolved state does not match the predicted apply result; the "
+                    "transaction was rolled back and nothing was committed."
+                )
+
+            # (4) Batch row with the AUTHORITATIVE result fingerprint — the only
+            # value that ever enters the ledger — then (5) the staged records (FK
+            # to the batch now satisfied).
+            # Stamp storage_mode='overlay' (sql/010 provenance marker):
+            # this batch writes the overlay, not synthetic.* in place, so the
+            # fail-closed boot guard (which trips on an ACTIVE
+            # storage_mode='synthetic' batch) lets a migrated tenant boot.
+            cur.execute(
+                "INSERT INTO synthetic.drift_batches "
+                "(batch_id, drift_type, seed, options, parent_fingerprint, "
+                "result_fingerprint, applied_at, storage_mode) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'overlay')",
+                (
+                    batch_id,
+                    drift_type,
+                    seed,
+                    Jsonb(options),
+                    parent_fp,
+                    result_fp,
+                    applied_at,
+                ),
+            )
+            if staged_records:
+                cur.executemany(
+                    "INSERT INTO synthetic.drift_records "
+                    "(batch_id, resource_id, subscription_id, field_path, before, "
+                    "after, drift_code, metadata) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    staged_records,
+                )
 
     click.echo(
         f"apply-drift batch {batch_id}: {drift_type} drift, {planned} records "
@@ -1583,10 +1782,11 @@ def reset(dry_run, database_url):
         # idempotent; a no-op on an already-provisioned tenant.
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
-        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
-        # Behaviour-neutral in this unit: nothing consumes them yet.
+        # Identity cutover order 011 -> audit -> 012 -> 010: the fold functions, then the
+        # audit-gated overlay CHECK re-derivation onto arm_id_key (a no-op once applied),
+        # then the resolver whose shadow joins compare arm_id_key.
         writer.ensure_arm_id_key_schema(conn)
+        writer.ensure_arm_id_identity_cutover_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1697,10 +1897,11 @@ def revert_drift(batch_id_raw, dry_run, database_url):
         # (both fully idempotent; no-op on an already-provisioned tenant).
         writer.ensure_drift_schema(conn)
         writer.ensure_arm_overlay_schema(conn)
-        # Additive identity fold functions (sql/011) — provisioned BEFORE the resolver
-        # (010) so they exist before any future 010 referencing arm_id_key (the later cutover).
-        # Behaviour-neutral in this unit: nothing consumes them yet.
+        # Identity cutover order 011 -> audit -> 012 -> 010: the fold functions, then the
+        # audit-gated overlay CHECK re-derivation onto arm_id_key (a no-op once applied),
+        # then the resolver whose shadow joins compare arm_id_key.
         writer.ensure_arm_id_key_schema(conn)
+        writer.ensure_arm_id_identity_cutover_schema(conn)
         writer.ensure_arm_resolver_schema(conn)
         conn.commit()
 
@@ -1868,7 +2069,8 @@ def revert_drift(batch_id_raw, dry_run, database_url):
                     # untouched (the one-way ownership latch; STATE-03).
                     cur.execute(
                         "DELETE FROM synthetic.arm_overlay "
-                        "WHERE id_lower = lower(%s) AND target_kind = 'resource' "
+                        "WHERE id_lower = synthetic.arm_id_key(%s) "
+                        "AND target_kind = 'resource' "
                         "AND source <> 'user'",
                         (rid,),
                     )
@@ -1905,7 +2107,7 @@ def revert_drift(batch_id_raw, dry_run, database_url):
     help="Postgres DSN (defaults to writer.DATABASE_URL / $DATABASE_URL).",
 )
 def init_db(database_url):
-    """Provision the full sql/001..010 schema against DATABASE_URL — no data.
+    """Provision the full sql/001..012 schema against DATABASE_URL — no data.
 
     The provision-WITHOUT-generating path for a bring-your-own Postgres: a user who
     wants to ``serve`` an (initially empty) tenant, or who prefers to provision the
@@ -1929,12 +2131,12 @@ def init_db(database_url):
     Reports HONESTLY: if a bundled migration file is absent — for example an
     installed package shipped without its ``sql/`` data files — the command exits
     nonzero and NAMES the missing migration(s) instead of printing a false
-    "Applied migrations 001..010" success. The host-only status line prints ONLY
+    "Applied migrations 001..012" success. The host-only status line prints ONLY
     on full success.
 
     ATOMIC (all-or-nothing): BEFORE opening any transaction, a pre-flight gate
-    verifies all ten migration files exist — a missing bundled file aborts with
-    the database untouched (no half-open connection). Only if all ten are present
+    verifies all twelve migration files exist — a missing bundled file aborts with
+    the database untouched (no half-open connection). Only if all twelve are present
     is a single writer transaction opened; ANY failure inside it (a partially
     applied base schema, or a migration whose file vanished at apply time) is raised
     inside the transaction so it rolls the whole thing back — the schema is never
@@ -1944,7 +2146,7 @@ def init_db(database_url):
 
     db_url = database_url or writer.DATABASE_URL
 
-    # Pre-flight file gate: verify ALL 10 migration files exist BEFORE opening
+    # Pre-flight file gate: verify ALL 12 migration files exist BEFORE opening
     # any transaction. A missing bundled file (the packaging bug) aborts here — no
     # DB connection is opened, nothing is touched.
     missing = [p for p in writer._all_migration_sql_files() if not p.is_file()]
@@ -1956,7 +2158,7 @@ def init_db(database_url):
             "built with force-include, or run against a repo checkout / docker initdb."
         )
 
-    # All ten present -> apply all-or-nothing inside ONE writer transaction. Any
+    # All twelve present -> apply all-or-nothing inside ONE writer transaction. Any
     # exception raised here propagates OUT of the `with`, so open_writer rolls back
     # everything (never a record-then-commit-then-raise partial provision).
     with writer.open_writer(db_url) as conn:
@@ -1964,7 +2166,7 @@ def init_db(database_url):
         # partly-migrated base and rolls back; True/False is applied-vs-already-
         # present (Docker volume / re-run no-op), NOT a failure.
         writer.ensure_base_schema(conn)
-        # Twins (004..010) IN ORDER: a False return means the file vanished between
+        # Twins (004..012) IN ORDER: a False return means the file vanished between
         # the pre-flight gate and apply (should not happen after the gate) — treat
         # it as a hard failure and raise INSIDE the with so the base apply rolls back.
         for name, ensure in (
@@ -1974,9 +2176,12 @@ def init_db(database_url):
             ("007_web_metadata", writer.ensure_web_metadata_schema),
             ("008_rg_lower_index", writer.ensure_rg_index_schema),
             ("009_arm_overlay", writer.ensure_arm_overlay_schema),
-            # 011 (identity fold functions) applied BEFORE 010 so the functions exist
-            # before any future 010 referencing arm_id_key (the later cutover) — boot-safety order.
+            # Identity cutover order (mirrors the Rust boot preflight): 011 (fold
+            # functions) -> 012 (audit-gated overlay CHECK re-derivation onto arm_id_key;
+            # the seam runs the fail-loud identity audit first while the cutover is
+            # pending) -> 010 (resolver views comparing arm_id_key).
             ("011_arm_id_key", writer.ensure_arm_id_key_schema),
+            ("012_arm_id_identity_cutover", writer.ensure_arm_id_identity_cutover_schema),
             ("010_arm_resolver", writer.ensure_arm_resolver_schema),
         ):
             if not ensure(conn):
@@ -1985,19 +2190,22 @@ def init_db(database_url):
                     "unavailable during apply (bundled sql/ missing). Nothing was "
                     "committed; the database is unchanged."
                 )
-        # D-04 fail-loud pre-cutover ARM-ID identity audit — after the full chain
-        # (base + overlay + fold functions) is applied so both synthetic.resources and
-        # synthetic.arm_overlay exist. On the current all-ASCII estate all checks return
-        # 0 rows (behaviour-neutral); any divergence / fold-collision RAISES (naming the
-        # offending ARM ids) INSIDE the with, so open_writer rolls the whole apply back.
-        writer.audit_arm_id_identity(conn)
+        # D-04 fail-loud ARM-ID identity audit — after the full chain (base + overlay +
+        # fold functions) is applied so both synthetic.resources and synthetic.arm_overlay
+        # exist, and ONLY while the identity switchover is still in progress (a legacy
+        # lower() index remains): on a cut-over volume a non-ASCII id is a legitimate
+        # identity and must not be refused. Any divergence / fold-collision RAISES
+        # (naming the offending ARM ids) INSIDE the with, so open_writer rolls the whole
+        # apply back.
+        writer.audit_arm_id_identity_during_switchover(conn)
 
-    # Build the additive ARM-ID fold expression indexes CONCURRENTLY on a dedicated
-    # autocommit connection AFTER the migration transaction has COMMITTED (CONCURRENTLY
-    # cannot run inside a transaction, and the index expression needs the just-committed
-    # fold functions). Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded lock_timeout,
-    # avoiding the boot-time concurrent-index lock hazard). ADDITIVE: the old lower() indexes are RETAINED; drops are deferred to
-    # a later step. Idempotent (IF NOT EXISTS), so a re-run of init-db is a no-op.
+    # Build the ARM-ID fold expression indexes CONCURRENTLY on a dedicated autocommit
+    # connection AFTER the migration transaction has COMMITTED (CONCURRENTLY cannot run
+    # inside a transaction, and the index expression needs the just-committed fold
+    # functions), then retire the legacy lower() indexes with DROP INDEX CONCURRENTLY —
+    # gated on a fresh identity audit. Deadlock-safe (SHARE UPDATE EXCLUSIVE + bounded
+    # lock_timeout, avoiding the boot-time concurrent-index lock hazard). Idempotent, so a
+    # re-run of init-db is a no-op.
     writer.build_arm_id_key_indexes_concurrently(db_url)
 
     # Status line: prints ONLY after a clean commit. Never echo the full
@@ -2009,7 +2217,7 @@ def init_db(database_url):
     # the deep structural inventory the mock-server runs at boot (arm_overlay_inventory). Say so
     # rather than imply a verification this path did not do.
     click.echo(
-        f"Applied migrations 001..011 against {host}. "
+        f"Applied migrations 001..012 against {host}. "
         "The mock-server enforces structural verification of the overlay + resolver "
         "substrate at boot."
     )

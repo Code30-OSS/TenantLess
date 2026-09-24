@@ -67,17 +67,32 @@ fn merge_one_level(
     }
 }
 
-/// Parse a canonical ARM resource id into its ordered, lowercased path segments.
+/// Parse a canonical ARM resource id into its ordered, identity-folded path segments.
 ///
-/// Splits on `/`, drops empty segments (leading slash / doubled slashes), and lowercases
-/// each segment so containment comparisons are case-insensitive (D-08 lookup semantics).
+/// Splits on `/`, drops empty segments (leading slash / doubled slashes), and folds each
+/// segment with the canonical ASCII-only identity fold ([`crate::arm_id::ascii_fold`]:
+/// `A-Z -> a-z`, every other character verbatim) so containment comparisons agree
+/// byte-for-byte with the PostgreSQL `synthetic.arm_id_key` lookup and the resolver joins.
+/// A locale-aware lowercase is deliberately NOT used: it would fold non-ASCII letters
+/// (`À`, `İ`, `ß`) that the other engines keep distinct.
 /// e.g. `.../providers/Microsoft.Sql/servers/S1/databases/D1` →
 /// `["subscriptions","<sub>","resourcegroups","<rg>","providers","microsoft.sql",
 ///   "servers","s1","databases","d1"]`.
 pub fn parse_segments(id: &str) -> Vec<String> {
     id.split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase())
+        .map(crate::arm_id::ascii_fold)
+        .collect()
+}
+
+/// Deduplicate `ids` by their canonical identity key ([`crate::arm_id::arm_id_key`]),
+/// keeping the FIRST-seen raw casing of each identity (the stored casing a tombstone write
+/// must reuse). Ids that differ only in ASCII casing collapse; ids that differ in a
+/// non-ASCII character stay distinct.
+pub fn dedupe_by_key(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter()
+        .filter(|id| seen.insert(crate::arm_id::arm_id_key(id)))
         .collect()
 }
 
@@ -98,7 +113,7 @@ pub fn is_descendant(target_segments: &[String], candidate_segments: &[String]) 
 
 /// Return the subset of `candidate_ids` whose parsed segments make them a strict
 /// nested descendant of `target_id` (per [`is_descendant`]). Original id strings are
-/// returned verbatim (casing preserved); only the comparison is case-insensitive.
+/// returned verbatim (casing preserved); only the comparison folds (ASCII-only).
 pub fn descendant_ids(target_id: &str, candidate_ids: &[String]) -> Vec<String> {
     let target_segments = parse_segments(target_id);
     candidate_ids
@@ -246,9 +261,8 @@ mod descendant {
         );
         // The canonical bug this guards: a raw string-prefix test WOULD wrongly include s10.
         assert!(
-            server_s10()
-                .to_lowercase()
-                .starts_with(&server_s1().to_lowercase()),
+            crate::arm_id::arm_id_key(&server_s10())
+                .starts_with(&crate::arm_id::arm_id_key(&server_s1())),
             "str::starts_with would wrongly include s10 — which is exactly why is_descendant \
              must be segment-parsed, not string-prefixed"
         );
@@ -288,5 +302,52 @@ mod descendant {
         // And through descendant_ids too.
         let got = descendant_ids(&target, std::slice::from_ref(&candidate));
         assert_eq!(got, vec![candidate]);
+    }
+
+    #[test]
+    fn parse_segments_folds_ascii_only_and_preserves_non_ascii() {
+        // The segment fold is the ASCII-only identity fold: A-Z -> a-z and NOTHING else.
+        // A locale-aware lowercase would turn `À` into `à` and `İ` into `i̇`, diverging from
+        // the PostgreSQL / Python folds; the identity contract keeps non-ASCII verbatim.
+        let id = format!("{SUB}/providers/Microsoft.Sql/servers/ÀLPHA/databases/İSTANBUL");
+        let segs = parse_segments(&id);
+        assert!(
+            segs.contains(&"Àlpha".to_string()),
+            "non-ASCII `À` preserved, ASCII tail folded: {segs:?}"
+        );
+        assert!(
+            segs.contains(&"İstanbul".to_string()),
+            "non-ASCII `İ` preserved, ASCII tail folded: {segs:?}"
+        );
+    }
+
+    #[test]
+    fn non_ascii_case_variants_are_distinct_containment_identities() {
+        // `À1` and `à1` are DISTINCT identities under the ASCII-only fold, so a DELETE of
+        // `servers/À1` must never cascade into `servers/à1/...`.
+        let target = format!("{SUB}/providers/Microsoft.Sql/servers/À1");
+        let other = format!("{SUB}/providers/Microsoft.Sql/servers/à1/databases/d1");
+        let own = format!("{SUB}/providers/microsoft.sql/SERVERS/À1/databases/d1");
+        let got = descendant_ids(&target, &[other, own.clone()]);
+        assert_eq!(
+            got,
+            vec![own],
+            "only the ASCII-case variant of À1 is a descendant; à1 is a different resource"
+        );
+    }
+
+    #[test]
+    fn dedupe_by_key_collapses_ascii_case_variants_only() {
+        let ids = vec![
+            format!("{SUB}/providers/Microsoft.Sql/servers/À1"),
+            format!("{SUB}/providers/microsoft.sql/SERVERS/À1"),
+            format!("{SUB}/providers/Microsoft.Sql/servers/à1"),
+        ];
+        let got = dedupe_by_key(ids.clone());
+        assert_eq!(
+            got,
+            vec![ids[0].clone(), ids[2].clone()],
+            "first-seen casing kept; ASCII-case duplicates collapse; non-ASCII variants stay distinct"
+        );
     }
 }

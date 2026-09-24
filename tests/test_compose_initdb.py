@@ -105,13 +105,18 @@ _PSQL_TRANSIENT = (
     "connection to server",
 )
 
+# Connect over TCP, never the Unix socket. The image's temporary initdb server listens on
+# the socket only (listen_addresses=''), so a TCP connection can only ever reach the FINAL
+# server; over the socket, a query could land on the temporary server mid-init and read a
+# half-provisioned schema.
+_PSQL_TCP = ("psql", "-h", "127.0.0.1", "-U", "tenantless", "-d", "tenantless")
+
 
 def _psql(work: Path, proj: str, sql: str) -> str:
     last = ""
     for _ in range(10):
         r = _compose(
-            work, proj, "exec", "-T", "pg",
-            "psql", "-U", "tenantless", "-d", "tenantless", "-tAc", sql,
+            work, proj, "exec", "-T", "pg", *_PSQL_TCP, "-tAc", sql,
             timeout=60,
         )
         if r.returncode == 0:
@@ -135,10 +140,12 @@ def _poll_ready(work: Path, proj: str, timeout: int) -> bool:
     ``pg_isready`` connects to the socket and so is satisfied by the TEMPORARY
     server mid-init -- a query issued then races the teardown ("the database
     system is shutting down") or reads a half-provisioned schema (the exact CI
-    flake: ``arm_overlay`` absent). Trust readiness only once a real ``SELECT 1``
-    succeeds AND -- when a fresh init ran this boot -- the final server has logged
-    readiness AFTER the init-complete marker. On a restart with existing PGDATA no
-    init runs (no marker, no temp server), so the single server is trusted directly.
+    flake: ``arm_overlay`` absent). Trust readiness only once a ``SELECT 1`` over
+    TCP succeeds -- the temporary server listens on the socket only, so it can never
+    answer -- AND, when a fresh init ran this boot, the final server has logged
+    readiness AFTER the init-complete marker. The log check alone is not enough: before
+    the marker is written, the temporary server's own "ready" line is indistinguishable
+    from a restart's single server, which is why the probe must go over TCP.
     """
     init_done = "PostgreSQL init process complete"
     ready = "database system is ready to accept connections"
@@ -151,12 +158,12 @@ def _poll_ready(work: Path, proj: str, timeout: int) -> bool:
             # marker, counts -- the temp server's earlier "ready" line does not.
             final_up = ready in text.split(init_done, 1)[1]
         else:
-            # No init this boot (existing PGDATA) -> one final server, no race.
+            # Either a restart with existing PGDATA (one server), or a fresh init that has
+            # not finished yet (temporary server). The TCP probe below tells them apart.
             final_up = ready in text
         if final_up:
             probe = _compose(
-                work, proj, "exec", "-T", "pg",
-                "psql", "-U", "tenantless", "-d", "tenantless", "-tAc", "SELECT 1",
+                work, proj, "exec", "-T", "pg", *_PSQL_TCP, "-tAc", "SELECT 1",
                 timeout=20,
             )
             if probe.returncode == 0 and (probe.stdout or "").strip() == "1":

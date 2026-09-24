@@ -1,0 +1,12 @@
+// Positive-control fixture for tests/test_identity_gate.py (Rust).
+//
+// Line 7 (a locale to_lowercase key) and line 9 (an unmarked lower($1) lookup) MUST be
+// flagged; line 11 carries a sanctioned protocol marker and must pass.
+fn dedupe(ids: Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids { seen.insert(id.to_lowercase()); }
+    let _q = sqlx::query(
+        "SELECT 1 FROM synthetic.arm_overlay WHERE id_lower = lower($1)",
+    );
+    let _m = "Application/JSON".to_ascii_lowercase(); // IDENTITY-ALLOW[protocol: media type, not an ARM id]
+}

@@ -399,28 +399,229 @@ pub async fn ensure_arm_overlay_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::
 
 /// Idempotently provision the ARM-ID identity fold functions by applying
 /// `sql/011_arm_id_key.sql`: the `synthetic.ascii_fold(text)` primitive and the
-/// `synthetic.arm_id_key(text)` whole-ID wrapper, both `IMMUTABLE STRICT` `translate()`
-/// functions (INV-01, D-01/D-02/D-28).
+/// `synthetic.arm_id_key(text)` whole-ID wrapper, both `IMMUTABLE STRICT PARALLEL SAFE`
+/// ASCII-only `lower($1 COLLATE "C")` functions (INV-01, D-01/D-02/D-28).
 ///
-/// Safe to run on every boot. The migration is `CREATE OR REPLACE FUNCTION` only, so it is
-/// a no-op-equivalent re-definition on an already-migrated schema; it takes NO table lock,
-/// touches NOTHING on the populated `synthetic.resources` table, and needs no advisory-lock
-/// preamble (function redefinition does not contend). Requires the `synthetic` schema to
-/// already exist (the caller confirms a tenant first).
+/// Safe to run on every boot. The migration is `CREATE OR REPLACE FUNCTION` only: it takes NO
+/// table lock and touches NOTHING on the populated `synthetic.resources` table. It DOES
+/// contend, though: `CREATE OR REPLACE FUNCTION` always rewrites the `pg_proc` row (even for
+/// an identical body), so two sessions redefining the same function at once fail the second
+/// with `tuple concurrently updated`. The batch therefore first takes the shared
+/// [`ARM_ID_FOLD_LOCK_SQL`] advisory lock, which every fold (re)definition takes in both
+/// engines (this function, the sql/010 prelude in [`ensure_arm_resolver_schema`], and the
+/// Python `writer` twins), so concurrent redefiners wait instead of failing. Requires the
+/// `synthetic` schema to already exist (the caller confirms a tenant first).
 ///
-/// ADDITIVE + behaviour-neutral (D-22a): this ONLY defines the two functions. It changes NO
-/// CHECK, builds NO index, edits NO view, and cuts over NO predicate. In THIS unit NOTHING
-/// consumes the functions — `sql/010` still references `lower(...)` and is UNCHANGED. It runs
-/// at boot AFTER [`ensure_arm_overlay_schema`] (sql/009) and BEFORE [`ensure_arm_resolver_schema`]
-/// (sql/010) purely so the functions EXIST before any future sql/010 that references
-/// `arm_id_key` (the later predicate cutover) is applied against an upgraded volume — the boot-safety guarantee.
-/// No `011 -> audit -> 012 -> 010` cutover ordering is wired here.
+/// This ONLY defines the two functions; every stateful identity comparison (the handlers,
+/// the resolver joins in sql/010, the overlay CHECK re-derived by sql/012) consumes them. It
+/// runs at boot AFTER [`ensure_arm_overlay_schema`] (sql/009) and BEFORE the identity audit,
+/// [`ensure_arm_id_identity_cutover_schema`] (sql/012) and [`ensure_arm_resolver_schema`]
+/// (sql/010) — the boot cutover order `011 -> audit -> 012 -> 010`.
 ///
 /// Applied via [`apply_schema_batch`] (runtime `statement_timeout` disabled for the batch),
 /// mirroring the Python twin `writer.ensure_arm_id_key_schema`.
 pub async fn ensure_arm_id_key_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     const SQL_011: &str = include_str!("../../sql/011_arm_id_key.sql");
-    apply_schema_batch(pool, SQL_011).await
+    apply_schema_batch(pool, &format!("{ARM_ID_FOLD_LOCK_SQL}{SQL_011}")).await
+}
+
+/// The transaction-scoped advisory lock taken before EVERY `synthetic.ascii_fold` /
+/// `synthetic.arm_id_key` (re)definition: sql/011 and the sql/010 identity-fold prelude, on
+/// the Rust boot path and in the Python `writer` twins (same key text,
+/// `'synthetic.arm_id_fold'`). `CREATE OR REPLACE FUNCTION` rewrites the `pg_proc` row
+/// even when nothing changed, so without it a concurrent redefinition fails with
+/// `tuple concurrently updated`. No `lock_timeout`: a waiter only queues behind another
+/// session's short redefinition. Where a batch also takes another provisioning key (sql/010),
+/// this one is taken FIRST, so every path acquires them in the same order.
+pub const ARM_ID_FOLD_LOCK_SQL: &str =
+    "SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_id_fold'));\n";
+
+/// The two ARM-ID fold expression indexes every identity lookup relies on (schema-qualified).
+/// `tenantless init-db` / `tenantless generate` build them CONCURRENTLY; the server never
+/// builds them at boot (a plain `CREATE INDEX` on a populated table takes ACCESS EXCLUSIVE).
+pub const ARM_ID_FOLD_INDEXES: [&str; 2] = [
+    "synthetic.idx_res_arm_id_key",
+    "synthetic.idx_res_rg_ascii_fold",
+];
+
+/// Read-only boot probe: the [`ARM_ID_FOLD_INDEXES`] that are absent OR not valid (an
+/// interrupted concurrent build leaves an invalid index that serves nothing), in constant
+/// order. Catalog reads only (`to_regclass` + `pg_index`); issues no DDL and takes no table
+/// lock. Each name is bound as `$1`.
+pub async fn missing_arm_id_fold_indexes(pool: &sqlx::PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let mut missing = Vec::new();
+    for name in ARM_ID_FOLD_INDEXES {
+        let usable: Option<bool> = sqlx::query_scalar(
+            "SELECT i.indisvalid AND i.indisready FROM pg_index i \
+             WHERE i.indexrelid = to_regclass($1)",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+        if usable != Some(true) {
+            missing.push(name.to_string());
+        }
+    }
+    Ok(missing)
+}
+
+/// The operator warning for missing fold indexes (`None` when nothing is missing). Without
+/// them every identity lookup (detail GET, list by resource group, every write) scans all of
+/// `synthetic.resources`; the fix is one `tenantless init-db` (or `tenantless generate
+/// --only-if-empty`) against this database, which builds them CONCURRENTLY while serving.
+pub fn fold_index_boot_warning(missing: &[String]) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "ARM-ID identity index(es) missing or invalid: {}. Every identity lookup (resource \
+         detail, resource-group listing, ARM writes) will sequentially scan the whole \
+         baseline resource table and be slow on a large tenant. Run `tenantless init-db` (or \
+         `tenantless generate --only-if-empty`) against this database once to build them \
+         concurrently; the server keeps serving meanwhile and never builds them itself.",
+        missing.join(", ")
+    ))
+}
+
+/// Probe `pg_constraint` for the overlay identity CHECK `ck_arm_overlay_id_lower`: returns
+/// `true` while the live CHECK still derives `id_lower` from something other than
+/// `synthetic.arm_id_key(id)` — i.e. the identity cutover (sql/012) has NOT been applied yet.
+/// A volume without the overlay table (or without the constraint) reports `false`: there is
+/// nothing to convert. Read-only catalog query; takes no table lock.
+pub async fn arm_id_identity_cutover_pending(pool: &sqlx::PgPool) -> Result<bool, sqlx::Error> {
+    let def: Option<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c \
+         WHERE c.conrelid = to_regclass('synthetic.arm_overlay') \
+           AND c.contype = 'c' AND c.conname = 'ck_arm_overlay_id_lower'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(def.is_some_and(|d| !d.contains("arm_id_key(id)")))
+}
+
+/// Upper bound on the ARM ids each identity-audit check names in its failure message.
+const IDENTITY_AUDIT_CAP: i64 = 50;
+
+/// Fail-loud ARM-ID identity audit — the gate the boot runs BEFORE the identity cutover
+/// (sql/012) re-derives the overlay CHECK. Rust twin of the Python production helper
+/// `writer.audit_arm_id_identity`, running the same three read-only checks:
+///
+/// 1. **baseline divergence** — a `synthetic.resources` id whose legacy locale `lower(id)`
+///    differs from `synthetic.arm_id_key(id)` (a non-ASCII letter the old lookups folded);
+/// 2. **overlay divergence** — a stored `arm_overlay.id_lower` that differs from
+///    `synthetic.arm_id_key(id)` (skipped when the overlay table is absent);
+/// 3. **fold collision** — two DISTINCT baseline ids that fold to the same key.
+///
+/// Any hit returns `Err` naming the offending ARM ids ONLY (at most
+/// [`IDENTITY_AUDIT_CAP`] per check) — never tags, properties, bodies or tokens — so the
+/// caller refuses to boot rather than silently change or merge identity. Requires the
+/// sql/011 fold functions. Every query is static SQL with the cap bound as `$1`; each is a
+/// plain read under ACCESS SHARE (no DDL, so it cannot reintroduce the boot lock hazard).
+pub async fn audit_arm_id_identity(pool: &sqlx::PgPool) -> Result<(), String> {
+    let mut problems: Vec<String> = Vec::new();
+
+    let div: Vec<String> = sqlx::query_scalar(
+        // SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect id-fold divergence
+        "SELECT id FROM synthetic.resources \
+         WHERE lower(id) <> synthetic.arm_id_key(id) ORDER BY id LIMIT $1",
+    )
+    .bind(IDENTITY_AUDIT_CAP)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("arm id identity audit: baseline divergence probe failed: {e}"))?;
+    if !div.is_empty() {
+        problems.push(format!(
+            "{} baseline id(s) whose lower(id) <> arm_id_key(id): {}",
+            div.len(),
+            div.join(", ")
+        ));
+    }
+
+    let overlay_present: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('synthetic.arm_overlay')::text")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("arm id identity audit: overlay probe failed: {e}"))?;
+    if overlay_present.is_some() {
+        let odiv: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM synthetic.arm_overlay \
+             WHERE id_lower <> synthetic.arm_id_key(id) ORDER BY id LIMIT $1",
+        )
+        .bind(IDENTITY_AUDIT_CAP)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("arm id identity audit: overlay divergence probe failed: {e}"))?;
+        if !odiv.is_empty() {
+            problems.push(format!(
+                "{} overlay id(s) whose id_lower <> arm_id_key(id): {}",
+                odiv.len(),
+                odiv.join(", ")
+            ));
+        }
+    }
+
+    let collisions: Vec<Vec<String>> = sqlx::query_scalar(
+        // SYNRES-ALLOW[schema/provisioning]: pre-cutover identity audit reads the raw baseline to detect fold collisions
+        "SELECT array_agg(id ORDER BY id) FROM synthetic.resources \
+         GROUP BY synthetic.arm_id_key(id) HAVING count(DISTINCT id) > 1 \
+         ORDER BY 1 LIMIT $1",
+    )
+    .bind(IDENTITY_AUDIT_CAP)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("arm id identity audit: fold-collision probe failed: {e}"))?;
+    if !collisions.is_empty() {
+        let groups: Vec<String> = collisions
+            .iter()
+            .map(|g| format!("{{{}}}", g.join(", ")))
+            .collect();
+        problems.push(format!(
+            "{} fold-collision group(s) (distinct ids sharing one arm_id_key): {}",
+            groups.len(),
+            groups.join("; ")
+        ));
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "ARM-ID identity audit FAILED before cutover — refusing to change identity or merge \
+         collisions. Offending ARM ids: {}. Resolve the divergence/collision (rename the \
+         non-ASCII id, or de-dup the case-only collision) before migrating identity to \
+         arm_id_key.",
+        problems.join(" | ")
+    ))
+}
+
+/// Apply the identity cutover migration `sql/012_arm_id_identity_cutover.sql`: re-derive the
+/// overlay identity CHECK `ck_arm_overlay_id_lower` from `lower(id)` to
+/// `synthetic.arm_id_key(id)`.
+///
+/// The migration INSPECTS `pg_constraint` and is a NO-OP when the live CHECK already derives
+/// from `arm_id_key` (every boot after the first), so it never drops + re-adds the constraint
+/// needlessly; when a conversion is due it first re-verifies every stored `id_lower` inside the
+/// same block and RAISES (changing nothing) on a divergent row. It never rewrites `id_lower`.
+/// The caller runs [`audit_arm_id_identity`] first while [`arm_id_identity_cutover_pending`].
+///
+/// Applied via [`apply_schema_batch`] with a transaction-scoped preamble (bounded
+/// `lock_timeout` + a serializing advisory lock distinct from the 009/010 keys) prepended HERE
+/// so the `.sql` file stays honest under Docker initdb autocommit. After the batch commits the
+/// CHECK is re-probed and a still-pending cutover fails boot loudly. `arm_overlay` is a small
+/// table, so the one-time `ALTER TABLE` lock is harmless; `synthetic.resources` is untouched.
+pub async fn ensure_arm_id_identity_cutover_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    const SQL_012: &str = include_str!("../../sql/012_arm_id_identity_cutover.sql");
+    const PREAMBLE: &str = "SET LOCAL lock_timeout = '3s';\n\
+        SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_id_identity_cutover:012'));\n";
+    apply_schema_batch(pool, &format!("{PREAMBLE}{SQL_012}")).await?;
+    if arm_id_identity_cutover_pending(pool).await? {
+        return Err(sqlx::Error::Protocol(
+            "arm id identity cutover: ck_arm_overlay_id_lower still does not derive from \
+             synthetic.arm_id_key(id) after applying sql/012"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Idempotently provision the resolver substrate by applying `sql/010_arm_resolver.sql`:
@@ -453,9 +654,12 @@ pub async fn ensure_arm_resolver_schema(pool: &sqlx::PgPool) -> Result<(), sqlx:
     // Transaction-scoped preamble (see `ensure_arm_overlay_schema`) — a DISTINCT advisory
     // key from the 009 key so a 009 apply and a 010 apply do not needlessly serialize, while
     // concurrent 010 applies still serialize with each other. Both revert/release on commit.
+    // The sql/010 prelude redefines the fold functions, so the shared fold lock is taken
+    // FIRST (before the 010 key and before `lock_timeout` applies), in the same order as
+    // every other path.
     const PREAMBLE: &str = "SET LOCAL lock_timeout = '3s';\n\
         SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_resolver:010'));\n";
-    apply_schema_batch(pool, &format!("{PREAMBLE}{SQL_010}")).await?;
+    apply_schema_batch(pool, &format!("{ARM_ID_FOLD_LOCK_SQL}{PREAMBLE}{SQL_010}")).await?;
     arm_resolver_inventory(pool)
         .await
         .map_err(sqlx::Error::Protocol)
@@ -704,13 +908,22 @@ pub async fn arm_overlay_inventory(pool: &sqlx::PgPool) -> Result<(), String> {
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("arm_overlay inventory: probing CHECK {name} failed: {e}"))?;
+        // The identity CHECK legitimately carries one of TWO derivations: the sql/009
+        // `lower(id)` shape on a volume the identity cutover (sql/012) has not reached yet,
+        // or the canonical `synthetic.arm_id_key(id)` after it. This inventory runs BEFORE
+        // the cutover in the boot order, so it accepts either; the cutover step itself
+        // re-probes and fails boot if the canonical derivation is not in place afterwards.
+        let accepted = |d: &str| {
+            d.contains(needle)
+                || (*name == "ck_arm_overlay_id_lower" && d.contains("arm_id_key(id)"))
+        };
         match def {
             None => {
                 return Err(format!(
                     "arm_overlay inventory: missing CHECK constraint {name}"
                 ));
             }
-            Some(d) if !d.contains(needle) => {
+            Some(d) if !accepted(&d) => {
                 return Err(format!(
                     "arm_overlay inventory: CHECK {name} definition is stubbed/wrong \
                      (expected to contain {needle:?}, got {d:?})"
@@ -1021,7 +1234,7 @@ async fn behavioral_probes(pool: &sqlx::PgPool) -> Result<(), String> {
     let ok_sql = format!("{INS}p, p, 'resource','user',true, {OK_BODY}{FROM_PID}");
     let neg: Vec<(&str, String)> = vec![
         (
-            "id_lower <> lower(id)",
+            "id_lower not derived from id",
             format!(
                 "{INS}'WRONG_' || pg_backend_pid()::text, p, 'resource','user',true, {OK_BODY}{FROM_PID}"
             ),
@@ -1298,6 +1511,25 @@ pub async fn serve_dual(
 
     tokio::try_join!(http, https)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod fold_index_warning_tests {
+    use super::fold_index_boot_warning;
+
+    #[test]
+    fn no_warning_when_nothing_is_missing() {
+        assert_eq!(fold_index_boot_warning(&[]), None);
+    }
+
+    #[test]
+    fn warning_names_the_indexes_and_the_remedy() {
+        let w = fold_index_boot_warning(&["synthetic.idx_res_rg_ascii_fold".to_string()])
+            .expect("warning");
+        assert!(w.contains("synthetic.idx_res_rg_ascii_fold"));
+        assert!(w.contains("tenantless init-db"));
+        assert!(!w.contains("idx_res_arm_id_key"));
+    }
 }
 
 #[cfg(test)]

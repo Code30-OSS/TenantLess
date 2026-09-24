@@ -89,18 +89,24 @@ enum Current {
     /// No overlay row shadows the id, but a baseline `synthetic.resources` row is LIVE — the
     /// projected DTO derives the current `b-<hash>` ETag and is the PATCH merge base.
     Baseline { resource: Resource },
-    /// No live resolved representation (never existed, or tombstoned) — no current ETag.
+    /// No live representation, but a TOMBSTONE row holds this identity: absent for existence
+    /// and precondition semantics (no current ETag; PATCH → 404; PUT creates → 201), yet its
+    /// frozen stored `id` stays the casing authority when a PUT resurrects it (D-25: liveness
+    /// and identity are modeled separately).
+    Tombstoned { id: String },
+    /// No representation at all (never existed) — no current ETag, the route casing is new.
     Absent,
 }
 
 /// Read the current resolved state of `id` ONCE: a present overlay row (revision + full
-/// body), else the baseline resolved-view row, else absent/tombstoned. Reads only
+/// body), else the baseline resolved-view row, else a tombstone's frozen id, else absent. Reads only
 /// `arm_overlay` / `arm_resolved_resources` (never raw `synthetic.resources`). The id is
 /// BOUND as `$1`, never spliced.
 async fn read_current(conn: &mut sqlx::PgConnection, id: &str) -> Result<Current, ApiError> {
     let overlay: Option<(i64, sqlx::types::Json<Value>)> = sqlx::query_as(
         "SELECT revision, body FROM synthetic.arm_overlay \
-         WHERE id_lower = lower($1) AND target_kind = 'resource' AND present = true",
+         WHERE id_lower = synthetic.arm_id_key($1) AND target_kind = 'resource' \
+           AND present = true",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
@@ -114,18 +120,28 @@ async fn read_current(conn: &mut sqlx::PgConnection, id: &str) -> Result<Current
     let row = sqlx::query_as::<_, ResourceRow>(
         r#"SELECT id, name, type, location, tags, sku, kind, properties
            FROM synthetic.arm_resolved_resources
-           WHERE lower(id) = lower($1)
+           WHERE synthetic.arm_id_key(id) = synthetic.arm_id_key($1)
            LIMIT 1"#,
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    match row {
-        Some(r) => Ok(Current::Baseline {
+    if let Some(r) = row {
+        return Ok(Current::Baseline {
             resource: Resource::from(r),
-        }),
-        None => Ok(Current::Absent),
+        });
     }
+    // Not live: a tombstone still carries the identity's frozen stored casing (D-25).
+    let tombstone: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM synthetic.arm_overlay          WHERE id_lower = synthetic.arm_id_key($1) AND target_kind = 'resource'            AND present = false",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(match tombstone {
+        Some(id) => Current::Tombstoned { id },
+        None => Current::Absent,
+    })
 }
 
 /// The current resolved ETag: `o-<revision>` for an overlay row, `b-<hash>` for a baseline
@@ -135,14 +151,17 @@ fn current_etag(current: &Current) -> Option<String> {
     match current {
         Current::Overlay { revision, .. } => Some(overlay_etag(*revision)),
         Current::Baseline { resource } => Some(baseline_resource_etag(resource)),
-        Current::Absent => None,
+        Current::Tombstoned { .. } | Current::Absent => None,
     }
 }
 
 /// Select the canonical server-owned `id`/`name`/`type` casing to force into the echo + the
 /// stored body (D-08/D-19): an EXISTING overlay row keeps its first-write casing; an EXISTING
-/// baseline row keeps the BASELINE casing; a genuinely NEW resource takes the request-URL
-/// casing. The URL casing NEVER rewrites an existing resource's canonical identity.
+/// baseline row keeps the BASELINE casing; a TOMBSTONED identity keeps its frozen stored id
+/// (and the name segment(s) that id carries) on resurrection (D-25); a genuinely NEW resource
+/// takes the request-URL casing. The URL casing NEVER rewrites a stored canonical identity.
+/// The `type` stays the route type for a tombstone (D-25a: the `type` field is a separate
+/// surface from the id string).
 fn canonical_identity(
     current: &Current,
     route_id: &str,
@@ -166,12 +185,28 @@ fn canonical_identity(
             resource.name.clone(),
             resource.r#type.clone(),
         ),
+        Current::Tombstoned { id } => (
+            id.clone(),
+            name_of_id(id).unwrap_or_else(|| route_name.to_string()),
+            route_type.to_string(),
+        ),
         Current::Absent => (
             route_id.to_string(),
             route_name.to_string(),
             route_type.to_string(),
         ),
     }
+}
+
+/// The resource `name` carried by a full resource id: the provider tail after the first
+/// `providers` segment, parsed exactly like a route tail (`s1/d1` for a nested id). `None`
+/// when the id has no parseable provider tail.
+fn name_of_id(id: &str) -> Option<String> {
+    let segments: Vec<&str> = id.split('/').collect();
+    let at = segments
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case("providers"))?;
+    parse_type_and_name(&segments[at + 1..].join("/")).map(|(_, name)| name)
 }
 
 /// Project a baseline `Resource` DTO back into a full ARM body `Value` — the PATCH merge base
@@ -322,7 +357,7 @@ async fn upsert_present(
 ) -> Result<i64, ApiError> {
     let revision: i64 = sqlx::query_scalar(
         r#"INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body)
-           VALUES (lower($1), $1, 'resource', 'user', true, $2)
+           VALUES (synthetic.arm_id_key($1), $1, 'resource', 'user', true, $2)
            ON CONFLICT (id_lower) DO UPDATE SET
                id = synthetic.arm_overlay.id,
                target_kind = EXCLUDED.target_kind,
@@ -348,7 +383,7 @@ async fn upsert_present(
 async fn tombstone_in_tx(tx: &mut sqlx::PgConnection, id: &str) -> Result<i64, ApiError> {
     let revision: i64 = sqlx::query_scalar(
         r#"INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body)
-           VALUES (lower($1), $1, 'resource', 'user', false, NULL)
+           VALUES (synthetic.arm_id_key($1), $1, 'resource', 'user', false, NULL)
            ON CONFLICT (id_lower) DO UPDATE SET
                source = 'user',
                present = false,
@@ -364,12 +399,14 @@ async fn tombstone_in_tx(tx: &mut sqlx::PgConnection, id: &str) -> Result<i64, A
 /// Gather the strict nested-containment descendant ids a DELETE of `target_id` must cascade
 /// (D-09). Candidates come from BOTH sources that can hold a live descendant: the baseline
 /// resolved view (`arm_resolved_resources`, which already unions present overlay rows) AND the
-/// present `arm_overlay` rows directly (belt-and-braces). A coarse `lower(id) LIKE lower($1)
-/// || '/%'` PREFILTER — anchored to a child-segment boundary by the `/%` — narrows the scan;
-/// [`descendant_ids`] (segment-parsed) is the AUTHORITATIVE filter that defeats the `s1`/`s10`
-/// sibling-lookalike trap (the LIKE is ONLY a prefilter — an over-match from a `%`/`_` in an
-/// ancestor name is harmless, it is filtered out by segment parsing; a genuine descendant is
-/// never missed). Runs on the caller's DELETE transaction (under the write-plane lock) so the
+/// present `arm_overlay` rows directly (belt-and-braces). A coarse LIKE PREFILTER on the
+/// target's identity key followed by `/%` — anchored to a child-segment boundary — narrows
+/// the scan; [`descendant_ids`] (segment-parsed) is the AUTHORITATIVE filter that defeats the
+/// `s1`/`s10` sibling-lookalike trap. The prefilter must never UNDER-match: ids are not
+/// validated, so the key is escaped ([`DESCENDANT_LIKE`]) and a backslash, `%` or `_` in a
+/// name matches only itself (an unescaped backslash is LIKE's default escape character and
+/// would hide real descendants). Runs on the caller's DELETE transaction (under the
+/// write-plane lock) so the
 /// gathered set is snapshot-consistent with the tombstone writes. The target id binds as
 /// `$1`; nothing is spliced. Scope fence: containment
 /// (the id tree) only — NO graph / dependency / RG-container / `managed_by` traversal (Phase 24).
@@ -377,32 +414,36 @@ async fn gather_descendants(
     conn: &mut sqlx::PgConnection,
     target_id: &str,
 ) -> Result<Vec<String>, ApiError> {
-    let baseline: Vec<(String,)> = sqlx::query_as(
-        "SELECT id FROM synthetic.arm_resolved_resources WHERE lower(id) LIKE lower($1) || '/%'",
-    )
+    let baseline: Vec<(String,)> = sqlx::query_as(&format!(
+        "SELECT id FROM synthetic.arm_resolved_resources \
+         WHERE synthetic.arm_id_key(id) {DESCENDANT_LIKE}"
+    ))
     .bind(target_id)
     .fetch_all(&mut *conn)
     .await?;
-    let overlay: Vec<(String,)> = sqlx::query_as(
+    let overlay: Vec<(String,)> = sqlx::query_as(&format!(
         "SELECT id FROM synthetic.arm_overlay \
-         WHERE target_kind = 'resource' AND present = true AND lower(id) LIKE lower($1) || '/%'",
-    )
+         WHERE target_kind = 'resource' AND present = true \
+           AND id_lower {DESCENDANT_LIKE}"
+    ))
     .bind(target_id)
     .fetch_all(&mut *conn)
     .await?;
 
-    // Dedupe candidates case-insensitively (a present overlay row also surfaces in the resolved
+    // Dedupe candidates by identity key (a present overlay row also surfaces in the resolved
     // view), preserving each id's stored casing for the tombstone write.
-    let mut seen = std::collections::HashSet::new();
-    let mut candidates = Vec::new();
-    for (id,) in baseline.into_iter().chain(overlay) {
-        if seen.insert(id.to_lowercase()) {
-            candidates.push(id);
-        }
-    }
+    let candidates =
+        crate::write_merge::dedupe_by_key(baseline.into_iter().chain(overlay).map(|(id,)| id));
     // Segment-parsed containment is authoritative (never a raw string prefix).
     Ok(descendant_ids(target_id, &candidates))
 }
+
+/// The descendant prefilter predicate (a STATIC fragment; the target id binds as `$1`): LIKE
+/// the target's identity key + `/%`, with the key's own LIKE metacharacters escaped so they
+/// match literally. `!` is the escape character (so a backslash in an id is ordinary text);
+/// `!` itself is escaped first, then `%` and `_`.
+const DESCENDANT_LIKE: &str = "LIKE replace(replace(replace(synthetic.arm_id_key($1), \
+     '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'";
 
 /// Read the raw `If-Match` / `If-None-Match` header values (comma-lists / whitespace / weak
 /// validators are handled inside `evaluate_precondition`, D-22).
@@ -463,6 +504,7 @@ fn parse_and_validate(
         .next()
         .unwrap_or("")
         .trim()
+        // IDENTITY-ALLOW[protocol: Content-Type media type is case-insensitive, not an ARM id]
         .to_ascii_lowercase();
     if media_type != "application/json" {
         return Err(ApiError::bad_request("InvalidRequestContent"));
@@ -505,7 +547,7 @@ pub async fn put_resource(
         return Err(ApiError::PreconditionFailed); // tx dropped → rollback
     }
 
-    let is_create = matches!(current, Current::Absent);
+    let is_create = matches!(current, Current::Absent | Current::Tombstoned { .. });
     let (canon_id, canon_name, canon_type) =
         canonical_identity(&current, &route_id, &route_name, &route_type);
 
@@ -552,7 +594,9 @@ pub async fn patch_resource(
     let mut merged = match &current {
         Current::Overlay { body, .. } => body.clone(),
         Current::Baseline { resource } => resource_to_body(resource),
-        Current::Absent => return Err(ApiError::NotFound { what: route_id }),
+        Current::Tombstoned { .. } | Current::Absent => {
+            return Err(ApiError::NotFound { what: route_id });
+        }
     };
     let (canon_id, canon_name, canon_type) =
         canonical_identity(&current, &route_id, &route_name, &route_type);
@@ -640,6 +684,24 @@ pub async fn rg_write_method_not_allowed() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::parse_type_and_name;
+
+    #[test]
+    fn name_of_id_reads_the_provider_tail_name() {
+        use super::name_of_id;
+        assert_eq!(
+            name_of_id(
+                "/subscriptions/s/resourceGroups/RG/providers/Microsoft.Sql/servers/S1/databases/D1"
+            ),
+            Some("S1/D1".to_string())
+        );
+        assert_eq!(
+            name_of_id(
+                "/subscriptions/s/resourceGroups/rg/PROVIDERS/Microsoft.Storage/storageAccounts/Acct"
+            ),
+            Some("Acct".to_string())
+        );
+        assert_eq!(name_of_id("/subscriptions/s/resourceGroups/rg"), None);
+    }
 
     #[test]
     fn parses_flat_and_nested_ids() {

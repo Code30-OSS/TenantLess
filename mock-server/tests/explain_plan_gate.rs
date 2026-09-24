@@ -12,7 +12,7 @@
 //! performance INVARIANT, not one
 //! specific plan shape. For each production read shape it requires (1) no `Sort` over
 //! `BASELINE_SORT_FLOOR` or more rows, (2) NO `Seq Scan` on `synthetic.resources`, (3) the
-//! functional indexes hit for the detail (`idx_res_lower_id`) + rg-scoped (`idx_res_rg_lower`)
+//! functional indexes hit for the detail (`idx_res_arm_id_key`) + rg-scoped (`idx_res_rg_ascii_fold`)
 //! reads. It ACCEPTS both a `MergeAppend` + nested-loop-anti plan AND an
 //! indexed-subscription-scan + tiny top-N sort: with a subscription index present and moderate
 //! per-sub cardinality, PG16 rationally picks the latter (cheaper), so `MergeAppend`/the
@@ -175,7 +175,7 @@ pub fn assert_has_merge_append(root: &Value) {
 }
 
 /// Assert some node uses the named index (`Index Name == index_name`) -- e.g.
-/// `idx_res_lower_id` (detail) or `idx_res_rg_lower` (rg-scoped list) must still be hit
+/// `idx_res_arm_id_key` (detail) or `idx_res_rg_ascii_fold` (rg-scoped list) must still be hit
 /// through the view (functional-index loss).
 pub fn assert_uses_index(root: &Value, index_name: &str) {
     assert!(
@@ -205,7 +205,7 @@ pub fn assert_limit_above_mergeappend(root: &Value) {
 
 /// Assert the plan contains an ORDER-PRESERVING (Nested Loop) Anti join — the resolved view's
 /// baseline branch is `synthetic.resources b WHERE NOT EXISTS (SELECT 1 FROM arm_overlay o
-/// WHERE o.id_lower = lower(b.id) AND o.target_kind = 'resource')`, i.e. a single anti-join
+/// WHERE o.id_lower = synthetic.arm_id_key(b.id) AND o.target_kind = 'resource')`, i.e. a single anti-join
 /// covering both replace AND tombstone. At 500K the ONLY order-preserving choice is a Nested
 /// Loop Anti join (baseline scanned in `id` order via `resources_pkey`, the tiny overlay
 /// index-probed per row through `idx_arm_overlay_kind_id`). A `Hash Anti Join` or `Merge Anti
@@ -353,7 +353,7 @@ const BASELINE_SORT_FLOOR: u64 = 100_000;
 ///
 /// The four production query shapes are each EXPLAINed against `synthetic.arm_resolved_resources`
 /// (values `$N`-bound, never spliced): the unscoped sub list, the rg-scoped list
-/// (`idx_res_rg_lower`), the `$filter` list, and the detail lookup (`idx_res_lower_id`). Setup
+/// (`idx_res_rg_ascii_fold`), the `$filter` list, and the detail lookup (`idx_res_arm_id_key`). Setup
 /// `ANALYZE`s `arm_overlay` + `resources` so the row estimates favor the nested-loop shape.
 #[tokio::test]
 async fn resolver_keyset_index_driven() {
@@ -417,11 +417,11 @@ async fn resolver_keyset_index_driven() {
     assert_no_sort_over(&root, BASELINE_SORT_FLOOR);
     assert_no_seqscan_on_relation(&root, "synthetic", "resources");
 
-    // ---- Shape 2: rg-scoped list (adds `lower(resource_group_name) = lower($4)`) ----
+    // ---- Shape 2: rg-scoped list (adds `synthetic.ascii_fold(resource_group_name) = synthetic.ascii_fold($4)`) ----
     let rg_scoped = "SELECT id, name, type, location, tags, sku, kind, properties \
                      FROM synthetic.arm_resolved_resources \
                      WHERE subscription_id = $1::uuid AND ($2::text IS NULL OR id > $2) \
-                       AND lower(resource_group_name) = lower($4) \
+                       AND synthetic.ascii_fold(resource_group_name) = synthetic.ascii_fold($4) \
                      ORDER BY id LIMIT $3::int";
     let root = run_explain(
         &pool,
@@ -431,7 +431,7 @@ async fn resolver_keyset_index_driven() {
     .await;
     assert_no_sort_over(&root, BASELINE_SORT_FLOOR);
     assert_no_seqscan_on_relation(&root, "synthetic", "resources");
-    assert_uses_index(&root, "idx_res_rg_lower");
+    assert_uses_index(&root, "idx_res_rg_ascii_fold");
 
     // ---- Shape 3: `$filter` list (unscoped + a representative `type = $4` conjunct) ----
     let filtered = "SELECT id, name, type, location, tags, sku, kind, properties \
@@ -448,14 +448,14 @@ async fn resolver_keyset_index_driven() {
     assert_no_sort_over(&root, BASELINE_SORT_FLOOR);
     assert_no_seqscan_on_relation(&root, "synthetic", "resources");
 
-    // ---- Shape 4: detail lookup (`lower(id) = lower($1)` → idx_res_lower_id) ----
+    // ---- Shape 4: detail lookup (`synthetic.arm_id_key(id) = synthetic.arm_id_key($1)` → idx_res_arm_id_key) ----
     let detail = "SELECT id, name, type, location, tags, sku, kind, properties \
                   FROM synthetic.arm_resolved_resources \
-                  WHERE lower(id) = lower($1) LIMIT 1";
+                  WHERE synthetic.arm_id_key(id) = synthetic.arm_id_key($1) LIMIT 1";
     let root = run_explain(&pool, detail, &[Some(id.as_str())]).await;
     assert_no_sort_over(&root, BASELINE_SORT_FLOOR);
     assert_no_seqscan_on_relation(&root, "synthetic", "resources");
-    assert_uses_index(&root, "idx_res_lower_id");
+    assert_uses_index(&root, "idx_res_arm_id_key");
 }
 
 // ---------------------------------------------------------------------------
@@ -463,9 +463,9 @@ async fn resolver_keyset_index_driven() {
 // ---------------------------------------------------------------------------
 
 /// The canonical reference SET the resolved view MUST reproduce, expressed in SQL so it can
-/// never disagree with the DB's own `lower()` / casing. It mirrors
+/// never disagree with the DB's own identity fold / casing. It mirrors
 /// sql/010:111-154 EXACTLY: the baseline anti-join covers BOTH present=true and present=false
-/// shadows (`o.id_lower = lower(b.id)`), and the additive branch contributes every present=true
+/// shadows (`o.id_lower = synthetic.arm_id_key(b.id)`), and the additive branch contributes every present=true
 /// overlay row with the SAME fail-closed scope guards as the view. It is the ONE definition
 /// used for EVERY shape (total / GROUP BY type / GROUP BY location / per-subscription) — the
 /// subtractive `baseline − shadowed + overlay-only` form is deliberately NOT used, because a
@@ -479,7 +479,7 @@ reference_rows AS ( \
     FROM synthetic.resources b \
     WHERE NOT EXISTS ( \
         SELECT 1 FROM synthetic.arm_overlay o \
-        WHERE o.target_kind = 'resource' AND o.id_lower = lower(b.id)) \
+        WHERE o.target_kind = 'resource' AND o.id_lower = synthetic.arm_id_key(b.id)) \
     UNION ALL \
     SELECT \
         o.body ->> 'type'                                 AS type, \
@@ -584,7 +584,7 @@ async fn seed_overlay_row(
         "INSERT INTO synthetic.arm_overlay (id_lower, id, target_kind, source, present, body) \
          VALUES ($1, $2, 'resource', 'drift', $3, $4)",
     )
-    .bind(id.to_lowercase())
+    .bind(tenantless_server::arm_id::arm_id_key(id))
     .bind(id)
     .bind(present)
     .bind(body)
@@ -618,7 +618,7 @@ fn overlay_body(id: &str, name: &str, ty: &str, loc: &str) -> Value {
 const NESTED_LOOP_BLOWUP_LOOPS: u64 = 100_000;
 
 /// The resolved total count(*) may LEGITIMATELY seq-scan the whole live baseline (no selective
-/// predicate) and computes `lower(id)` + a Hash Anti Join per row, so it is inherently a LARGE
+/// predicate) and computes `arm_id_key(id)` + a Hash Anti Join per row, so it is inherently a LARGE
 /// constant multiple of a bare `count(*)` (which does almost no per-row work). Measured warm on a
 /// real 532,833-row PG16 tenant (the phase-close gate run this const was flagged to calibrate):
 /// resolved ~250ms vs raw baseline ~15ms — a ~13–17× ratio that is a CONSTANT factor on a healthy
@@ -682,7 +682,7 @@ async fn aggregate_reference_calc_matches_resolved_view() {
             "SELECT b.id, b.type, b.location, b.subscription_id \
              FROM synthetic.resources b \
              WHERE NOT EXISTS (SELECT 1 FROM synthetic.arm_overlay o \
-                               WHERE o.target_kind='resource' AND o.id_lower = lower(b.id)) \
+                               WHERE o.target_kind='resource' AND o.id_lower = synthetic.arm_id_key(b.id)) \
              ORDER BY b.id LIMIT 1",
         )
         .fetch_one(&mut *conn)
@@ -692,7 +692,7 @@ async fn aggregate_reference_calc_matches_resolved_view() {
         "SELECT b.id, b.type, b.location, b.subscription_id \
          FROM synthetic.resources b \
          WHERE NOT EXISTS (SELECT 1 FROM synthetic.arm_overlay o \
-                           WHERE o.target_kind='resource' AND o.id_lower = lower(b.id)) \
+                           WHERE o.target_kind='resource' AND o.id_lower = synthetic.arm_id_key(b.id)) \
            AND b.type <> $1 AND b.location <> $2 AND b.id <> $3 \
          ORDER BY b.id LIMIT 1",
     )
@@ -773,7 +773,7 @@ async fn aggregate_reference_calc_matches_resolved_view() {
            (SELECT count(*) FROM synthetic.arm_overlay WHERE target_kind='resource' AND present)::bigint, \
            (SELECT count(*) FROM synthetic.arm_overlay WHERE target_kind='resource' AND NOT present)::bigint, \
            (SELECT count(*) FROM synthetic.arm_overlay o WHERE o.target_kind='resource' AND o.present \
-              AND EXISTS (SELECT 1 FROM synthetic.resources b WHERE lower(b.id)=o.id_lower))::bigint",
+              AND EXISTS (SELECT 1 FROM synthetic.resources b WHERE synthetic.arm_id_key(b.id)=o.id_lower))::bigint",
     )
     .fetch_one(&mut *conn)
     .await
@@ -921,7 +921,7 @@ async fn aggregate_scale_gate_index_sane() {
     let picks: Vec<(String,)> = sqlx::query_as(
         "SELECT b.id FROM synthetic.resources b \
          WHERE NOT EXISTS (SELECT 1 FROM synthetic.arm_overlay o \
-                           WHERE o.target_kind='resource' AND o.id_lower = lower(b.id)) \
+                           WHERE o.target_kind='resource' AND o.id_lower = synthetic.arm_id_key(b.id)) \
          ORDER BY b.id OFFSET 3 LIMIT 2",
     )
     .fetch_all(&mut *conn)
@@ -966,7 +966,7 @@ async fn aggregate_scale_gate_index_sane() {
     // The two structural invariants above are the real regression teeth (a super-linear resolver
     // surfaces as a Sort over the baseline or a per-row nested loop, not as a wall-clock blip). The
     // unbounded total-count is inherently a large constant multiple of a bare count(*) (per-row
-    // lower() + Hash Anti Join), so its wall-clock is gated on an ABSOLUTE ceiling, not a
+    // the identity fold + Hash Anti Join), so its wall-clock is gated on an ABSOLUTE ceiling, not a
     // ratio-vs-baseline (see TOTAL_COUNT_TIME_CEILING_MS). raw_total is still measured for the log.
     let resolved_total_ms = actual_total_time_ms(&resolved_total);
     let raw_total_ms = actual_total_time_ms(&raw_total);
@@ -1064,7 +1064,7 @@ mod helper_tests {
                             "Plans": [
                                 {
                                     "Node Type": "Index Scan",
-                                    "Index Name": "idx_res_lower_id",
+                                    "Index Name": "idx_res_arm_id_key",
                                     "Actual Rows": 50
                                 },
                                 {
@@ -1093,7 +1093,7 @@ mod helper_tests {
         // No sort processes >= 500K rows (the small overlay sort of 3 rows is fine).
         assert_no_sort_over(&plan, 500_000);
         assert_has_merge_append(&plan);
-        assert_uses_index(&plan, "idx_res_lower_id");
+        assert_uses_index(&plan, "idx_res_arm_id_key");
         assert_limit_above_mergeappend(&plan);
         assert_order_preserving_anti_join(&plan);
     }
@@ -1148,7 +1148,7 @@ mod helper_tests {
     #[should_panic(expected = "expected an index scan using")]
     fn uses_index_assertion_rejects_a_missing_index() {
         let bad = json!({ "Node Type": "Seq Scan", "Actual Rows": 50 });
-        assert_uses_index(&bad, "idx_res_lower_id");
+        assert_uses_index(&bad, "idx_res_arm_id_key");
     }
 
     #[test]

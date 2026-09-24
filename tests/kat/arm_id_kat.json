@@ -53,5 +53,35 @@
     "note": "digits, dots, dashes and underscores are untouched; only A-Z folds",
     "input": "/Sub_1.Group-2/Res_3",
     "key": "/sub_1.group-2/res_3"
+  },
+  {
+    "note": "Latin-1 uppercase accented letters (U+00C0/U+00C9/U+00CE) are non-ASCII and preserved byte-for-byte; only the ASCII RG folds",
+    "input": "/RG/ÀÉÎ",
+    "key": "/rg/ÀÉÎ"
+  },
+  {
+    "note": "titlecase digraph (U+01C5) is non-ASCII and preserved; the ASCII Dz folds",
+    "input": "/ǅ/Dz",
+    "key": "/ǅ/dz"
+  },
+  {
+    "note": "Latin ligature ff (U+FB00) is preserved (never expanded); the ASCII FF folds",
+    "input": "/ﬀ/FF",
+    "key": "/ﬀ/ff"
+  },
+  {
+    "note": "Greek capital sigma (U+03A3) is preserved (locale lower would map it to a final or medial sigma); the ASCII S folds",
+    "input": "/ΣΑΣ/S",
+    "key": "/ΣΑΣ/s"
+  },
+  {
+    "note": "Turkish dotless i (U+0131) is preserved; the adjacent ASCII I folds to i (never to dotless i)",
+    "input": "/ıI",
+    "key": "/ıi"
+  },
+  {
+    "note": "full-width Latin capitals (U+FF21/U+FF22) are non-ASCII and preserved; the ASCII AB folds",
+    "input": "/ＡＢ/AB",
+    "key": "/ＡＢ/ab"
   }
 ]
