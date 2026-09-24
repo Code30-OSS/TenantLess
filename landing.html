@@ -10,14 +10,14 @@
 <meta property="og:type" content="website">
 <meta property="og:title" content="TenantLess — a disposable Azure tenant for testing the code that reads one">
 <meta property="og:description" content="Statistically realistic Azure estates over ARM-compatible HTTP. Point an unmodified scanner at an estate that was never provisioned, from a 5K-resource demo to a 145K-resource benchmark. One Docker command.">
-<meta property="og:image" content="https://raw.githubusercontent.com/Code30-OSS/TenantLess/main/docs/assets/site/og-image.png">
+<meta property="og:image" content="https://www.tenantless.dev/docs/assets/site/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:url" content="https://tenantless.dev/">
+<meta property="og:url" content="https://www.tenantless.dev/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="TenantLess — a disposable Azure tenant for testing the code that reads one">
 <meta name="twitter:description" content="Statistically realistic Azure estates over ARM-compatible HTTP. One Docker command.">
-<meta name="twitter:image" content="https://raw.githubusercontent.com/Code30-OSS/TenantLess/main/docs/assets/site/og-image.png">
+<meta name="twitter:image" content="https://www.tenantless.dev/docs/assets/site/og-image.png">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-70 -110 154 128'%3E%3Crect x='-70' y='-110' width='154' height='128' rx='14' fill='%230a0a0a'/%3E%3Cg fill='none' stroke-linecap='round' stroke-width='6'%3E%3Cpath d='M-50 -67V-25L0 0M0 -92L-50 -67M0 -92V-33' stroke='%23ffffff'/%3E%3Cpath d='M0 -33V0' stroke='%23ffffff' stroke-dasharray='6 8' opacity='.5'/%3E%3Cpath d='M50 -67V-25L0 0M0 -92L50 -67' stroke='%236f9ee0' stroke-dasharray='8 7' opacity='.85'/%3E%3C/g%3E%3Cg fill='%236f9ee0'%3E%3Ccircle cx='25' cy='-9' r='3.6' opacity='.55'/%3E%3Ccircle cx='43' cy='-34' r='4.2' opacity='.42'/%3E%3Ccircle cx='58' cy='-48' r='3.4' opacity='.3'/%3E%3Ccircle cx='63' cy='-16' r='3' opacity='.25'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -695,7 +695,7 @@ print(len(subs), sum(1 for _ in rm.resources.list()))
 
 <section class="relband">
   <div class="wrap">
-    <p>The latest release, 1.5.0, adds opt-in ARM writes. Each new capability so far has been additive and off by default, and with writes disabled the responses are byte-identical to the previous release. Resource-group create and delete come next, followed by a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
+    <p>The latest release, 1.6.0, gives ARM ids a single identity rule shared by the server, the CLI and PostgreSQL, and checks every drift apply against the state it actually stored. It builds on 1.5.0, which added ARM writes that stay off by default. Resource-group create and delete come next, followed by a <code>terraform plan → apply → refresh → destroy</code> workflow that converges against the mock. <a href="https://github.com/Code30-OSS/TenantLess/releases">All releases →</a></p>
   </div>
 </section>
 </main>
