@@ -4,8 +4,9 @@
 //! Resolves a single resource by **reconstructed id** rather than by parsing
 //! arbitrary nesting depth: the provider-onward catch-all `{*tail}` is just part of
 //! the captured path, so `Microsoft.Sql/servers/{n}/databases/{n}` resolves the same
-//! way as `Microsoft.Storage/storageAccounts/{n}`. The lookup is case-insensitive via
-//! `lower(id) = lower($1)` with the reconstructed id **bound** as `$1`
+//! way as `Microsoft.Storage/storageAccounts/{n}`. The lookup folds ASCII case via the
+//! canonical identity key `synthetic.arm_id_key(id) = synthetic.arm_id_key($1)` with the
+//! reconstructed id **bound** as `$1`
 //! — never spliced into SQL. A hit returns the
 //! same `Resource` ARM DTO as the list endpoints (single object, NOT a `{value:[]}`
 //! envelope); `type` is echoed verbatim by `From<ResourceRow>`.
@@ -45,7 +46,7 @@ pub async fn get_resource_detail(
     let row = sqlx::query_as::<_, ResourceRow>(
         r#"SELECT id, name, type, location, tags, sku, kind, properties
            FROM synthetic.arm_resolved_resources
-           WHERE lower(id) = lower($1)
+           WHERE synthetic.arm_id_key(id) = synthetic.arm_id_key($1)
            LIMIT 1"#,
     )
     .bind(&id) // bound, never spliced
@@ -63,7 +64,8 @@ pub async fn get_resource_detail(
     // projection and the `b-<hash>` served-DTO ETag. The id is BOUND as `$1`, never spliced.
     let overlay: Option<(i64, sqlx::types::Json<Value>)> = sqlx::query_as(
         "SELECT revision, body FROM synthetic.arm_overlay \
-         WHERE id_lower = lower($1) AND target_kind = 'resource' AND present = true",
+         WHERE id_lower = synthetic.arm_id_key($1) AND target_kind = 'resource' \
+           AND present = true",
     )
     .bind(&id)
     .fetch_optional(&state.pool)

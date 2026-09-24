@@ -34,6 +34,7 @@ from typing import Any, Callable
 import orjson
 
 from ..analyzer.extractors.tags import _is_identifier_shaped_value
+from ..identity import arm_id_key
 from . import resources
 from .rng import SeededContext
 
@@ -381,10 +382,13 @@ def planned_count(intensity: float, eligible: list) -> tuple[int, str | None]:
 def state_fingerprint(rows: list[dict]) -> str:
     """Deterministic SHA-256 over the served-state of ``rows`` (D-08).
 
-    ``rows`` carry DECODED Python objects (Pitfall 4 — never raw JSONB text) for
-    ``{id, tags, sku, kind, properties, drift_deleted_at}``. Sorting by id plus
-    ``orjson.OPT_SORT_KEYS`` normalizes order so the digest is stable across runs
-    for the same logical state.
+    ``rows`` carry DECODED Python objects (never raw JSONB text) for
+    ``{id, tags, sku, kind, properties, drift_deleted_at}``. Rows are ORDERED by the
+    canonical identity key ``arm_id_key(id)`` (raw id as a deterministic tie-break) so
+    the order is the same one every identity lookup uses, while the HASHED ``id`` stays
+    the verbatim served id — a served-casing change is digest-visible. Together with
+    ``orjson.OPT_SORT_KEYS`` this keeps the digest stable across runs for the same
+    logical state.
 
     ``drift_deleted_at`` is folded into the digest as a STABLE boolean presence
     flag (deleted vs active), NEVER its raw timestamp value (P2a / D-08): the
@@ -398,7 +402,7 @@ def state_fingerprint(rows: list[dict]) -> str:
             {**r, "drift_deleted_at": r.get("drift_deleted_at") is not None}
             for r in rows
         ),
-        key=lambda r: r["id"],
+        key=lambda r: (arm_id_key(r["id"]), r["id"]),
     )
     blob = orjson.dumps(canon, option=orjson.OPT_SORT_KEYS)
     return hashlib.sha256(blob).hexdigest()
@@ -509,21 +513,44 @@ def disappear_eligible(rows: list, refs: DisappearRefs) -> list:
     id starts with ``id + "/"``), and its id is referenced by no role-assignment
     scope, no dependency source/target, no violation, and no ``managed_by``. Never
     hide a referenced resource — that would dangle a reference in a re-scan.
+
+    Every id comparison is on the canonical identity key (``arm_id_key``), the same
+    identity the DELETE cascade uses: a child stored in a different casing (e.g. a
+    user PUT through a lower-cased route) still keeps its parent from disappearing,
+    and a differently-cased reference still protects its target. A casing-uniform
+    tenant (every generated tenant) selects exactly what raw-id matching selected.
     """
-    referenced = (
-        refs.role_scopes
-        | refs.dependency_ids
-        | refs.violation_ids
-        | refs.managed_by_ids
-    )
-    ids = [r.id for r in rows]
-
-    def _is_leaf(rid: str) -> bool:
-        prefix = rid + "/"
-        return not any(other != rid and other.startswith(prefix) for other in ids)
-
-    eligible = [r for r in rows if r.id not in referenced and _is_leaf(r.id)]
+    referenced = {
+        arm_id_key(i)
+        for i in refs.role_scopes | refs.dependency_ids | refs.violation_ids | refs.managed_by_ids
+    }
+    keyed = [(arm_id_key(r.id), r) for r in rows]
+    parents = _parent_ids(key for key, _r in keyed)
+    eligible = [r for key, r in keyed if key not in referenced and key not in parents]
     return sorted(eligible, key=lambda r: r.id)
+
+
+def _parent_ids(ids) -> set[str]:
+    """The ids that have at least one OTHER id nested beneath them.
+
+    ``p`` is a parent iff some id starts with ``p + "/"``, i.e. ``p`` equals one of
+    that id's slash-delimited prefixes. Collecting every such prefix that is itself
+    an id is one pass over the ids — linear in the tenant size, instead of testing
+    every id against every other id. Matching is exact on the strings given (callers
+    pass identity keys), and an id is never its own prefix, so duplicates do not make
+    each other parents.
+    """
+    ids = list(ids)
+    known = set(ids)
+    parents: set[str] = set()
+    for rid in ids:
+        pos = rid.find("/")
+        while pos != -1:
+            prefix = rid[:pos]
+            if prefix in known:
+                parents.add(prefix)
+            pos = rid.find("/", pos + 1)
+    return parents
 
 
 def _disappear_delta(r) -> dict:
@@ -576,11 +603,11 @@ def mint_appear_leaf(
         )
         if _is_identifier_shaped_value(leaf.name):
             continue  # re-mint: name must not be identifier-shaped (privacy)
-        if seen_lower is not None and leaf.id.lower() in seen_lower:
-            continue  # re-mint: case-insensitive (id_lower) overlay collision
+        if seen_lower is not None and arm_id_key(leaf.id) in seen_lower:
+            continue  # re-mint: identity-key (id_lower) overlay collision
         leaf.tags = {}  # appear leaves are unreferenced AND untagged (no real data)
         if seen_lower is not None:
-            seen_lower.add(leaf.id.lower())
+            seen_lower.add(arm_id_key(leaf.id))
         return leaf
     raise RuntimeError("mint_appear_leaf could not produce a privacy-clean, unique name")
 
@@ -593,6 +620,7 @@ def compute_lifecycle(
     disappear_count: int = 0,
     appear_count: int = 0,
     seen_ids: set[str] | None = None,
+    eligible: list | None = None,
 ) -> tuple[list[dict], list]:
     """Compute seeded disappear + appear over the in-memory ``rgs`` (D-09/12).
 
@@ -601,18 +629,22 @@ def compute_lifecycle(
     and appended to their RG ONLY AFTER iteration completes — never mutate a
     ``.resources`` list mid-loop (violations.inject ``minted`` idiom). Returns the
     ``(deltas, minted_leaves)`` pair; DB persistence is the CLI's job (Plan 11-05).
+
+    ``eligible`` may carry a ``disappear_eligible(rows, refs)`` result the caller
+    already computed over these same ``rgs``/``refs``, so it is not recomputed.
     """
     rows = [r for rg in rgs for r in rg.resources]
     if seen_ids is None:
         seen_ids = {r.id for r in rows}
-    # Case-insensitive collision mirror (arm_overlay.id_lower semantics), grown as leaves are
-    # minted so appear ids stay mutually unique case-insensitively too — see mint_appear_leaf.
-    seen_lower = {s.lower() for s in seen_ids}
+    # Identity-key collision mirror (arm_overlay.id_lower = arm_id_key(id)), grown as leaves
+    # are minted so appear ids stay mutually unique by identity too — see mint_appear_leaf.
+    seen_lower = {arm_id_key(s) for s in seen_ids}
 
     deltas: list[dict] = []
 
     # Disappear: soft-delete the seeded clamped subset of eligible leaves.
-    eligible = disappear_eligible(rows, refs)
+    if eligible is None:
+        eligible = disappear_eligible(rows, refs)
     d_count = min(disappear_count, len(eligible))
     for r in sorted(_sample(ctx, eligible, d_count), key=lambda x: x.id):
         deltas.append(

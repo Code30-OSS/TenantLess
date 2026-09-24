@@ -81,7 +81,7 @@ class PartialBaseSchemaError(click.ClickException):
     ``init-db`` — with zero per-caller handling. ``open_writer`` already rolls back
     on any exception, so a partial base surfaced here leaves the DB untouched.
 
-    "Partial" means SOME base objects (of the exhaustive 19 in
+    "Partial" means SOME base objects (of the exhaustive 18 in
     :data:`_BASE_SCHEMA_INVENTORY`) exist while others are missing. Blindly
     re-running sql/001+002 (bare ``CREATE TABLE``, not ``IF NOT EXISTS``) would
     error, and silently reporting "complete" would hide a corrupt/partly-migrated
@@ -90,8 +90,12 @@ class PartialBaseSchemaError(click.ClickException):
 
 
 # EXHAUSTIVE base-object inventory — every CREATE TABLE / CREATE INDEX / named
-# CONSTRAINT in sql/001 + sql/002 + sql/003 (6 relations + 2 FK constraints + 11
-# indexes = 19). A base missing ANY of these is NOT complete. ``kind`` drives the
+# CONSTRAINT in sql/001 + sql/002 + sql/003 that a HEALTHY volume keeps (6 relations + 2
+# FK constraints + 10 indexes = 18). A base missing ANY of these is NOT complete.
+# sql/003's ``idx_res_lower_id`` (``lower(id)``) is deliberately NOT listed: the ARM-ID
+# identity cutover replaces it with ``idx_res_arm_id_key`` and DROPS it
+# (:func:`build_arm_id_key_indexes_concurrently`), so a cut-over volume without it is
+# complete, not partial. ``kind`` drives the
 # catalog probe in :func:`_base_object_present`; ``name`` is the bare identifier
 # (relations/indexes live in the ``synthetic`` schema, so they are probed as
 # ``to_regclass('synthetic.<name>')``; constraints via ``pg_constraint.conname``).
@@ -107,7 +111,7 @@ _BASE_SCHEMA_INVENTORY: tuple[tuple[str, str], ...] = (
     # constraints (2) — sql/003 guarded DO-blocks
     ("constraint", "fk_resources_subscription"),
     ("constraint", "fk_violations_resource"),
-    # indexes (11) — sql/001 (6) + sql/002 (4) + sql/003 (1)
+    # indexes (10) — sql/001 (6) + sql/002 (4)
     ("index", "idx_subs_tenant"),
     ("index", "idx_rg_sub"),
     ("index", "idx_res_sub"),
@@ -118,7 +122,6 @@ _BASE_SCHEMA_INVENTORY: tuple[tuple[str, str], ...] = (
     ("index", "idx_dep_target_sub"),
     ("index", "idx_viol_resource"),
     ("index", "idx_viol_type"),
-    ("index", "idx_res_lower_id"),
 )
 
 
@@ -139,10 +142,10 @@ def _base_schema_sql_files() -> list[Path]:
 
 
 def _all_migration_sql_files() -> list[Path]:
-    """Every migration file the full sql/001..010 chain needs, in order — the 3
-    base files (001..003) plus the seven twin migrations (004..010).
+    """Every migration file the full sql/001..012 chain needs, in APPLY order — the 3
+    base files (001..003) plus the nine twin migrations (004..012).
 
-    The pre-flight file gate in ``init-db`` (P2a) checks all ten exist BEFORE
+    The pre-flight file gate in ``init-db`` (P2a) checks all twelve exist BEFORE
     opening any DB transaction, so a missing bundled file (the packaging bug)
     aborts without touching the database. Resolves via the shared packaged-or-repo
     resolver; ``parts`` are STATIC filenames, never user input.
@@ -154,10 +157,11 @@ def _all_migration_sql_files() -> list[Path]:
         resource_path("sql", "007_web_metadata.sql"),
         resource_path("sql", "008_rg_lower_index.sql"),
         resource_path("sql", "009_arm_overlay.sql"),
-        # 011 (the identity fold functions) is applied BEFORE 010 so the functions
-        # exist before any future sql/010 that references arm_id_key (the later cutover) — the
-        # boot-safety ordering that mirrors the Rust boot preflight.
+        # Identity cutover order (mirrors the Rust boot preflight): 011 (the fold
+        # functions) -> 012 (the audit-gated overlay CHECK re-derivation) -> 010 (the
+        # resolver views, whose shadow joins compare arm_id_key).
         resource_path("sql", "011_arm_id_key.sql"),
+        resource_path("sql", "012_arm_id_identity_cutover.sql"),
         resource_path("sql", "010_arm_resolver.sql"),
     ]
 
@@ -211,9 +215,9 @@ def ensure_base_schema(conn: psycopg.Connection) -> bool:
     missing (say) an index or a later table read as "complete", so ``generate`` /
     ``init-db`` ran on a partly-migrated schema and later failed cryptically. This
     now checks the full :data:`_BASE_SCHEMA_INVENTORY` (6 relations + 2 FK
-    constraints + 11 indexes) and resolves to exactly three outcomes:
+    constraints + 10 indexes) and resolves to exactly three outcomes:
 
-    - **complete** (none of the 19 missing) -> ``False`` no-op (unchanged contract);
+    - **complete** (none of the 18 missing) -> ``False`` no-op (unchanged contract);
     - **partial** (some present AND some missing) -> raise
       :class:`PartialBaseSchemaError` naming the missing object(s); applies nothing.
       ``open_writer`` rolls back, so the DB is left untouched;
@@ -353,25 +357,25 @@ def ensure_web_metadata_schema(conn: psycopg.Connection) -> bool:
 
 
 def ensure_rg_index_schema(conn: psycopg.Connection) -> bool:
-    """Apply the idempotent ``sql/008_rg_lower_index.sql`` migration — the functional
-    index backing the case-insensitive resource-group predicate added in v1.1.8.
+    """The resource-group-name index seam — it NO LONGER recreates the sql/008
+    ``lower(resource_group_name)`` index.
 
-    Verbatim twin of :func:`ensure_web_metadata_schema`, swapping ``007_web_metadata.sql``
-    for ``008_rg_lower_index.sql``. Applied UNCONDITIONALLY by ``generate``/``init-db`` so
-    a database provisioned before v1.1.10 gains the index automatically on the next run —
-    the index is deliberately a twin migration, NOT a base-schema object, so an existing
-    healthy install is never reported as an incomplete base schema over an additive
-    performance index. ``sql/008`` is fully idempotent (``CREATE INDEX IF NOT EXISTS``), so
-    applying it here is safe to repeat. The statement text is a STATIC project file, never
-    user/profile input — no injection surface. Returns True if applied, False if the file
-    was not found (installed package with no bundled ``sql/`` — those deployments apply the
-    schema via docker initdb).
+    The RG-scoped predicates (the RG resource listing and the RG-scoped cost query) now
+    compare the canonical identity-component fold
+    ``synthetic.ascii_fold(resource_group_name) = synthetic.ascii_fold($4)``, served by
+    ``idx_res_rg_ascii_fold`` ``(subscription_id, ascii_fold(resource_group_name), id)``.
+    That index is built CONCURRENTLY — outside any transaction, after the fold functions
+    exist — by :func:`build_arm_id_key_indexes_concurrently`, which ``generate`` and
+    ``init-db`` both run; it also drops the retained sql/008 ``idx_res_rg_lower`` once the
+    identity audit passes. Re-applying ``sql/008`` here would only resurrect that legacy
+    index inside the writer transaction (a plain, non-concurrent build) for the drop to
+    remove again, so this seam applies NO DDL.
+
+    ``sql/008`` stays bundled (Docker initdb applies the whole historical chain on a fresh,
+    empty volume). Returns True when the bundled file is present (the init-db pre-flight
+    contract: False means the packaged ``sql/`` is missing), False otherwise.
     """
-    sql_path = resource_path("sql", "008_rg_lower_index.sql")
-    if not sql_path.is_file():
-        return False
-    conn.execute(sql_path.read_text(encoding="utf-8"))
-    return True
+    return resource_path("sql", "008_rg_lower_index.sql").is_file()
 
 
 def ensure_arm_overlay_schema(conn: psycopg.Connection) -> bool:
@@ -408,20 +412,25 @@ def ensure_arm_overlay_schema(conn: psycopg.Connection) -> bool:
 def ensure_arm_id_key_schema(conn: psycopg.Connection) -> bool:
     """Apply the idempotent ``sql/011_arm_id_key.sql`` migration — the ARM-ID identity
     fold functions (``synthetic.ascii_fold`` primitive + ``synthetic.arm_id_key``
-    whole-ID wrapper, both IMMUTABLE STRICT ``translate()`` functions; INV-01, D-01/D-02/D-28).
+    whole-ID wrapper, both IMMUTABLE STRICT PARALLEL SAFE ASCII-only ``lower($1 COLLATE "C")``
+    functions; INV-01, D-01/D-02/D-28).
 
     Verbatim twin of :func:`ensure_arm_overlay_schema`, swapping ``009_arm_overlay.sql`` for
     ``011_arm_id_key.sql``. Applied UNCONDITIONALLY by ``generate`` / ``init-db`` so a database
     provisioned before the fold existed gains the functions automatically on the next run.
-    ``sql/011`` is ``CREATE OR REPLACE FUNCTION`` only — a no-op-equivalent re-definition on an
-    already-migrated schema, taking NO table lock — so applying it here is safe to repeat and
-    needs no advisory-lock preamble (unlike 009/010, function redefinition does not contend).
+    ``sql/011`` is ``CREATE OR REPLACE FUNCTION`` only, taking NO table lock, so applying it
+    is safe to repeat. It DOES contend, though: ``CREATE OR REPLACE FUNCTION`` always rewrites
+    the ``pg_proc`` row (even for an identical body), so a concurrent redefinition would fail
+    with ``tuple concurrently updated``. It therefore runs inside ``conn.transaction()`` (a
+    savepoint under an outer writer transaction) after taking the shared
+    :data:`_ARM_ID_FOLD_LOCK` advisory lock — the same key the Rust boot and the sql/010
+    prelude path take — so concurrent redefiners wait instead of failing.
 
-    ADDITIVE + behaviour-neutral (D-22a): this ONLY defines the two functions. It changes NO
-    CHECK, builds NO index, edits NO view, and cuts over NO predicate. In THIS unit NOTHING
-    consumes the functions (``sql/010`` still references ``lower(...)`` and is UNCHANGED); it is
-    applied BEFORE ``ensure_arm_resolver_schema`` (010) only so the functions EXIST before any
-    future 010 that references ``arm_id_key`` (the later predicate cutover) — the boot-safety ordering.
+    This ONLY defines the two functions; the stateful identity comparisons (the ARM
+    handlers, the ``sql/010`` resolver joins, the overlay CHECK re-derived by ``sql/012``,
+    the drift overlay upsert / revert) consume them. It is applied BEFORE
+    :func:`ensure_arm_id_identity_cutover_schema` (012) and :func:`ensure_arm_resolver_schema`
+    (010) — the cutover order ``011 -> audit -> 012 -> 010``.
 
     The statement text is a STATIC project file, never user/profile input — no injection
     surface. Returns True if applied, False if the file was not found (installed package with
@@ -430,7 +439,107 @@ def ensure_arm_id_key_schema(conn: psycopg.Connection) -> bool:
     sql_path = resource_path("sql", "011_arm_id_key.sql")
     if not sql_path.is_file():
         return False
-    conn.execute(sql_path.read_text(encoding="utf-8"))
+    with conn.transaction():
+        _take_arm_id_fold_lock(conn)
+        conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+# The shared transaction-scoped advisory-lock key taken before EVERY fold (re)definition
+# (sql/011 and the sql/010 identity-fold prelude), in both engines: the Rust twin is
+# ``ARM_ID_FOLD_LOCK_SQL`` in mock-server/src/lib.rs, same key text. Where a path also takes
+# another provisioning key (the sql/010 key) this one is taken FIRST, so every path acquires
+# them in the same order. No lock_timeout: a waiter only queues behind a short redefinition.
+_ARM_ID_FOLD_LOCK = "synthetic.arm_id_fold"
+
+
+def _take_arm_id_fold_lock(conn: psycopg.Connection) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_ARM_ID_FOLD_LOCK,))
+
+
+def arm_id_identity_cutover_pending(conn: psycopg.Connection) -> bool:
+    """True while the overlay identity CHECK ``ck_arm_overlay_id_lower`` still derives
+    ``id_lower`` from something other than ``synthetic.arm_id_key(id)`` — i.e. the identity
+    cutover (``sql/012``) has not been applied to this volume yet. A volume with no overlay
+    table (or no such constraint) has nothing to convert and reports False. Read-only
+    catalog probe (twin of the Rust ``arm_id_identity_cutover_pending``); the constraint name
+    is a static literal.
+    """
+    row = conn.execute(
+        "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
+        "WHERE c.conrelid = to_regclass('synthetic.arm_overlay') "
+        "AND c.contype = 'c' AND c.conname = 'ck_arm_overlay_id_lower'"
+    ).fetchone()
+    return row is not None and "arm_id_key(id)" not in row[0]
+
+
+def ensure_arm_id_identity_cutover_schema(conn: psycopg.Connection) -> bool:
+    """Apply ``sql/012_arm_id_identity_cutover.sql`` — re-derive the overlay identity CHECK
+    from ``lower(id)`` to ``synthetic.arm_id_key(id)``, AUDIT-GATED.
+
+    While the cutover is pending (:func:`arm_id_identity_cutover_pending`) the fail-loud
+    :func:`audit_arm_id_identity` runs FIRST: a non-ASCII divergence or a fold collision
+    raises :class:`ArmIdIdentityAuditError` (naming ids only) and nothing is changed. The
+    migration file itself INSPECTS ``pg_constraint``: it is a NO-OP when the CHECK already
+    derives from ``arm_id_key`` (and when the overlay table is absent), and otherwise
+    re-verifies every stored ``id_lower`` before dropping + re-adding the CHECK — it never
+    rewrites ``id_lower`` and never merges keys.
+
+    Twin of the Rust ``ensure_arm_id_identity_cutover_schema``: the bounded ``lock_timeout``
+    and the serializing advisory lock (same key as the Rust twin) live HERE, inside
+    ``conn.transaction()`` (a savepoint under init-db's writer transaction), so the ``.sql``
+    file stays honest under Docker initdb autocommit. Requires the sql/011 fold functions.
+    Returns True if applied, False if the bundled file is absent.
+    """
+    sql_path = resource_path("sql", "012_arm_id_identity_cutover.sql")
+    if not sql_path.is_file():
+        return False
+    if arm_id_identity_cutover_pending(conn):
+        audit_arm_id_identity(conn)
+    with conn.transaction():
+        conn.execute("SET LOCAL lock_timeout = '3s'")
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_id_identity_cutover:012'))"
+        )
+        conn.execute(sql_path.read_text(encoding="utf-8"))
+    return True
+
+
+def arm_id_identity_switchover_active(conn: psycopg.Connection) -> bool:
+    """True while this volume is still switching identity over to ``arm_id_key``: the
+    overlay identity CHECK cutover (``sql/012``) is pending, OR a retired legacy ``lower()``
+    identity index (:data:`_LEGACY_LOWER_INDEXES`) still exists. Read-only catalog probes;
+    the index names are static literals bound as ``%s``.
+
+    Once both are done a non-ASCII id is a LEGITIMATE identity under ``arm_id_key``, so the
+    pre-cutover divergence audit must no longer run (it would wrongly refuse a cut-over
+    estate); the in-SQL guard of ``sql/012`` and the overlay CHECK remain the defence.
+    """
+    if arm_id_identity_cutover_pending(conn):
+        return True
+    return any(
+        conn.execute("SELECT to_regclass(%s)", (f"synthetic.{name}",)).fetchone()[0]
+        is not None
+        for name in _LEGACY_LOWER_INDEXES
+    )
+
+
+def audit_arm_id_identity_during_switchover(
+    conn: psycopg.Connection, *, read_only: bool = False
+) -> bool:
+    """Run the fail-loud :func:`audit_arm_id_identity` ONLY while
+    :func:`arm_id_identity_switchover_active`; return whether it ran.
+
+    ``read_only=True`` first marks the caller's (fresh, not-yet-started) transaction
+    ``READ ONLY`` — ``generate`` runs the audit on its own short read-only transaction,
+    never inside the provisioning DDL transaction, so the audit's full scans cannot hold
+    a live server's reads behind the DDL locks.
+    """
+    if read_only:
+        conn.execute("SET TRANSACTION READ ONLY")
+    if not arm_id_identity_switchover_active(conn):
+        return False
+    audit_arm_id_identity(conn)
     return True
 
 
@@ -465,11 +574,14 @@ def audit_arm_id_identity(conn: psycopg.Connection) -> None:
 
     Each check must return 0 rows; ANY hit raises :class:`ArmIdIdentityAuditError`
     naming the offending ARM ids ONLY (bounded to the first 50 per check; never emits
-    tag / property / body / token values — T-24ai-04). This is the gate the later cutover MUST pass
-    BEFORE it converts the ``arm_overlay`` CHECK, drops the retained ``lower()`` indexes,
-    or cuts over any predicate. It is ADDITIVE + behaviour-neutral on the current
-    all-ASCII estate (it only trips on real divergence / collision) and changes NO
-    identity itself. All values bind as ``%s``; relation/column names are static.
+    tag / property / body / token values). It gates an upgraded volume's switchover: it must
+    pass BEFORE the ``arm_overlay`` CHECK is converted (:func:`ensure_arm_id_identity_cutover_schema`)
+    and BEFORE the legacy ``lower()`` indexes are dropped (:func:`_drop_legacy_lower_indexes`).
+    ``generate`` / ``init-db`` call it only through
+    :func:`audit_arm_id_identity_during_switchover`: once the switchover is complete a
+    non-ASCII id is a legitimate identity and is not refused. It trips only on real
+    divergence / collision and changes NO identity itself. All values bind as ``%s``;
+    relation/column names are static.
     """
     _CAP = 50
     problems: list[str] = []
@@ -639,28 +751,59 @@ def _build_and_validate_arm_id_index(
         )
 
 
+# The legacy locale-``lower()`` identity indexes the cutover retires: sql/003's
+# ``idx_res_lower_id`` (``lower(id)``) and sql/008's ``idx_res_rg_lower``
+# (``subscription_id, lower(resource_group_name), id``). STATIC names — no injection surface.
+_LEGACY_LOWER_INDEXES: tuple[str, ...] = ("idx_res_lower_id", "idx_res_rg_lower")
+
+
+def _drop_legacy_lower_indexes(conn: psycopg.Connection) -> None:
+    """Drop the retired ``lower()`` identity indexes — AUDIT-GATED, CONCURRENTLY.
+
+    Called by :func:`build_arm_id_key_indexes_concurrently` only AFTER both fold indexes are
+    confirmed valid + correctly shaped, on its dedicated autocommit connection (``DROP INDEX
+    CONCURRENTLY`` cannot run inside a transaction and takes no ACCESS EXCLUSIVE lock on the
+    populated ``synthetic.resources`` — never a boot-time drop). While either legacy index
+    still exists the fail-loud :func:`audit_arm_id_identity` re-runs FIRST on a fresh read; a
+    divergence / collision raises :class:`ArmIdIdentityAuditError` and BOTH legacy indexes are
+    kept. Once they are gone this is a cheap catalog no-op.
+    """
+    present = [
+        name
+        for name in _LEGACY_LOWER_INDEXES
+        if conn.execute("SELECT to_regclass(%s)", (f"synthetic.{name}",)).fetchone()[0]
+        is not None
+    ]
+    if not present:
+        return
+    audit_arm_id_identity(conn)
+    for name in present:
+        conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS synthetic.{name}")
+
+
 def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
-    """Build the TWO additive ARM-ID fold expression indexes CONCURRENTLY (INV-01, D-28).
+    """Build the TWO ARM-ID fold expression indexes CONCURRENTLY and retire the legacy
+    ``lower()`` identity indexes (audit-gated).
 
     Creates, on a DEDICATED autocommit connection (``CREATE INDEX CONCURRENTLY`` CANNOT
     run inside a transaction, so it must NOT ride the boot-time ``apply_schema_batch``
     path nor the init-db/generate writer transaction):
 
     * ``idx_res_arm_id_key`` ON ``synthetic.resources (synthetic.arm_id_key(id))`` — the
-      identity index the later predicate cutover will hit (single-column, mirroring
-      sql/003's single-column ``lower(id)`` identity index);
+      identity index every ``arm_id_key(id) = arm_id_key($1)`` lookup hits (single-column,
+      replacing sql/003's single-column ``lower(id)`` identity index);
     * ``idx_res_rg_ascii_fold`` ON
       ``synthetic.resources (subscription_id, synthetic.ascii_fold(resource_group_name), id)``
-      — the fold-backed RG-name index (D-28) the later RG-predicate cutover will use. It
-      MIRRORS the RETAINED sql/008 ``idx_res_rg_lower``
-      ``(subscription_id, lower(resource_group_name), id)`` shape EXACTLY so the cutover
-      keeps the same scoped (``subscription_id`` prefix) + keyset-pagination (trailing
+      — the fold-backed RG-name index the RG-scoped listing / cost predicates use. It
+      MIRRORS the legacy sql/008 ``idx_res_rg_lower``
+      ``(subscription_id, lower(resource_group_name), id)`` shape EXACTLY so the RG-scoped
+      reads keep the same scoped (``subscription_id`` prefix) + keyset-pagination (trailing
       ``id``) plan — a single-column fold index could serve neither.
 
-    ADDITIVE (D-22a): both are created ALONGSIDE the RETAINED ``idx_res_lower_id`` (sql/003)
-    and ``idx_res_rg_lower`` (sql/008) ``lower()`` indexes — this unit drops NOTHING and cuts
-    over NO predicate; the old-index drops + predicate cutover are deferred to a later step after
-    the D-04 audit passes.
+    Then, only once BOTH fold indexes are validated, :func:`_drop_legacy_lower_indexes`
+    retires sql/003's ``idx_res_lower_id`` and sql/008's ``idx_res_rg_lower`` with
+    ``DROP INDEX CONCURRENTLY`` — gated on a FRESH :func:`audit_arm_id_identity` run while
+    either still exists (a failing audit raises and keeps both).
 
     Deadlock-safe (the known server-boot ALTER-lock deadlock hazard):
     ``CONCURRENTLY`` takes only ``SHARE UPDATE EXCLUSIVE`` (never the ACCESS EXCLUSIVE that
@@ -679,8 +822,8 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
     (drop-concurrently + rebuild) a leftover, or FAILS LOUD
     (:class:`ArmIdIndexBuildError`) if a valid index still cannot be produced.
 
-    Returns True once BOTH indexes are confirmed present, valid, ready, and correctly
-    shaped.
+    Returns True once BOTH fold indexes are confirmed present, valid, ready, and correctly
+    shaped and the legacy ``lower()`` indexes are gone.
     """
     conn = psycopg.connect(conn_str or DATABASE_URL, autocommit=True)
     try:
@@ -693,6 +836,7 @@ def build_arm_id_key_indexes_concurrently(conn_str: str | None = None) -> bool:
         try:
             for name, on_clause, fragments in _ARM_ID_KEY_INDEX_SPECS:
                 _build_and_validate_arm_id_index(conn, name, on_clause, fragments)
+            _drop_legacy_lower_indexes(conn)
         finally:
             conn.execute(
                 "SELECT pg_advisory_unlock(hashtext(%s))", (_ARM_ID_KEY_INDEX_LOCK,)
@@ -731,6 +875,9 @@ def ensure_arm_resolver_schema(conn: psycopg.Connection) -> bool:
     # and the serializing advisory lock actually take effect and cover the DDL. The key is
     # DISTINCT from the 009 key so a 009 apply and a 010 apply do not needlessly serialize.
     with conn.transaction():
+        # The sql/010 prelude redefines the fold functions: the shared fold lock FIRST (same
+        # order as every other path, and before lock_timeout bounds the DDL waits).
+        _take_arm_id_fold_lock(conn)
         conn.execute("SET LOCAL lock_timeout = '3s'")
         conn.execute("SELECT pg_advisory_xact_lock(hashtext('synthetic.arm_resolver:010'))")
         conn.execute(sql_path.read_text(encoding="utf-8"))

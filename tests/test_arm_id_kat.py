@@ -65,6 +65,19 @@ def test_python_arm_id_key_is_ascii_fold():
         assert arm_id_key(row["input"]) == ascii_fold(row["input"])
 
 
+def test_corpus_contains_c_collation_rows():
+    """Non-ASCII letters a locale ``lower()`` WOULD fold (Latin-1 capitals, a titlecase
+    digraph, a ligature, Greek sigma, dotless i, full-width capitals) are pinned unchanged,
+    so the PostgreSQL ``lower($1 COLLATE "C")`` body is proven ASCII-only on real inputs."""
+    joined = "".join(r["input"] for r in _CORPUS)
+    for ch in ("À", "ǅ", "ﬀ", "Σ", "ı", "Ａ"):
+        assert ch in joined, f"corpus must include U+{ord(ch):04X}"
+    for row in _CORPUS:
+        if any(ord(c) > 127 for c in row["input"]):
+            kept = [c for c in row["input"] if ord(c) > 127]
+            assert [c for c in row["key"] if ord(c) > 127] == kept, row
+
+
 def test_python_fold_never_uses_str_lower():
     """The Turkish-I / sharp-s rows prove the fold is NOT ``str.lower()``."""
     assert ascii_fold("/İSTANBUL") != "/İSTANBUL".lower()
@@ -145,3 +158,56 @@ def test_pg_functions_are_immutable_strict(pg_conn):
     for name, (volatile, strict) in rows.items():
         assert volatile == "i", f"{name} must be IMMUTABLE (provolatile='i'), got {volatile!r}"
         assert strict is True, f"{name} must be STRICT"
+
+
+def test_pg_functions_are_parallel_safe(pg_conn):
+    """Both folds are PARALLEL SAFE, so a query that touches them (the resolved view's
+    shadow anti-join evaluates ``arm_id_key(b.id)`` per baseline row) keeps a parallel plan."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT p.proname, p.proparallel "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'synthetic' AND p.proname IN ('ascii_fold', 'arm_id_key') "
+            "ORDER BY p.proname"
+        )
+        rows = dict(cur.fetchall())
+    assert rows == {"arm_id_key": "s", "ascii_fold": "s"}, rows
+
+
+def test_pg_fold_ignores_the_caller_collation(pg_conn):
+    """The fold's collation is explicit, so a caller-side collation cannot change it."""
+    with pg_conn.cursor() as cur:
+        for row in _CORPUS:
+            cur.execute(
+                'SELECT synthetic.arm_id_key(%s COLLATE "C"), '
+                'synthetic.ascii_fold(%s COLLATE "default")',
+                (row["input"], row["input"]),
+            )
+            a, b = cur.fetchone()
+            assert a == b == row["key"], (row["input"], a, b)
+
+
+# --------------------------------------------------------------------------- #
+# The canonical definitions (DB-free, reads sql/011)
+# --------------------------------------------------------------------------- #
+_SQL_011 = Path(__file__).resolve().parents[1] / "sql" / "011_arm_id_key.sql"
+
+
+def _definition(name: str) -> str:
+    text = _SQL_011.read_text(encoding="utf-8").replace("\r\n", "\n")
+    start = text.index(f"CREATE OR REPLACE FUNCTION synthetic.{name}(")
+    return text[start : text.index("\n$$;", start)]
+
+
+def test_fold_definitions_are_parallel_safe_c_collation_lower():
+    """``ascii_fold`` is ``lower($1 COLLATE "C")`` (ASCII-only by PostgreSQL definition,
+    locale-independent because the collation is explicit) and both functions are declared
+    ``IMMUTABLE STRICT PARALLEL SAFE``."""
+    fold = _definition("ascii_fold")
+    key = _definition("arm_id_key")
+    for body in (fold, key):
+        assert "LANGUAGE sql" in body
+        assert "IMMUTABLE STRICT PARALLEL SAFE" in body, body
+    assert 'SELECT lower($1 COLLATE "C")' in fold, fold
+    assert "translate(" not in fold
+    assert "SELECT synthetic.ascii_fold($1)" in key, key

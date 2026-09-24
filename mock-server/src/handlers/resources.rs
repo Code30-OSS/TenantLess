@@ -113,10 +113,12 @@ pub async fn list_resources(
 /// `$filter`ed.
 ///
 /// Identical to [`list_resources`] plus one bound predicate: `AND
-/// lower(resource_group_name) = lower($4)`. The comparison is case-insensitive so a
-/// differently-cased `{rg}` in the request resolves to the canonically-cased stored
-/// group — the same rule the resource-detail lookup applies to the whole id
-/// (`lower(id) = lower($1)`), so a scanner that lists an RG's resources and one that
+/// synthetic.ascii_fold(resource_group_name) = synthetic.ascii_fold($4)`. The comparison
+/// folds ASCII case (the canonical identity-component fold) so a differently-cased `{rg}`
+/// in the request resolves to the canonically-cased stored group — the same rule the
+/// resource-detail lookup applies to the whole id
+/// (`synthetic.arm_id_key(id) = synthetic.arm_id_key($1)`), so a scanner that lists an
+/// RG's resources and one that
 /// fetches a resource by id agree on which RG a path names. `{rg}` is bound as a
 /// parameter — never spliced into SQL. An unknown `{sub}` or `{rg}` simply
 /// yields zero rows, so the envelope is `{ "value": [] }` (no existence pre-check, no
@@ -136,14 +138,15 @@ pub async fn list_rg_resources(
     let (where_extra, filter_args) = filter_conjunct(&parsed, 5);
 
     // Resolved-view swap (same as `list_resources`); the legacy soft-delete
-    // conjunct is DROPPED. The rg predicate `AND lower(resource_group_name) = lower($4)` and
+    // conjunct is DROPPED. The rg predicate `AND synthetic.ascii_fold(resource_group_name) =
+    // synthetic.ascii_fold($4)` (backed by `idx_res_rg_ascii_fold`) and
     // the $5 filter seeding are preserved verbatim; `resource_group_name` on an overlay-only
     // row is derived inside the view, so the scoped list resolves appear/replace/tombstone too.
     let sql = format!(
         "SELECT id, name, type, location, tags, sku, kind, properties
          FROM synthetic.arm_resolved_resources
          WHERE subscription_id = $1 AND ($2::text IS NULL OR id > $2)
-           AND lower(resource_group_name) = lower($4){where_extra}
+           AND synthetic.ascii_fold(resource_group_name) = synthetic.ascii_fold($4){where_extra}
          ORDER BY id
          LIMIT $3"
     );
@@ -274,7 +277,7 @@ mod tests {
     }
 
     /// The rg-scoped handler seeds the filter at $5 (rg holds $4) so a filtered scoped
-    /// query never collides placeholders with the `lower(resource_group_name) = lower($4)`
+    /// query never collides placeholders with the `ascii_fold(resource_group_name) = ascii_fold($4)`
     /// bind.
     #[test]
     fn filter_conjunct_seeds_at_five_for_scoped_handler() {

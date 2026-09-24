@@ -86,9 +86,17 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "ensure_arm_id_key_schema",
         lambda conn: (calls.append("arm_id_key"), True)[1],
     )
+    monkeypatch.setattr(
+        writer_mod,
+        "ensure_arm_id_identity_cutover_schema",
+        lambda conn: (calls.append("arm_id_identity_cutover"), True)[1],
+    )
     # The D-04 audit runs after the chain; stub it (its own proofs live in
     # tests/test_arm_id_audit.py) so this order assertion stays focused on the seams.
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover", lambda conn, **k: False
+    )
     monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
     monkeypatch.setattr(
         writer_mod,
@@ -108,8 +116,9 @@ def test_init_db_applies_full_chain_in_order(monkeypatch):
         "rg_index",
         "arm_overlay",
         "arm_id_key",
+        "arm_id_identity_cutover",
         "arm_resolver",
-    ], f"init-db must apply 001..011 in order (011 before 010); got {calls}"
+    ], f"init-db must apply 001..012 in order (011 -> 012 -> 010); got {calls}"
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +197,7 @@ def test_init_db_rolls_back_on_apply_failure(monkeypatch):
     assert "004" in combined, f"the failing migration must be named: {combined!r}"
     assert spies["rollback"] == 1, "a mid-apply failure must roll back"
     assert spies["commit"] == 0, "no commit may happen on a mid-apply failure"
-    assert "Applied migrations 001..011" not in combined, (
+    assert "Applied migrations 001..012" not in combined, (
         "no false-success line on a rolled-back apply"
     )
 
@@ -206,10 +215,14 @@ def test_init_db_all_present_commits(monkeypatch):
         "ensure_rg_index_schema",
         "ensure_arm_overlay_schema",
         "ensure_arm_id_key_schema",
+        "ensure_arm_id_identity_cutover_schema",
         "ensure_arm_resolver_schema",
     ):
         monkeypatch.setattr(writer_mod, fn, lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover", lambda conn, **k: False
+    )
     monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
     runner = CliRunner()
@@ -223,4 +236,4 @@ def test_init_db_all_present_commits(monkeypatch):
     out = result.output or ""
     assert "example-host" in out, "host-only status line must name the host"
     assert "secretpw" not in out, "password must never be echoed (T-07-02)"
-    assert "Applied migrations 001..011" in out
+    assert "Applied migrations 001..012" in out

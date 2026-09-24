@@ -148,19 +148,21 @@ def _scan_base_objects() -> set[str]:
 
 
 def test_base_inventory_is_exhaustive():
-    """``_BASE_SCHEMA_INVENTORY`` must be the exhaustive 19 objects sql/001-003
-    declare — 6 relations + 2 FK constraints + 11 indexes — and its name set must
-    equal the set scanned from the SQL, so a future 001-003 object addition fails
-    this test loudly instead of silently escaping the completeness check."""
+    """``_BASE_SCHEMA_INVENTORY`` must be the exhaustive 18 objects sql/001-003
+    declare that a healthy volume KEEPS — 6 relations + 2 FK constraints + 10 indexes —
+    and its name set must equal the set scanned from the SQL minus the one index the
+    ARM-ID identity cutover retires (``idx_res_lower_id``, dropped once the fold index
+    replaces it), so a future 001-003 object addition fails this test loudly instead of
+    silently escaping the completeness check."""
     inv = writer_mod._BASE_SCHEMA_INVENTORY
-    assert len(inv) == 19, f"expected 19 base objects, got {len(inv)}: {inv}"
+    assert len(inv) == 18, f"expected 18 base objects, got {len(inv)}: {inv}"
     kinds = [k for k, _ in inv]
     assert kinds.count("relation") == 6, f"expected 6 relations, got {kinds.count('relation')}"
     assert kinds.count("constraint") == 2, f"expected 2 constraints, got {kinds.count('constraint')}"
-    assert kinds.count("index") == 11, f"expected 11 indexes, got {kinds.count('index')}"
+    assert kinds.count("index") == 10, f"expected 10 indexes, got {kinds.count('index')}"
 
     inv_names = {n for _, n in inv}
-    scanned = _scan_base_objects()
+    scanned = _scan_base_objects() - {"idx_res_lower_id"}
     assert inv_names == scanned, (
         "inventory drift vs sql/001-003:\n"
         f"  only in inventory: {inv_names - scanned}\n"
@@ -262,10 +264,10 @@ def test_ensure_base_schema_partial_after_dropped_index_raises(fresh_db_conn):
 
 
 def test_all_migration_sql_files_lists_eleven(monkeypatch):
-    """``_all_migration_sql_files`` returns the 3 base + 8 twin migration paths (the
-    pre-flight file gate init-db checks before opening any transaction). The identity
-    fold functions (011) are listed BEFORE the resolver (010) — the boot-safety
-    ordering so the functions exist before any future 010 referencing arm_id_key."""
+    """``_all_migration_sql_files`` returns the 3 base + 9 twin migration paths (the
+    pre-flight file gate init-db checks before opening any transaction), in APPLY order:
+    the identity fold functions (011), then the audit-gated overlay CHECK re-derivation
+    (012), then the resolver (010) whose joins reference arm_id_key."""
     files = writer_mod._all_migration_sql_files()
     names = [p.name for p in files]
     assert names == [
@@ -279,5 +281,6 @@ def test_all_migration_sql_files_lists_eleven(monkeypatch):
         "008_rg_lower_index.sql",
         "009_arm_overlay.sql",
         "011_arm_id_key.sql",
+        "012_arm_id_identity_cutover.sql",
         "010_arm_resolver.sql",
     ], names

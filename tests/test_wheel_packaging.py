@@ -113,6 +113,7 @@ def test_writer_sql_lookups_resolve_to_existing_files():
         "009_arm_overlay.sql",
         "010_arm_resolver.sql",
         "011_arm_id_key.sql",
+        "012_arm_id_identity_cutover.sql",
     ):
         resolved = _resources.resource_path("sql", name)
         assert resolved.is_file(), f"twin migration missing: {resolved!r}"
@@ -156,7 +157,7 @@ def test_init_db_fails_and_names_missing_migration(fake_open_writer):
     assert result.exit_code != 0, "a missing twin migration must exit nonzero"
     combined = (result.output or "") + (result.stderr or "")
     assert "004" in combined, f"missing migration 004 not named: {combined!r}"
-    assert "Applied migrations 001..011" not in combined, (
+    assert "Applied migrations 001..012" not in combined, (
         "false-success line must not print when a migration is missing"
     )
 
@@ -174,8 +175,12 @@ def test_init_db_success_prints_host_only(fake_open_writer):
     monkeypatch.setattr(writer_mod, "ensure_rg_index_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_overlay_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_id_key_schema", lambda conn: True)
+    monkeypatch.setattr(writer_mod, "ensure_arm_id_identity_cutover_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "ensure_arm_resolver_schema", lambda conn: True)
     monkeypatch.setattr(writer_mod, "audit_arm_id_identity", lambda conn: None)
+    monkeypatch.setattr(
+        writer_mod, "audit_arm_id_identity_during_switchover", lambda conn, **k: False
+    )
     monkeypatch.setattr(writer_mod, "build_arm_id_key_indexes_concurrently", lambda *a, **k: True)
 
     runner = CliRunner()
@@ -212,6 +217,9 @@ _EXPECTED_SQL = (
     "007_web_metadata.sql",
     "008_rg_lower_index.sql",
     "009_arm_overlay.sql",
+    "010_arm_resolver.sql",
+    "011_arm_id_key.sql",
+    "012_arm_id_identity_cutover.sql",
 )
 
 

@@ -737,6 +737,151 @@ async fn differently_cased_put_over_baseline_keeps_baseline_casing() {
 }
 
 // --------------------------------------------------------------------------------------- //
+// D-25 tombstone identity retained: a differently-cased PUT over a TOMBSTONED id resurrects
+// it (201) under the tombstone's frozen stored casing — never a 500, never the route casing.
+// --------------------------------------------------------------------------------------- //
+
+/// The stored `(id, body.id)` of the overlay row for `id` (looked up by identity key).
+async fn overlay_ids(pool: &PgPool, id: &str) -> (String, Option<String>) {
+    sqlx::query_as(
+        "SELECT id, body ->> 'id' FROM synthetic.arm_overlay \
+         WHERE id_lower = synthetic.arm_id_key($1)",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .expect("overlay row")
+}
+
+#[tokio::test]
+async fn case_variant_put_over_deleted_baseline_resurrects_with_frozen_casing() {
+    let (pool, _c) = start_pg().await;
+    seed_reads_first_boot(&pool).await;
+    seed_scope(&pool, "rg-1").await;
+    let canonical_id = res_id("rg-1", "FrozenAcct");
+    seed_baseline_resource(
+        &pool,
+        &canonical_id,
+        "FrozenAcct",
+        "Microsoft.Storage/storageAccounts",
+    )
+    .await;
+    let app = writes_enabled_router(pool.clone());
+
+    let (ds, _dh, _db) = delete(&app, &canonical_id).await;
+    assert_eq!(ds, StatusCode::NO_CONTENT, "DELETE the baseline row → 204");
+
+    let variant = res_id("rg-1", "frozenacct");
+    let (s, h, b) = put_json(&app, &variant, &json!({ "properties": {}, "tags": {} })).await;
+    assert_eq!(
+        s,
+        StatusCode::CREATED,
+        "a case-variant PUT over a tombstone resurrects → 201 (never a 500): {b}"
+    );
+    assert_eq!(b["id"], canonical_id, "served id keeps the frozen casing");
+    assert_eq!(
+        b["name"], "FrozenAcct",
+        "served name agrees with the frozen id"
+    );
+    let tok = etag_of(&h).expect("resurrection carries an ETag");
+
+    let (gs, gh, gb) = get(&app, &variant).await;
+    assert_eq!(gs, StatusCode::OK, "resurrected id is live again");
+    assert_eq!(gb["id"], canonical_id, "GET serves the frozen casing");
+    assert_eq!(
+        etag_of(&gh),
+        Some(tok),
+        "GET ETag equals the resurrection ETag"
+    );
+    let (stored, body_id) = overlay_ids(&pool, &variant).await;
+    assert_eq!(stored, canonical_id, "stored id unchanged");
+    assert_eq!(
+        body_id.as_deref(),
+        Some(canonical_id.as_str()),
+        "body.id == id"
+    );
+}
+
+#[tokio::test]
+async fn case_variant_put_over_user_tombstone_resurrects_with_first_write_casing() {
+    let (pool, _c) = start_pg().await;
+    seed_reads_first_boot(&pool).await;
+    seed_scope(&pool, "rg-1").await;
+    let app = writes_enabled_router(pool.clone());
+
+    // User-created row, deleted, then resurrected by a differently-cased PUT.
+    let first = res_id("rg-1", "Foo");
+    let (cs, _ch, _cb) = put_json(&app, &first, &body_for(&first, "Foo")).await;
+    assert_eq!(cs, StatusCode::CREATED);
+    let (ds, _dh, _db) = delete(&app, &first).await;
+    assert_eq!(ds, StatusCode::NO_CONTENT);
+    let upper = res_id("rg-1", "FOO");
+    let (s, _h, b) = put_json(&app, &upper, &body_for(&upper, "FOO")).await;
+    assert_eq!(s, StatusCode::CREATED, "resurrection → 201: {b}");
+    assert_eq!(b["id"], first, "first-write casing survives the tombstone");
+    assert_eq!(b["name"], "Foo");
+
+    // Tombstone of a never-existing id: the deletion route id is the frozen casing (D-25 (4)).
+    let ghost = res_id("rg-1", "GhostAcct");
+    let (gs, _gh, _gb) = delete(&app, &ghost).await;
+    assert_eq!(gs, StatusCode::NO_CONTENT);
+    let ghost_variant = res_id("rg-1", "ghostacct");
+    let (s2, _h2, b2) = put_json(&app, &ghost_variant, &json!({ "properties": {} })).await;
+    assert_eq!(s2, StatusCode::CREATED, "ghost resurrection → 201: {b2}");
+    assert_eq!(b2["id"], ghost, "deletion-route casing is the frozen raw");
+    let (stored, body_id) = overlay_ids(&pool, &ghost).await;
+    assert_eq!(stored, ghost);
+    assert_eq!(body_id.as_deref(), Some(ghost.as_str()));
+}
+
+#[tokio::test]
+async fn tombstone_preconditions_unchanged_by_frozen_identity() {
+    let (pool, _c) = start_pg().await;
+    seed_reads_first_boot(&pool).await;
+    seed_scope(&pool, "rg-1").await;
+    let app = writes_enabled_router(pool.clone());
+    let id = res_id("rg-1", "PreAcct");
+    let _ = put_json(&app, &id, &body_for(&id, "PreAcct")).await;
+    let _ = delete(&app, &id).await;
+    let variant = res_id("rg-1", "preacct");
+
+    // If-Match on a tombstone → 412 (no current ETag), GET → 404, PATCH → 404.
+    let (s, _h, _b) = request(
+        &app,
+        "PUT",
+        &variant,
+        &[("Content-Type", "application/json"), ("If-Match", "*")],
+        Some(b"{}".to_vec()),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::PRECONDITION_FAILED,
+        "If-Match:* on a tombstone → 412"
+    );
+    let (gs, _gh, _gb) = get(&app, &variant).await;
+    assert_eq!(gs, StatusCode::NOT_FOUND, "a tombstone is absent for GET");
+    let (ps, _ph, _pb) = patch_json(&app, &variant, &json!({ "tags": {} })).await;
+    assert_eq!(ps, StatusCode::NOT_FOUND, "PATCH on a tombstone → 404");
+
+    // If-None-Match:* on a tombstone passes (create) → 201 with the frozen casing.
+    let (s2, _h2, b2) = request(
+        &app,
+        "PUT",
+        &variant,
+        &[("Content-Type", "application/json"), ("If-None-Match", "*")],
+        Some(b"{}".to_vec()),
+    )
+    .await;
+    assert_eq!(
+        s2,
+        StatusCode::CREATED,
+        "If-None-Match:* on a tombstone → 201"
+    );
+    assert_eq!(b2["id"], id);
+}
+
+// --------------------------------------------------------------------------------------- //
 // D-20 PATCH never creates: absent → 404, tombstoned → 404.
 // --------------------------------------------------------------------------------------- //
 

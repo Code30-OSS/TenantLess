@@ -72,7 +72,7 @@ pub async fn list_resource_groups(
 /// detail endpoint (ETag emission for the RG kind).
 ///
 /// Resolves one RG by reconstructed id through `synthetic.arm_resolved_resource_groups`
-/// (`lower(id) = lower($1)`, the id BOUND, never spliced). A hit returns the
+/// (`synthetic.arm_id_key(id) = synthetic.arm_id_key($1)`, the id BOUND, never spliced). A hit returns the
 /// single `ResourceGroup` ARM DTO (NOT a `{value:[]}` envelope) plus an `ETag` header; a miss
 /// is a true 404 `ResourceNotFound` with no ETag.
 ///
@@ -89,7 +89,7 @@ pub async fn get_resource_group_detail(
     let row = sqlx::query_as::<_, ResourceGroupRow>(
         r#"SELECT id, name, location, tags, provisioning_state
            FROM synthetic.arm_resolved_resource_groups
-           WHERE lower(id) = lower($1)
+           WHERE synthetic.arm_id_key(id) = synthetic.arm_id_key($1)
            LIMIT 1"#,
     )
     .bind(&id) // bound, never spliced
@@ -103,7 +103,8 @@ pub async fn get_resource_group_detail(
     // `o-<revision>`; else the served baseline RG DTO → `b-<hash>`. Id bound as `$1`.
     let overlay_revision: Option<i64> = sqlx::query_scalar(
         "SELECT revision FROM synthetic.arm_overlay \
-         WHERE id_lower = lower($1) AND target_kind = 'resource_group' AND present = true",
+         WHERE id_lower = synthetic.arm_id_key($1) AND target_kind = 'resource_group' \
+           AND present = true",
     )
     .bind(&id)
     .fetch_optional(&state.pool)

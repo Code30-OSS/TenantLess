@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenantless"
-version = "1.5.0"
+version = "1.6.0"
 description = "Azure Tenant Simulator - local ARM API mock server backed by synthetic data"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -37,6 +37,7 @@ azure = [
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.165.10,<6.166",
     "pytest>=9.0",
     "pytest-cov",
 ]
@@ -68,9 +69,11 @@ artifacts = ["src/tenantless/profiles/*.json"]
 [tool.pytest.ini_options]
 # Integration tests (live-Postgres end-to-end parity) and the opt-in scale
 # benchmark are deselected from the default suite and run explicitly via
-# `-m integration` / `-m scale` at phase verification.
-addopts = "-m 'not integration and not scale'"
+# `-m integration` / `-m scale` at phase verification. The live state-machine
+# conformance suite is likewise opt-in via `-m conformance` (its own CI job).
+addopts = "-m 'not integration and not scale and not conformance'"
 markers = [
     "integration: requires a live Postgres on :5433 (skips cleanly when absent)",
     "scale: opt-in ~2000-sub / 500K-resource benchmark (deselected by default)",
+    "conformance: live state-machine conformance against the real server + a dedicated PG16 database (fails instead of skipping under TENANTLESS_REQUIRE_LIVE=1)",
 ]

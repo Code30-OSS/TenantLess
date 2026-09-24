@@ -142,16 +142,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         })?;
 
-    // Startup schema preflight: idempotently provision the ARM-ID identity fold
-    // functions (`synthetic.ascii_fold` / `synthetic.arm_id_key`, both IMMUTABLE STRICT
-    // translate() functions) by applying sql/011. ADDITIVE + behaviour-neutral (D-22a):
-    // this ONLY defines the two functions — no CHECK change, no index, no view edit, no
-    // predicate cutover. It runs AFTER `ensure_arm_overlay_schema` (sql/009) and BEFORE
-    // `ensure_arm_resolver_schema` (sql/010) purely so the functions EXIST before any future
-    // sql/010 that references `arm_id_key` (the later predicate cutover) is applied against an upgraded volume —
-    // the boot-safety guarantee. In THIS unit sql/010 is UNCHANGED (still `lower(...)`) and
-    // no `011 -> audit -> 012 -> 010` cutover ordering is wired. No reader consults these
-    // functions yet.
+    // Identity cutover, in the explicit boot order 011 -> audit -> 012 -> 010:
+    //   1. sql/011 provisions the ARM-ID fold functions (`synthetic.ascii_fold` /
+    //      `synthetic.arm_id_key`, IMMUTABLE STRICT PARALLEL SAFE C-collation lower()) every
+    //      stateful identity comparison uses — before anything that references them;
+    //   2. while the overlay CHECK still derives `id_lower` from `lower(id)` (an upgraded
+    //      volume), the fail-loud identity audit runs FIRST: a non-ASCII divergence or a fold
+    //      collision refuses boot (naming ids only) rather than silently changing identity;
+    //   3. sql/012 re-derives the CHECK onto `arm_id_key(id)` — pg_constraint-conditional, a
+    //      no-op on every later boot;
+    //   4. sql/010 (the resolver views, whose shadow joins compare `arm_id_key`) runs last.
+    // An existing volume therefore always has the fold functions before the new sql/010.
     tenantless_server::ensure_arm_id_key_schema(&pool)
         .await
         .map_err(|e| {
@@ -161,6 +162,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
              `synthetic.arm_id_key` fold functions could not be provisioned. Check the DB \
              role's CREATE privilege on schema `synthetic`, or run `tenantless init-db` to \
              (re)provision."
+            )
+        })?;
+    let cutover_pending = tenantless_server::arm_id_identity_cutover_pending(&pool)
+        .await
+        .map_err(|e| format!("arm id identity cutover probe failed: {e}"))?;
+    if cutover_pending {
+        // Read-only; the `String` error names offending ARM ids only and refuses boot.
+        tenantless_server::audit_arm_id_identity(&pool).await?;
+    }
+    tenantless_server::ensure_arm_id_identity_cutover_schema(&pool)
+        .await
+        .map_err(|e| {
+            format!(
+                "arm id identity cutover (sql/012_arm_id_identity_cutover.sql) failed: {e}. \
+             The `synthetic.arm_overlay` identity CHECK could not be re-derived onto \
+             `synthetic.arm_id_key(id)`. Resolve the reported identity divergence, or run \
+             `tenantless init-db` to (re)provision."
             )
         })?;
 
@@ -187,6 +205,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
              `tenantless generate`)."
             )
         })?;
+
+    // Read-only fold-index probe (NO DDL): a volume upgraded by `serve` alone has the fold
+    // functions but not the CONCURRENTLY-built fold indexes, so every identity lookup would
+    // silently sequential-scan. Warn loudly with the remedy; never build them at boot (a
+    // plain CREATE INDEX on the populated table would take ACCESS EXCLUSIVE). A failed probe
+    // is itself only a warning — it must never block an otherwise healthy boot.
+    match tenantless_server::missing_arm_id_fold_indexes(&pool).await {
+        Ok(missing) => {
+            if let Some(warning) = tenantless_server::fold_index_boot_warning(&missing) {
+                tracing::warn!("{warning}");
+            }
+        }
+        Err(e) => tracing::warn!("ARM-ID identity index probe failed: {e}"),
+    }
 
     // Provenance-based FAIL-CLOSED boot guard (mandatory safety net for the
     // reset-cutover). This release does NOT migrate historical in-place drift — so a tenant still

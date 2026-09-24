@@ -563,16 +563,19 @@ pub async fn list_dependencies(
     // to start at `$1` (no cursor/limit). `subscription` is still ONE bound value used twice.
     // `count` = the whole set matching the active filter, not the page.
     // An edge is live iff BOTH endpoints resolve LIVE through
-    // `synthetic.arm_resolved_resources`. The endpoint match folds case (`lower(rs.id) =
-    // lower(d.source_resource_id)`) to mirror the resolver's shadow convention (`o.id_lower =
-    // lower(b.id)`) — a casing-only endpoint difference must NOT drop a live
+    // `synthetic.arm_resolved_resources`. The endpoint match compares canonical identity keys
+    // (`synthetic.arm_id_key(rs.id) = synthetic.arm_id_key(d.source_resource_id)`, backed by
+    // `idx_res_arm_id_key`) to mirror the resolver's shadow convention (`o.id_lower =
+    // synthetic.arm_id_key(b.id)`) — an ASCII-casing-only endpoint difference must NOT drop a live
     // edge. The relation name is a static literal; the predicate binds NO user value.
     // Carried IDENTICALLY on count, page, AND the summary totals.dependencies sub-select.
     const DEP_LIVENESS: &str = " \
         AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rs \
-                    WHERE lower(rs.id) = lower(d.source_resource_id)) \
+                    WHERE synthetic.arm_id_key(rs.id) = \
+                          synthetic.arm_id_key(d.source_resource_id)) \
         AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rt \
-                    WHERE lower(rt.id) = lower(d.target_resource_id))";
+                    WHERE synthetic.arm_id_key(rt.id) = \
+                          synthetic.arm_id_key(d.target_resource_id))";
     let (count_where, count_binds) = dependency_where(&filters, 0);
     let count_sql = format!(
         "SELECT count(*) AS n FROM synthetic.dependencies d WHERE 1=1{DEP_LIVENESS}{count_where}"
@@ -748,7 +751,7 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
     //         appears in; the retired `drift_deleted_at IS NULL` conjunct is DROPPED);
     //       * violations → INNER join through the resolver, so a tombstoned resource's finding
     //         is excluded (else `totals.violations` drifts ABOVE `sum(per-sub violationCount)`);
-    //       * dependencies → the SAME both-endpoint, CASE-INSENSITIVE liveness predicate the
+    //       * dependencies → the SAME both-endpoint, identity-key liveness predicate the
     //         paginated `list_dependencies` carries (count-consistency with the list).
     let totals_row = sqlx::query(
         "SELECT (SELECT count(*) FROM synthetic.subscriptions)                            AS subscriptions, \
@@ -758,9 +761,9 @@ pub async fn summary(State(state): State<AppState>) -> Result<Json<SummaryRespon
                         JOIN synthetic.arm_resolved_resources r ON r.id = v.resource_id)  AS violations, \
                 (SELECT count(*) FROM synthetic.dependencies d \
                         WHERE EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rs \
-                                      WHERE lower(rs.id) = lower(d.source_resource_id)) \
+                                      WHERE synthetic.arm_id_key(rs.id) = synthetic.arm_id_key(d.source_resource_id)) \
                           AND EXISTS (SELECT 1 FROM synthetic.arm_resolved_resources rt \
-                                      WHERE lower(rt.id) = lower(d.target_resource_id)))    AS dependencies",
+                                      WHERE synthetic.arm_id_key(rt.id) = synthetic.arm_id_key(d.target_resource_id))) AS dependencies",
     )
     .fetch_one(&mut *tx)
     .await?;

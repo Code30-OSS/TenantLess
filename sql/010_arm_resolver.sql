@@ -60,6 +60,31 @@
 -- overlay index, and a guarded `DO $$ ... EXCEPTION WHEN duplicate_column THEN NULL ... $$`
 -- block for the storage_mode column (the sql/006 idiom) — so a re-apply is a clean no-op.
 
+-- (0) Identity-fold prelude. The resolver views and every stateful lookup compare ids
+-- through synthetic.arm_id_key / synthetic.ascii_fold (sql/011). Docker's
+-- docker-entrypoint-initdb.d runs sql/*.sql in LEXICAL order, so on a fresh volume this file
+-- (010) runs BEFORE 011 — the functions must therefore already exist when this file creates
+-- the views. The two definitions below are BYTE-IDENTICAL to sql/011 (pinned by
+-- tests/test_identity_gate.py) and CREATE OR REPLACE makes them a no-op-equivalent
+-- re-definition on a volume that already applied 011 (the provisioning callers serialize
+-- it with the shared 'synthetic.arm_id_fold' advisory lock, taken before the 010 key).
+-- sql/011 remains the canonical home of the fold (KAT-pinned against Rust + Python).
+CREATE OR REPLACE FUNCTION synthetic.ascii_fold(t text)
+    RETURNS text
+    LANGUAGE sql
+    IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+    SELECT lower($1 COLLATE "C")
+$$;
+
+CREATE OR REPLACE FUNCTION synthetic.arm_id_key(id text)
+    RETURNS text
+    LANGUAGE sql
+    IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+    SELECT synthetic.ascii_fold($1)
+$$;
+
 -- (a) storage_mode provenance marker on synthetic.drift_batches.
 -- Guarded DO block (NOT `ADD COLUMN IF NOT EXISTS`) mirrors the sql/006 idiom: on a
 -- re-apply the plain ADD COLUMN raises duplicate_column, which rolls the single statement
@@ -93,7 +118,7 @@ END $$;
 -- complete snapshot body back into the same typed columns.
 CREATE OR REPLACE VIEW synthetic.arm_resolved_resources AS
     -- Baseline branch: a synthetic.resources row is LIVE iff no arm_overlay resource row
-    -- shadows its (case-folded) id — present=true overlay replaces it, present=false
+    -- shadows its identity key (synthetic.arm_id_key(id), the canonical ASCII-only fold) — present=true overlay replaces it, present=false
     -- overlay (the tombstone) hides it; both are the SAME anti-join.
     SELECT
         b.id,
@@ -112,7 +137,7 @@ CREATE OR REPLACE VIEW synthetic.arm_resolved_resources AS
     WHERE NOT EXISTS (
         SELECT 1
         FROM synthetic.arm_overlay o
-        WHERE o.id_lower = lower(b.id)
+        WHERE o.id_lower = synthetic.arm_id_key(b.id)
           AND o.target_kind = 'resource'
     )
     UNION ALL
@@ -136,7 +161,7 @@ CREATE OR REPLACE VIEW synthetic.arm_resolved_resources AS
         (CASE
             WHEN split_part(o.id, '/', 3)
                  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-            THEN lower(split_part(o.id, '/', 3))::uuid
+            THEN lower(split_part(o.id, '/', 3))::uuid  -- IDENTITY-ALLOW[structural: split_part uuid segment cast]
          END)                                             AS subscription_id,
         split_part(o.id, '/', 5)                          AS resource_group_name,
         'Succeeded'::text                                 AS provisioning_state,  -- INTERNAL
@@ -147,8 +172,8 @@ CREATE OR REPLACE VIEW synthetic.arm_resolved_resources AS
       -- Fail-closed scope derivation: the canonical id MUST carry the exact
       -- /subscriptions/{uuid}/resourceGroups/{rg}/... shape or the row is EXCLUDED (never
       -- served with a NULL / out-of-scope subscription).
-      AND lower(split_part(o.id, '/', 2)) = 'subscriptions'
-      AND lower(split_part(o.id, '/', 4)) = 'resourcegroups'
+      AND lower(split_part(o.id, '/', 2)) = 'subscriptions'  -- IDENTITY-ALLOW[structural: split_part segment keyword]
+      AND lower(split_part(o.id, '/', 4)) = 'resourcegroups'  -- IDENTITY-ALLOW[structural: split_part segment keyword]
       AND split_part(o.id, '/', 3)
           ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       AND length(split_part(o.id, '/', 5)) > 0;
@@ -170,7 +195,7 @@ CREATE OR REPLACE VIEW synthetic.arm_resolved_resource_groups AS
     WHERE NOT EXISTS (
         SELECT 1
         FROM synthetic.arm_overlay o
-        WHERE o.id_lower = lower(g.id)
+        WHERE o.id_lower = synthetic.arm_id_key(g.id)
           AND o.target_kind = 'resource_group'
     )
     UNION ALL
@@ -187,19 +212,19 @@ CREATE OR REPLACE VIEW synthetic.arm_resolved_resource_groups AS
         (CASE
             WHEN split_part(o.id, '/', 3)
                  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-            THEN lower(split_part(o.id, '/', 3))::uuid
+            THEN lower(split_part(o.id, '/', 3))::uuid  -- IDENTITY-ALLOW[structural: split_part uuid segment cast]
          END)                                             AS subscription_id  -- INTERNAL
     FROM synthetic.arm_overlay o
     WHERE o.target_kind = 'resource_group'
       AND o.present = true
-      AND lower(split_part(o.id, '/', 2)) = 'subscriptions'
-      AND lower(split_part(o.id, '/', 4)) = 'resourcegroups'
+      AND lower(split_part(o.id, '/', 2)) = 'subscriptions'  -- IDENTITY-ALLOW[structural: split_part segment keyword]
+      AND lower(split_part(o.id, '/', 4)) = 'resourcegroups'  -- IDENTITY-ALLOW[structural: split_part segment keyword]
       AND split_part(o.id, '/', 3)
           ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       AND length(split_part(o.id, '/', 5)) > 0;
 
 -- (d) The overlay resolution index (target_kind, id_lower). Backs both views'
--- shadow anti-join predicate `o.id_lower = lower(b.id) AND o.target_kind = '<kind>'`. The
+-- shadow anti-join predicate `o.id_lower = synthetic.arm_id_key(b.id) AND o.target_kind = '<kind>'`. The
 -- arm_overlay table is empty/tiny in this migration so the ACCESS EXCLUSIVE build is harmless.
 CREATE INDEX IF NOT EXISTS idx_arm_overlay_kind_id
     ON synthetic.arm_overlay (target_kind, id_lower);

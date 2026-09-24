@@ -9,6 +9,95 @@ Within the `1.x` line the public API — CLI flags, profile schema, and ARM resp
 follows Semantic Versioning: additive changes ship in minor releases, and breaking changes
 wait for the next major release and are called out here.
 
+## 1.6.0 — Canonical ARM identity, verified drift fingerprints
+
+Minor release. ARM ids now have one identity rule, used everywhere the simulator compares
+them: an ASCII-only case fold (`A–Z → a–z`, every other byte unchanged). This one rule is
+shared by the server, the CLI and PostgreSQL. The served `id` is still the verbatim casing it
+was first written with.
+
+Drift applies now verify their recorded fingerprint against the state they actually persisted,
+and roll back on a mismatch. A live state-model conformance test drives the real server and
+CLI against PostgreSQL 16.
+
+ARM response shapes, CLI flags and the profile schema do not change. **The on-disk identity
+migration is one-way**, so read the upgrade notes before upgrading a volume you care about.
+
+### Upgrade notes (one-way — read before upgrading)
+
+- **Upgrade the server and the CLI together, and do not downgrade afterwards.** 1.6.0
+  migrates the volume in two steps:
+  - the first 1.6.0 server boot, or the first 1.6.0 `tenantless init-db` / `generate` /
+    `apply-drift` / `reset` / `revert-drift`, re-derives the overlay identity constraint onto
+    the new fold;
+  - the first 1.6.0 `init-db` / `generate` retires the old locale-`lower()` identity indexes.
+
+  After that, older versions refuse the volume:
+  - once the constraint is converted, a **1.5.0 server refuses to boot**, because its
+    structural check expects the old constraint;
+  - once the indexes are retired, a **1.5.0 CLI fails** with `PartialBaseSchemaError` on
+    `generate` / `init-db`, because it expects the retired `lower(id)` index.
+
+  The wheel and the container image are versioned independently. A mixed pair (for example
+  a 1.6.0 CLI run against a volume that a 1.5.0 server still serves) breaks the older side on
+  its next start. To go back, restore a snapshot taken before the upgrade.
+- **Run `tenantless init-db` once against an upgraded volume** (or
+  `tenantless generate --only-if-empty`; the Compose demo profile already does this). The
+  server never builds indexes at boot. The new identity indexes are built `CONCURRENTLY` by
+  `init-db` / `generate` while the server keeps serving. Until they exist, every identity
+  lookup (resource detail, resource-group listing, ARM writes) scans the whole resource table
+  and is slow on a large tenant. If they are missing or invalid, the server logs a `WARN` at
+  boot that names them and gives this remedy.
+- **Drift fingerprints change once, for the same state.** Fingerprint rows are now ordered by
+  the canonical identity key rather than by the raw id. The hashed content is unchanged, but
+  the digest of unchanged state differs whenever raw and folded order disagree. On the stock
+  demo tenant (seed 42) the unchanged state fingerprints as `4ce91b8c…` on 1.5.0 and
+  `6bf663cd…` on 1.6.0 (4 of 4,960 rows change position, e.g. `Microsoft.DataFactory/…` vs
+  `Microsoft.Databricks/…`). So the first `apply-drift` after the upgrade records a
+  `parent_fingerprint` that does not equal the last 1.5.0 `result_fingerprint`. Consumers of
+  `/_sim/drift` see one chain break at the upgrade boundary, and golden "same seed → same
+  fingerprint" values recorded on 1.5.0 must be re-recorded.
+- **Non-ASCII case variants are now distinct identities.** Ids that differ only in the case
+  of non-ASCII letters (e.g. `…/À` vs `…/à`) were one identity under the locale `lower()` and
+  are two now. ASCII case-insensitivity is unchanged. The upgrade refuses to migrate a volume
+  that holds such a divergence or a fold collision, and names the ids. Rename or de-duplicate
+  them first. After the migration, estates holding non-ASCII ids are accepted as they are.
+- **Built from source off an untagged `main` after 1.5.0?** Volumes whose identity indexes
+  were built by that interim build carry an older (output-identical) fold definition in any
+  long-lived session's cache. Reconnect long-lived sessions, or run
+  `REINDEX INDEX CONCURRENTLY synthetic.idx_res_arm_id_key` and
+  `REINDEX INDEX CONCURRENTLY synthetic.idx_res_rg_ascii_fold` once. Tagged releases and
+  1.5.0 volumes are not affected.
+
+### Changed
+
+- **One identity rule for ARM ids.** Every stateful comparison uses the same ASCII-only
+  fold: lookups, writes, tombstones and resurrection, the delete cascade, drift apply and
+  revert, and the resolver joins. The fold is identical across the Rust server, the Python CLI
+  and PostgreSQL, and a shared known-answer corpus pins it. The served `id` is always the
+  verbatim casing it was first stored with. A deleted resource keeps that casing when a later
+  `PUT` recreates it through a differently-cased URL.
+- **Drift never hides a parent that still has children, whatever their casing.** The leaf-only
+  rule for temporal disappear now uses the canonical identity, so it agrees with the delete
+  cascade. Generated tenants are unaffected: their drift output is byte-identical.
+
+### Fixed
+
+- A `PUT` that recreates a deleted resource through a differently-cased URL returned `500`. It
+  now returns `201` with the original casing.
+- `DELETE` of a resource whose name contains a backslash could leave its children live. It now
+  matches the name literally (backslash, `%` and `_`).
+- Concurrent schema provisioning (for example a server restart during `generate`) could fail
+  with `tuple concurrently updated`. It now waits instead.
+
+### Verified
+
+- Drift applies re-read the persisted state inside the apply transaction, verify the
+  fingerprint and roll back on any mismatch.
+- A model-based conformance test drives the real server and the real drift CLI against
+  PostgreSQL 16. It checks global invariants after every step, including identity, served
+  casing, revisions, fingerprint chaining and cascades. It runs in CI as a non-skipping job.
+
 ## 1.5.0 — Generic ARM writes (off by default)
 
 Minor release. Adds a generic, service-model-independent ARM write plane — `PUT` / `PATCH` /

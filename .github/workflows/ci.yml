@@ -135,6 +135,78 @@ jobs:
             exit 1
           fi
 
+  conformance:
+    name: State-model conformance (live server + PG16)
+    runs-on: ubuntu-latest
+    # A hung CLI / DB call must fail the gate in bounded time, not run to the 6 h default.
+    timeout-minutes: 30
+
+    # A dedicated conformance database on its own port: the machine restores a baseline
+    # before every example, so it never shares the suite-wide DATABASE_URL tenant.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tenantless
+          POSTGRES_PASSWORD: tenantless_dev
+          POSTGRES_DB: tenantless_conformance
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U tenantless"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Missing Postgres or a missing server binary FAILS this job; it never self-skips.
+      TENANTLESS_REQUIRE_LIVE: "1"
+      TENANTLESS_CONFORMANCE_DATABASE_URL: postgres://tenantless:tenantless_dev@127.0.0.1:5434/tenantless_conformance
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - run: uv sync --dev
+
+      # The server embeds the built console (build.rs), so the SPA must exist first.
+      - name: Build web console
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build server
+        run: cargo build --release -p tenantless-server --bin tenantless-server
+
+      - name: Conformance machine (must actually run, not skip)
+        run: |
+          set -o pipefail
+          uv run pytest -m conformance -rs -s tests/test_arm_conformance.py 2>&1 | tee /tmp/conformance.log
+          # Non-vacuity floor: the machine is ONE test. If it skipped or was deselected the
+          # suite could exit 0 having run nothing, so require that it PASSED and printed its
+          # run report (examples, steps and per-op counts; the test itself also fails if any
+          # registered op never executed).
+          passed=$(grep -oE '[0-9]+ passed' /tmp/conformance.log | tail -1 | grep -oE '[0-9]+')
+          passed=${passed:-0}
+          if [ "$passed" -lt 1 ] || ! grep -q '^conformance run: ' /tmp/conformance.log; then
+            echo "::error::the conformance machine did not actually run (passed=$passed) — server binary or Postgres missing?"
+            exit 1
+          fi
+          grep '^conformance run: ' /tmp/conformance.log
+
   privacy-gates:
     name: Privacy gates
     runs-on: ubuntu-latest
