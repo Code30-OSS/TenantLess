@@ -18,7 +18,10 @@ services:
       # Wave2 #2: honor a changed POSTGRES_USER — read it from the container's runtime
       # env (env_file: .env) rather than hardcoding `tenantless`. `$$` escapes Compose
       # interpolation so the shell in the container expands it.
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tenantless}"]
+      # `-h 127.0.0.1` checks over TCP: on a fresh volume the image first runs the
+      # sql/ init files against a temporary server that listens on the Unix socket
+      # only, so a socket check would report healthy before the schema is complete.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER:-tenantless}"]
       interval: 5s
       timeout: 5s
       retries: 5
