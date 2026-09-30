@@ -181,13 +181,13 @@ curl -H "Authorization: Bearer anything" \
 
 Then open <http://localhost:8080/ui> for the web console.
 
-> **Compose alone serves an *empty* estate.** `docker compose up -d` starts PostgreSQL and
-> the mock server, but a fresh Compose database is empty and the slim server image does not
-> contain the Python generator — it does **not** generate an estate. Populate one first with
-> the host-side `uv run tenantless generate` step (step 4). The control plane's generate and
-> analyze actions also shell out to `uv run tenantless`, so they need a source-host
-> deployment (uv, Python, and the TenantLess package/repository) — they do **not** run inside
-> the slim server image.
+> **Plain `docker compose up` does not generate an estate.** Without `--profile demo`, Compose
+> starts only PostgreSQL and the mock server, and the slim server image does not contain the
+> Python generator, so a fresh volume serves an empty tenant. Populate it with the host-side
+> `uv run tenantless generate` step (step 4), or use the one-command `--profile demo`
+> quickstart above. The control plane's generate and analyze actions also shell out to
+> `uv run tenantless`, so they need a source-host deployment (uv, Python, and the TenantLess
+> package/repository) — they do **not** run inside the slim server image.
 
 `generate` accepts a bundled profile name (`enterprise`, `small`) or a path to your own
 profile JSON, plus `--subscriptions` / `--resources` to set the scale, `--seed` and
