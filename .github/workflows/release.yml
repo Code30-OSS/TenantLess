@@ -162,7 +162,7 @@ jobs:
       - name: Stage mock-server → local registry (provenance + SBOM)
         if: steps.cand.outputs.resume != 'true'
         id: stage_server
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: mock-server/Dockerfile
@@ -175,7 +175,7 @@ jobs:
       - name: Stage generator → local registry (provenance + SBOM)
         if: steps.cand.outputs.resume != 'true'
         id: stage_generator
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: generator.Dockerfile
