@@ -1,6 +1,6 @@
 # Third-party notices
 
-Tenantless is licensed under [Apache-2.0](LICENSE). It redistributes the
+TenantLess is licensed under [Apache-2.0](LICENSE). It redistributes the
 third-party components listed below under their own licenses.
 
 ## Fonts
@@ -52,7 +52,7 @@ is vendored into this repository.
 
 ## Trademarks
 
-Azure and Microsoft are trademarks of Microsoft Corporation. Tenantless is an
+Azure and Microsoft are trademarks of Microsoft Corporation. TenantLess is an
 independent project and is not affiliated with, endorsed by, or sponsored by
 Microsoft. Microsoft ARM resource-type names and API shapes are referenced
 descriptively, to describe the API surface this project emulates.

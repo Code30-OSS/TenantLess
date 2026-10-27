@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Tenantless web console build config.
+// TenantLess web console build config.
 //
 // base '/ui/'  — assets emit as /ui/assets/* so the built dist is byte-compatible with the
 //                embedded-prod mount (the axum `/ui` nest, D-06 / WEBUI-03, 15-02).

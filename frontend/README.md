@@ -1,6 +1,6 @@
-# tenantless — web console (`frontend/`)
+# TenantLess — web console (`frontend/`)
 
-The React + Vite + TypeScript SPA for the Tenantless ARM mock console. Built to `dist/`, embedded
+The React + Vite + TypeScript SPA for the TenantLess ARM mock console. Built to `dist/`, embedded
 into the `tenantless-server` binary at compile time and served under the `/ui` prefix.
 
 > **Scope: desktop-only.** This is a developer console for driving the ARM mock (scanners,
