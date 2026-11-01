@@ -33,7 +33,7 @@ RUN npm run build
 # workspace-root sql/ (005/006/007 are include_str!'d by lib.rs).
 # ---------------------------------------------------------------------------
 # rust:1-slim-bookworm  resolved 2026-07-28 (W3-6: pin by digest)
-FROM rust:1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS builder
+FROM rust:1-slim-bookworm@sha256:24707e70a4f1e23d9a7b25202ec43126d28a52294b96aad5c670df1fd1f1d400 AS builder
 WORKDIR /build
 # Workspace manifests + lockfile first (reproducible deps), then the crate inputs.
 COPY Cargo.toml Cargo.lock ./
