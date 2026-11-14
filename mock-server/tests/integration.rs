@@ -2917,7 +2917,7 @@ mod identity {
         let hs = encode(
             &Header::new(Algorithm::HS256),
             &claims(now + 3600, &signer.issuer, &signer.audience),
-            &EncodingKey::from_secret(b"attacker-secret"),
+            &EncodingKey::from_secret(b"attacker-secret").expect("HS256 key"),
         )
         .expect("mint HS256");
         assert_401(app, &ra_path, &hs, "HS256 alg-confusion token").await;

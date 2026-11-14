@@ -7,26 +7,13 @@
 //! the same per-run id as the single JWK entry so a consumer can match them
 //! (`Jwk::from_encoding_key` returns `kid = None` — we set both sides ourselves).
 //!
-//! SECURITY — rsa 0.9 / RUSTSEC-2023-0071 ("Marvin" timing side-channel): the
-//! advisory is a decryption-oracle attack. It recovers a private key by timing RSA
-//! **decryption** across many attacker-chosen ciphertexts. This module only
-//! **signs** and **verifies** (RS256) — there is no code path that accepts a
-//! ciphertext and decrypts it, so the oracle the attack needs does not exist. The
-//! key is also ephemeral per-run: generated in memory at startup, never persisted,
-//! and protecting nothing beyond this process's own mock tokens.
-//!
-//! Do NOT extend this rationale to network exposure. The server defaults to a
-//! 127.0.0.1 bind, but the container image sets `HOST=0.0.0.0` (see
-//! docker-compose.yml), so it is not loopback-only and must not be assumed to be.
-//! The exception rests solely on the absent decryption path.
-//!
-//! rsa 0.9.10 is the current release; do NOT chase rsa 0.10.0-rc.x (release
-//! candidate). The matching cargo-audit exception lives in `.cargo/audit.toml`;
-//! keep the two rationales in sync, and drop both when 0.10 ships.
+//! The key is ephemeral per run: generated in memory at startup, never persisted,
+//! and protecting nothing beyond this process's own mock tokens. rsa 0.10 fixes
+//! RUSTSEC-2023-0071 ("Marvin"); this module only signs and verifies (RS256) anyway.
 
 use jsonwebtoken::jwk::{Jwk, JwkSet, PublicKeyUse};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use std::sync::{Arc, RwLock};
 
@@ -61,9 +48,9 @@ impl JwtSigner {
         tenant_id: &uuid::Uuid,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Ephemeral RSA-2048 keypair → PKCS#8 PEM (in-memory only, never written
-        // to disk). OsRng is a CryptoRng satisfying rsa 0.9's rand_core 0.6 bound.
-        let mut rng = rand::rngs::OsRng;
-        let priv_key = RsaPrivateKey::new(&mut rng, 2048)?;
+        // to disk). `SysRng` is OS randomness satisfying rsa 0.10's `TryCryptoRng` bound.
+        let mut rng = getrandom::SysRng;
+        let priv_key = PrivateKey::new(&mut rng, 2048)?;
         let pem = priv_key.to_pkcs8_pem(LineEnding::LF)?; // "PRIVATE KEY" PKCS#8
         let pem_bytes = pem.as_bytes();
 
