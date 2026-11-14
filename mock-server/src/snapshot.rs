@@ -290,7 +290,8 @@ pub async fn restore(cp: ControlPlane, job_id: Uuid, name: String, permit: Owned
 /// KEPT); (2) create a server-owned [`TempSqlFile`]; (3) DECODE the validated archive to that temp
 /// (`pg_restore --data-only --disable-triggers -f` — a corrupt data block OR a full-disk write
 /// fails HERE, BEFORE any DB mutation); (4) GUARD the decoded SQL (no transaction-control /
-/// reconnection, streamed — never read into memory); (5) probe the CURRENTLY-existing `synthetic.*`
+/// reconnection, streamed — never read into memory); (4b) comment out header `SET`s a newer
+/// client wrote that this server rejects ([`neutralize_newer_client_gucs`]); (5) probe the CURRENTLY-existing `synthetic.*`
 /// tables; (6) apply via ONE `psql --single-transaction --set=ON_ERROR_STOP=1 -c <TRUNCATE> -f
 /// <temp>` — the TRUNCATE and the load share a SINGLE transaction, so ANY load failure (or a
 /// kill/timeout dropping the connection) rolls the TRUNCATE back too and the live estate is
@@ -354,6 +355,30 @@ pub async fn restore_with_timeout(
     if let Err(e) = guard_no_txn_control_file(temp.path()) {
         job::with_job(&cp, job_id, |j| {
             j.push_log(format!("decoded restore SQL rejected: {e}"));
+            j.status = JobStatus::Failed;
+        });
+        return; // temp drops → cleaned; estate untouched.
+    }
+
+    // (4b) A newer client's pg_restore writes header SETs an older server rejects (e.g. a
+    // Postgres 17+ client's `SET transaction_timeout` against Postgres 16); comment those out.
+    let server_version_num: i32 =
+        match sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
+            .fetch_one(&cp.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                job::with_job(&cp, job_id, |j| {
+                    j.push_log(format!("probe of server version failed: {e}"));
+                    j.status = JobStatus::Failed;
+                });
+                return;
+            }
+        };
+    if let Err(e) = neutralize_newer_client_gucs(temp.path(), server_version_num) {
+        job::with_job(&cp, job_id, |j| {
+            j.push_log(e);
             j.status = JobStatus::Failed;
         });
         return; // temp drops → cleaned; estate untouched.
@@ -613,6 +638,65 @@ fn guard_no_txn_control_file(path: &Path) -> Result<(), String> {
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// Session parameters a newer `pg_restore` writes into the decoded SQL header that an older
+/// server rejects, each paired with the first `server_version_num` that knows it. Postgres 17+
+/// clients emit `SET transaction_timeout = 0;` unconditionally, and a Postgres 16 server fails
+/// that line with "unrecognized configuration parameter", which aborts the whole restore.
+const NEWER_CLIENT_GUCS: &[(&str, i32)] = &[("transaction_timeout", 170_000)];
+
+/// Comment out the header `SET <param> = …;` lines from [`NEWER_CLIENT_GUCS`] that the target
+/// server (`server_version_num`) does not know, so a snapshot decoded by a newer client still
+/// applies. Only the header is scanned — it stops at the first `COPY` (the data bodies are never
+/// read) — and each match is rewritten IN PLACE by overwriting its leading `SET` with `-- `, so
+/// the file length and every other byte are unchanged. Returns how many lines were rewritten.
+fn neutralize_newer_client_gucs(path: &Path, server_version_num: i32) -> Result<usize, String> {
+    use std::io::{BufRead, Seek, SeekFrom, Write};
+    let unknown: Vec<&str> = NEWER_CLIENT_GUCS
+        .iter()
+        .filter(|(_, since)| server_version_num < *since)
+        .map(|(name, _)| *name)
+        .collect();
+    if unknown.is_empty() {
+        return Ok(0);
+    }
+    let err = |e: std::io::Error| format!("could not adjust decoded restore SQL: {e}");
+    let mut offsets = Vec::new();
+    {
+        let mut reader = std::io::BufReader::new(std::fs::File::open(path).map_err(err)?);
+        let mut offset: u64 = 0;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let n = reader.read_until(b'\n', &mut line).map_err(err)?;
+            if n == 0 || line.starts_with(b"COPY ") {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix(b"SET ") {
+                let is_unknown = unknown.iter().any(|name| {
+                    rest.strip_prefix(name.as_bytes())
+                        .is_some_and(|r| r.starts_with(b" ") || r.starts_with(b"="))
+                });
+                if is_unknown {
+                    offsets.push(offset);
+                }
+            }
+            offset += n as u64;
+        }
+    }
+    if !offsets.is_empty() {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(err)?;
+        for off in &offsets {
+            file.seek(SeekFrom::Start(*off)).map_err(err)?;
+            file.write_all(b"-- ").map_err(err)?;
+        }
+        file.flush().map_err(err)?;
+    }
+    Ok(offsets.len())
 }
 
 /// Build the `pg_restore --list <snapshots>/<name>.dump` command: a TOC dry-run that
@@ -901,6 +985,62 @@ mod tests {
                 "{stmt} must be rejected"
             );
         }
+    }
+
+    /// Given decoded restore SQL from a Postgres 17+ `pg_restore` (which emits
+    /// `SET transaction_timeout = 0;` in its header),
+    /// When it is neutralized for a server older than 17,
+    /// Then that header SET becomes a comment, while the same text inside a COPY data body and
+    /// every other line stay byte-for-byte unchanged. For a 17+ server nothing is touched.
+    #[test]
+    fn newer_client_header_gucs_neutralized_only_for_older_servers() {
+        let sql = "--\n-- PostgreSQL database dump\n--\n\
+                   SET statement_timeout = 0;\n\
+                   SET transaction_timeout = 0;\n\
+                   SET client_encoding = 'UTF8';\n\
+                   COPY synthetic.t (a) FROM stdin;\n\
+                   SET transaction_timeout = 0;\n\
+                   \\.\n\
+                   SET transaction_timeout = 0;\n";
+        let dir = std::env::temp_dir().join(format!("tl-guc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("restore.sql");
+
+        // PG16 server: only the header line is rewritten.
+        std::fs::write(&path, sql).expect("write");
+        let n = super::neutralize_newer_client_gucs(&path, 160_000).expect("neutralize");
+        assert_eq!(n, 1, "exactly the one header SET is neutralized");
+        let got = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(
+            got.len(),
+            sql.len(),
+            "in-place rewrite keeps the file length"
+        );
+        let lines: Vec<&str> = got.lines().collect();
+        assert_eq!(
+            lines[4], "--  transaction_timeout = 0;",
+            "header SET commented out"
+        );
+        assert_eq!(
+            lines[3], "SET statement_timeout = 0;",
+            "other SETs untouched"
+        );
+        assert_eq!(
+            lines[7], "SET transaction_timeout = 0;",
+            "COPY data body untouched"
+        );
+        assert_eq!(
+            lines[9], "SET transaction_timeout = 0;",
+            "nothing after the header"
+        );
+
+        // PG17 server: the parameter exists, so the file is left exactly as decoded.
+        std::fs::write(&path, sql).expect("write");
+        let n = super::neutralize_newer_client_gucs(&path, 170_000).expect("neutralize");
+        assert_eq!(n, 0, "a 17+ server needs no rewrite");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), sql);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// RAII: a `TempSqlFile` exists while held and is removed on Drop (every
